@@ -230,6 +230,22 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 #viewport[data-mode="pin"] { cursor: default; }
 #viewport[data-mode="pin"] [data-element-id] { cursor: pointer; }
 
+#viewport.is-file-drop-target::after {
+  content: "松手添加附件";
+  position: absolute;
+  inset: 8px;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+  border: 2px dashed #a1d8b5;
+  border-radius: 12px;
+  background: #1a2b23d9;
+  color: #e5f6e9;
+  font-size: 18px;
+  font-weight: 650;
+  pointer-events: none;
+}
+
 #ask-popover {
   position: absolute;
   top: 12px;
@@ -284,6 +300,13 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   overflow: auto;
   overscroll-behavior: contain;
 }
+
+#ask-composer.is-file-drop-target {
+  outline: 2px dashed #a1d8b5;
+  outline-offset: -4px;
+}
+
+#attachment-hint { margin: 5px 0; color: var(--muted); font-size: 11px; }
 
 .ask-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .ask-heading h3 { margin: 0; color: #eef5ea; font-size: 15px; font-weight: 700; }

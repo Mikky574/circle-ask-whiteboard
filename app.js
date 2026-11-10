@@ -153,6 +153,21 @@
     line.hidden = !message;
   }
 
+  function addAttachmentFiles(files) {
+    if (activeRun) return;
+    const inherited = inheritedAttachments(selected.map((item) => item.id));
+    const rejected = [];
+    for (const file of files) {
+      if (file.size > attachmentMaxBytes || draftAttachments.length + inherited.length >= attachmentLimit) {
+        rejected.push(file.name);
+      } else {
+        draftAttachments.push({ file, ref: null });
+      }
+    }
+    attachmentMessage(rejected.length ? `未添加 ${rejected.join("、")}。每个文件最多 10 MiB，每轮最多 ${attachmentLimit} 个。` : "");
+    renderInspector();
+  }
+
   function renderAttachmentDraft(inherited) {
     const list = $("attachment-list");
     list.replaceChildren();
@@ -1820,7 +1835,7 @@
     $("organization-status").textContent = (quick ? "已撤销重排。" : "已撤销整理。") +
       (stored ? "" : " 浏览器存储不可用，刷新可能丢失排布。");
   });
-  $("ask-board").addEventListener("click", () => {
+  function askWholeBoard(point) {
     drawLasso([]);
     applySelection([{
       id: "board",
@@ -1831,11 +1846,12 @@
         rectInScene(board.querySelector(".board-caption").getBoundingClientRect()),
       highlights: [],
       formulaFragments: [],
-    }]);
+    }], point);
     showAsk(true);
     question.focus();
-    status("正在问整张白板。项目主线会一起交给 Codex。");
-  });
+    status("正在问整张白板。项目主线会一起交给所选服务。");
+  }
+  $("ask-board").addEventListener("click", () => askWholeBoard());
   $("reload-board").addEventListener("click", () => {
     if (persist()) location.reload();
     else status("浏览器存储不可用。请先保留想保存的批注，再手动刷新。");
@@ -1905,18 +1921,49 @@
   });
   $("attach-files").addEventListener("click", () => attachmentInput.click());
   attachmentInput.addEventListener("change", () => {
-    const inherited = inheritedAttachments(selected.map((item) => item.id));
-    const rejected = [];
-    for (const file of attachmentInput.files) {
-      if (file.size > attachmentMaxBytes || draftAttachments.length + inherited.length >= attachmentLimit) {
-        rejected.push(file.name);
-      } else {
-        draftAttachments.push({ file, ref: null });
-      }
-    }
+    addAttachmentFiles(attachmentInput.files);
     attachmentInput.value = "";
-    attachmentMessage(rejected.length ? `未添加 ${rejected.join("、")}。每个文件最多 10 MB，每轮最多 ${attachmentLimit} 个。` : "");
-    renderInspector();
+  });
+
+  function showFileDropTarget(target = null) {
+    askComposer.classList.toggle("is-file-drop-target", target === askComposer);
+    viewport.classList.toggle("is-file-drop-target", target === viewport);
+  }
+
+  window.addEventListener("dragover", (event) => {
+    if (!event.dataTransfer?.types.includes("Files")) return;
+    event.preventDefault();
+    const target = !activeRun && event.target instanceof Element ? event.target.closest("#ask-composer, #viewport") : null;
+    event.dataTransfer.dropEffect = target ? "copy" : "none";
+    showFileDropTarget(target);
+  });
+  window.addEventListener("dragleave", (event) => {
+    if (!event.relatedTarget) showFileDropTarget();
+  });
+  window.addEventListener("dragend", () => showFileDropTarget());
+  window.addEventListener("drop", (event) => {
+    const files = event.dataTransfer?.files;
+    if (!files?.length && !event.dataTransfer?.types.includes("Files")) return;
+    event.preventDefault();
+    showFileDropTarget();
+    if (!files?.length || !(event.target instanceof Element) || !viewport.contains(event.target)) return;
+    if (activeRun) {
+      status("请等当前请求完成后再添加附件。");
+      return;
+    }
+    if (!selected.length) {
+      const item = event.target.closest("[data-element-id]:not([hidden]):not([aria-busy='true'])");
+      if (item) chooseElement(item, toScene(event));
+      else askWholeBoard(toScene(event));
+    }
+    if (!askAt) {
+      const box = unionRects(selected.map((item) => item.box));
+      askAt = { x: box.x + box.width, y: box.y + box.height / 2 };
+    }
+    showAsk(true);
+    addAttachmentFiles(files);
+    positionAsk();
+    question.focus();
   });
   $("question-form").addEventListener("submit", async (event) => {
     event.preventDefault();
