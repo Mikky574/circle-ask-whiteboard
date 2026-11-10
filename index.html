@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101816">
+  <title>圈问白板 · 实现说明</title>
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="geometry.js"></script>
+  <script defer src="memory.js"></script>
+  <script defer src="organization.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="masthead">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 28 28"><path d="M23 12c0 4.7-4.5 8.6-10 8.6-4.6 0-8-2.4-8-5.8C5 10.3 10 6 15.6 6c4.1 0 7.4 2.5 7.4 6Z"/><path d="M10.8 20.3 7.5 24m10-15.5h.1m-6 5h.1m5 1h.1"/></svg>
+        </span>
+        <div>
+          <p class="masthead-kicker">开发工作台</p>
+          <h1>圈问白板</h1>
+        </div>
+      </div>
+      <div class="connection-area">
+        <div class="demo-label" role="status"><span class="connection-dot" aria-hidden="true"></span><span id="connection-label">正在连接本地服务…</span></div>
+        <details class="connection-settings">
+          <summary>连接设置</summary>
+          <div class="connection-fields">
+            <label for="backend-select">服务</label>
+            <select id="backend-select"><option value="codex">Codex</option><option value="zcode">ZCode</option></select>
+            <label for="model-input">模型</label>
+            <input id="model-input" type="text" list="model-options" maxlength="120" autocomplete="off" placeholder="使用服务默认模型">
+            <datalist id="model-options"></datalist>
+          </div>
+        </details>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="canvas-panel" aria-label="白板实现说明">
+        <header class="canvas-bar">
+          <div class="canvas-name">
+            <p class="overline">项目画布 <span>/</span> 01</p>
+            <h2>这块白板是怎么实现的？</h2>
+          </div>
+          <div class="toolbar" aria-label="画布操作">
+            <div class="tool-group" role="group" aria-label="交互模式">
+              <button id="select-mode" type="button" class="tool-button mode-button" aria-pressed="true" title="自由圈选">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.6 8.6c0 3.6-3.7 6.1-7.1 6.1-3 0-5.7-1.3-5.7-3.8 0-3.3 3.7-6.2 7.4-6.2 3 0 5.4 1.6 5.4 3.9Z"/><path d="M7.7 14.6 5.2 17"/></svg>
+                圈选
+              </button>
+              <button id="pan-mode" type="button" class="tool-button mode-button" aria-pressed="false" title="拖动组件或画布">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.8v14.4M2.8 10h14.4M8 4.8l2-2 2 2m-4 10.4 2 2 2-2M4.8 8l-2 2 2 2m10.4-4 2 2-2 2"/></svg>
+                移动
+              </button>
+              <button id="pin-mode" type="button" class="tool-button mode-button" aria-pressed="false" aria-label="图钉模式" title="点选卡片或批注，固定重点">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3h6l-.8 4 2.6 2.7v1.8H5.2V9.7L7.8 7 7 3zM10 11.5v5.5"/></svg>
+                图钉
+              </button>
+            </div>
+            <div class="tool-group zoom-group" role="group" aria-label="缩放比例">
+              <button id="zoom-out" type="button" class="tool-button icon-button" aria-label="缩小" title="缩小">−</button>
+              <output id="zoom-value" aria-label="当前缩放">100%</output>
+              <button id="zoom-in" type="button" class="tool-button icon-button" aria-label="放大" title="放大">+</button>
+            </div>
+            <button id="delete-selection" type="button" class="tool-button" disabled>删除选中</button>
+            <button id="undo-delete" type="button" class="tool-button" hidden>撤销删除</button>
+            <button id="repair-delete" type="button" class="tool-button" hidden>重试关系整理</button>
+            <div id="deletion-status" hidden>
+              <span id="deletion-status-text" role="status" aria-live="polite" aria-atomic="true"></span>
+              <button id="dismiss-deletion-status" type="button" aria-label="关闭删除提示">×</button>
+            </div>
+            <button id="fit" type="button" class="tool-button icon-button" title="适应视图" aria-label="适应视图">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3.5H3.5V7m9.5-3.5h3.5V7m0 6v3.5H13m-6 0H3.5V13"/></svg>
+            </button>
+          </div>
+        </header>
+
+        <div id="viewport" aria-label="拖动鼠标圈选文字、公式或图形">
+          <div id="board">
+            <div class="board-caption" aria-hidden="true"><span>01</span> 圈选 · 定位 · 项目记忆</div>
+
+            <article class="board-card card-text" data-element-id="E01">
+              <div class="card-meta"><span>圈选逻辑</span><span>E01</span></div>
+              <h3 class="element-title" data-select-part="text">把指针轨迹变成选区</h3>
+              <div class="element-content" data-select-part="text">浏览器记录拖动中的指针坐标，再把每个点换算成画布坐标。松开时，用闭合轨迹判断文字、公式和图形哪些被圈中，只把命中的内容加入选区。</div>
+              <div class="card-foot" aria-hidden="true">指针轨迹 → 画布坐标 → 命中内容</div>
+            </article>
+
+            <article class="board-card card-formula" data-element-id="E02">
+              <div class="card-meta"><span>公式</span><span>E02</span></div>
+              <h3 class="element-title" data-select-part="text">从视口还原画布坐标</h3>
+              <div class="element-content">
+                <code data-select-part="formula" data-source="scene = (screen − boardOrigin) / scale">scene = (screen − boardOrigin) / scale</code>
+                <p data-select-part="text">批注锚点保存在画布坐标里。提问浮层换回视口坐标，大小不受画布缩放影响。</p>
+              </div>
+            </article>
+
+            <article class="board-card card-shape" data-element-id="E03">
+              <div class="card-meta"><span>流程</span><span>E03</span></div>
+              <h3 class="element-title" data-select-part="text">局部讨论和项目记忆</h3>
+              <div class="element-content">
+                <div class="diagram" aria-label="局部讨论里的结论确认后加入项目记忆">
+                  <div class="diagram-step" data-select-part="shape"><span>01 / 局部</span> <strong>选区、问题和批注</strong></div>
+                  <div class="diagram-arrow" aria-hidden="true">→</div>
+                  <div class="diagram-step" data-select-part="shape"><span>02 / 全局</span> <strong>目标、约束和已确认决定</strong></div>
+                </div>
+                <p data-select-part="text">追问沿用原选区和批注。结论经用户确认后加入项目记忆，供其他选区参考。</p>
+              </div>
+            </article>
+
+            <div class="notes-guide" aria-hidden="true"><span></span> 圈一段内容，和 AI 一起读源码</div>
+            <div id="organization-labels" aria-hidden="true"></div>
+            <svg id="overlay" viewBox="0 0 1050 700" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+              <g id="connections"></g>
+            </svg>
+            <div id="threads" aria-label="画布批注"></div>
+            <svg id="note-overlay" viewBox="0 0 1050 700" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+              <g id="selection-highlights"></g>
+              <path id="lasso-path"></path>
+            </svg>
+          </div>
+
+          <div id="ask-popover" role="group" aria-label="选区提问" hidden>
+            <button id="ask-open" type="button" aria-expanded="false" aria-controls="ask-composer">
+              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.8a7.2 7.2 0 0 1 7.2 7.2c0 4-3.2 6.7-7.2 6.7H3.1l1.6-2.9A6.4 6.4 0 0 1 2.8 10 7.2 7.2 0 0 1 10 2.8Z"/><path d="M10 7.1v5.3m-2.7-2.7h5.4"/></svg>
+              问 AI 这段内容 <span aria-hidden="true">↗</span>
+            </button>
+
+            <div id="ask-composer" hidden>
+              <header class="ask-heading">
+                <h3>想做什么？</h3>
+                <button id="ask-close" type="button" class="tool-button icon-button" aria-label="关闭提问" title="关闭提问">×</button>
+              </header>
+              <p id="ask-scope"></p>
+              <form id="question-form">
+                <label for="question">你的问题</label>
+                <textarea id="question" name="question" rows="2" maxlength="400" placeholder="比如：移动画布后，批注为什么还能跟着原选区？"></textarea>
+                <ul id="attachment-list" aria-label="本次附件" hidden></ul>
+                <p id="attachment-status" role="status" hidden></p>
+                <div class="ask-actions">
+                  <input id="attachment-input" type="file" multiple hidden>
+                  <button id="attach-files" type="button" class="tool-button" title="单个附件最多 10 MiB">添加附件</button>
+                  <button id="submit-question" type="submit" class="submit-button" disabled>发送 <span aria-hidden="true">↗</span></button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <footer class="canvas-footer">
+          <span><span class="legend-dot" aria-hidden="true"></span><span id="canvas-gesture-hint">点选整张卡片，或按住拖动画圈选取局部</span></span>
+        </footer>
+      </section>
+
+      <aside class="context-panel" aria-labelledby="context-title">
+        <header class="context-header">
+          <p class="overline">白板工作台</p>
+          <h2 id="context-title">项目上下文</h2>
+          <p>圈住内容就地提问，也可以延伸成分支，再圈住分支中的内容继续问。</p>
+          <div class="context-actions">
+            <button id="ask-board" type="button" class="tool-button context-action">问整个白板 <span aria-hidden="true">↗</span></button>
+            <button id="organize-board" type="button" class="tool-button context-action organize-action">整理白板</button>
+            <button id="quick-reorder" type="button" class="tool-button context-action" title="在本地展开分支、避开重叠">快速重排</button>
+            <button id="undo-organization" type="button" class="tool-button context-action" hidden>撤销整理</button>
+            <button id="reload-board" type="button" class="tool-button context-action" hidden>刷新白板</button>
+          </div>
+          <div class="organization-opinion-field">
+            <label for="organization-opinion">整理意见 <span>可选</span></label>
+            <textarea id="organization-opinion" rows="2" maxlength="1200" placeholder="例如：沿一条主干排布，把坐标换算的追问挂在圈选模块旁。"></textarea>
+            <p id="organization-status" role="status"></p>
+          </div>
+        </header>
+
+        <div class="context-body">
+          <section class="selection-section" aria-labelledby="selection-heading">
+            <h3 id="selection-heading"><span class="step-marker">01</span>选中的内容 <span id="branch-label">整板</span></h3>
+            <ul id="selection-list" aria-live="polite"><li class="empty-selection">尚未选中内容</li></ul>
+            <p id="status" role="status">选中内容后可以提问。</p>
+          </section>
+
+          <details class="payload-details">
+            <summary>查看选区载荷</summary>
+            <pre id="payload">[]</pre>
+          </details>
+          <details class="payload-details" id="sent-context-details">
+            <summary>查看模型实际收到的内容</summary>
+            <pre id="sent-context">尚未发送提问</pre>
+          </details>
+
+          <section class="project-section" aria-labelledby="project-heading">
+            <h3 id="project-heading"><span class="step-marker">02</span>项目记忆</h3>
+            <label for="project-goal">目标</label>
+            <textarea id="project-goal" rows="2">在白板上圈问自己的实现，并交给 Codex 继续修改。</textarea>
+            <label for="project-constraints">约束 <span>每行一条</span></label>
+            <textarea id="project-constraints" rows="2">回答与代码修改分开
+只修改当前白板原型的文件</textarea>
+            <h4>已确认决定</h4>
+            <ul id="project-decisions"><li class="empty-decision">尚无已确认决定</li></ul>
+            <form id="decision-form">
+              <label class="visually-hidden" for="decision-text">添加已确认决定</label>
+              <input id="decision-text" type="text" maxlength="240" placeholder="记录一条已确认决定" required>
+              <button id="adopt-selection" type="button" class="tool-button context-action" disabled>引用选区</button>
+              <button type="submit" class="tool-button context-action">确认</button>
+            </form>
+          </section>
+        </div>
+
+        <footer class="context-footer">
+          <span><span id="thread-count-label">画布批注</span> <strong id="thread-count">0</strong></span>
+        </footer>
+      </aside>
+    </main>
+  </div>
+</body>
+</html>

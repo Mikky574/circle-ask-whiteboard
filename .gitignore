@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.log
+.env
+.env.*
+*.local.json
+.whiteboard-edit-*/
+.whiteboard-agent-*/
+.codex/
+.zcode/
+attachments/
