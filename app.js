@@ -1902,6 +1902,35 @@
     askOpen.focus();
   });
   question.addEventListener("input", renderInspector);
+  question.addEventListener("paste", (event) => {
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+    let images = [...clipboard.files].filter((file) => file.type.startsWith("image/"));
+    if (!images.length) {
+      images = [...clipboard.items].filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+        .map((item) => item.getAsFile()).filter(Boolean);
+    }
+    if (!images.length) return;
+    if (!clipboard.getData("text/plain")) event.preventDefault();
+    if (activeRun) {
+      attachmentMessage("请等当前请求完成后再添加截图。");
+      return;
+    }
+    const names = new Set([
+      ...draftAttachments.map((entry) => entry.file.name),
+      ...inheritedAttachments(selected.map((item) => item.id)).map((file) => file.name),
+    ]);
+    const screenshots = images.map((file) => {
+      const format = file.type.match(/^image\/([a-z0-9]{1,12})$/)?.[1] || "bin";
+      const extension = format === "jpeg" ? "jpg" : format;
+      let name = `截图.${extension}`;
+      for (let number = 2; names.has(name); number++) name = `截图-${number}.${extension}`;
+      names.add(name);
+      return new File([file], name, { type: file.type, lastModified: file.lastModified });
+    });
+    addAttachmentFiles(screenshots);
+    positionAsk();
+  });
   function showConnectionFields() {
     backendSelect.value = connection.backend;
     modelInput.value = connection.models[connection.backend];
