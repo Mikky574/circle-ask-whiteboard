@@ -1,5 +1,6 @@
 (() => {
   const EPSILON = 1e-7;
+  const sectionColumnThreshold = 4;
 
   function scenePoint(clientX, clientY, boardRect, scale) {
     return {
@@ -78,59 +79,85 @@
     return Math.abs(twiceArea) >= minimumArea * 2;
   }
 
-  function placeNote(anchorRect, occupiedRects, boardRect, noteSize) {
-    const gap = 14;
-    const width = Math.min(noteSize.width, boardRect.width);
-    const height = Math.min(noteSize.height, boardRect.height);
-    const right = boardRect.x + boardRect.width - width;
-    const bottom = boardRect.y + boardRect.height - height;
-    const clampX = (x) => Math.max(boardRect.x, Math.min(x, right));
-    const clampY = (y) => Math.max(boardRect.y, Math.min(y, bottom));
-    const anchorRight = anchorRect.x + anchorRect.width;
-    const preferredX = anchorRight + gap;
-    const preferredY = anchorRect.y;
-    const gutter = 7;
-    const blockers = [anchorRect, ...occupiedRects].map((rect) => ({
-      x: rect.x - gutter,
-      y: rect.y - gutter,
-      width: rect.width + 2 * gutter,
-      height: rect.height + 2 * gutter,
-    }));
-
-    // An open spot can start beside a blocker or against a board edge.
-    const candidateX = new Set([clampX(preferredX), boardRect.x, right]);
-    const candidateY = new Set([clampY(preferredY), boardRect.y, bottom]);
-    for (const rect of blockers) {
-      candidateX.add(clampX(rect.x - width));
-      candidateX.add(clampX(rect.x + rect.width));
-      candidateY.add(clampY(rect.y - height));
-      candidateY.add(clampY(rect.y + rect.height));
+  function placeNote(anchor, occupied, size, previous, gap = 24, { below = false } = {}) {
+    const blockers = [anchor, ...occupied];
+    if (previous && (!below || previous.y >= anchor.y + anchor.height + gap) && blockers.every((rect) =>
+      previous.x + size.width + gap <= rect.x || rect.x + rect.width + gap <= previous.x ||
+      previous.y + size.height + gap <= rect.y || rect.y + rect.height + gap <= previous.y)) {
+      return { ...size, ...previous };
     }
 
-    let best = { x: clampX(preferredX), y: clampY(preferredY) };
-    let bestOverlap = Infinity;
-    let bestSide = Infinity;
+    let best;
     let bestDistance = Infinity;
-    for (const x of candidateX) {
-      for (const y of candidateY) {
-        let overlap = 0;
-        for (const rect of blockers) {
-          const overlapX = Math.max(0, Math.min(x + width, rect.x + rect.width) - Math.max(x, rect.x));
-          const overlapY = Math.max(0, Math.min(y + height, rect.y + rect.height) - Math.max(y, rect.y));
-          overlap += overlapX * overlapY;
+    const directions = [
+      ["y", "x", "height", "width", 1],
+      ["x", "y", "width", "height", 1],
+      ["x", "y", "width", "height", -1],
+      ["y", "x", "height", "width", -1],
+    ];
+    for (const [axis, parallel, extent, span, direction] of below ? directions.slice(0, 1) : directions) {
+      const start = (direction > 0 ? anchor[axis] + anchor[extent] : -anchor[axis]) + gap;
+      const intervals = blockers.map((rect) => ({
+        start: (direction > 0 ? rect[axis] : -rect[axis] - rect[extent]) - gap,
+        end: (direction > 0 ? rect[axis] + rect[extent] : -rect[axis]) + gap,
+        low: rect[parallel] - gap,
+        high: rect[parallel] + rect[span] + gap,
+      })).sort((a, b) => a.start - b.start);
+      const centered = below ? (anchor[span] - size[span]) / 2 : 0;
+      const preferred = anchor[parallel] + centered;
+      const alignments = new Set([preferred]);
+      for (const { low, high } of intervals) {
+        alignments.add(low - size[span]);
+        alignments.add(high);
+      }
+      for (const alignment of alignments) {
+        const shift = (alignment - preferred) ** 2;
+        if (shift >= bestDistance) continue;
+        let position = start;
+        // Move outward until the note clears all intervals on this alignment.
+        for (const interval of intervals) {
+          if (position + size[extent] <= interval.start) break;
+          if (alignment < interval.high && alignment + size[span] > interval.low) {
+            position = Math.max(position, interval.end);
+          }
         }
-        const side = x >= anchorRight ? 0 : 1;
-        const distance = (x - preferredX) ** 2 + (y - preferredY) ** 2;
-        if (overlap < bestOverlap || (overlap === bestOverlap &&
-            (side < bestSide || (side === bestSide && distance < bestDistance)))) {
-          best = { x, y };
-          bestOverlap = overlap;
-          bestSide = side;
+        const distance = shift + (position - start) ** 2;
+        if (distance < bestDistance) {
           bestDistance = distance;
+          best = { ...size, [axis]: direction > 0 ? position : -position - size[extent], [parallel]: alignment };
         }
       }
+      if (bestDistance === 0) break;
     }
     return best;
+  }
+
+  function placeNoteGroup(anchor, occupied, sizes, previous, gap, columns = 2, { below = true } = {}) {
+    let leftWidth = 0;
+    let rightWidth = 0;
+    for (const [index, size] of sizes.entries()) {
+      if (index % columns === 0) leftWidth = Math.max(leftWidth, size.width);
+      else rightWidth = Math.max(rightWidth, size.width);
+    }
+    const width = leftWidth + (rightWidth ? gap + rightWidth : 0);
+    const slots = [];
+    let top = 0;
+    for (let index = 0; index < sizes.length; index += columns) {
+      const left = sizes[index];
+      const right = columns === 2 ? sizes[index + 1] : null;
+      slots.push({ ...left, x: 0, y: top });
+      if (right) slots.push({ ...right, x: leftWidth + gap, y: top });
+      top += Math.max(left.height, right?.height || 0) + gap;
+    }
+    const height = top - gap;
+    const group = placeNote(anchor, occupied, { width, height }, previous, gap, { below });
+    const left = !below && group.x + width <= anchor.x;
+    const above = !below && group.y + height <= anchor.y;
+    return slots.map((slot) => ({
+      ...slot,
+      x: group.x + (left ? width - slot.x - slot.width : slot.x),
+      y: group.y + (above ? height - slot.y - slot.height : slot.y),
+    }));
   }
 
   function routeAcrossCards(parent, child, rectangles) {
@@ -187,6 +214,157 @@
     return best;
   }
 
+  function clearOrthogonalPath(points, rectangles) {
+    const clearance = 2;
+    for (let index = 1; index < points.length; index++) {
+      const [x, y] = points[index];
+      const [previousX, previousY] = points[index - 1];
+      if (rectangles.some((rect) =>
+        Math.min(x, previousX) < rect.x + rect.width + clearance &&
+        Math.max(x, previousX) > rect.x - clearance &&
+        Math.min(y, previousY) < rect.y + rect.height + clearance &&
+        Math.max(y, previousY) > rect.y - clearance)) return false;
+    }
+    return true;
+  }
+
+  function orthogonalSegments(points) {
+    const segments = [];
+    for (let index = 1; index < points.length; index++) {
+      const [x, y] = points[index];
+      const [previousX, previousY] = points[index - 1];
+      if (x !== previousX) segments.push({ axis: "x", rail: y, start: Math.min(x, previousX), end: Math.max(x, previousX) });
+      else if (y !== previousY) segments.push({ axis: "y", rail: x, start: Math.min(y, previousY), end: Math.max(y, previousY) });
+    }
+    return segments;
+  }
+
+  function routeAroundCards(parent, child, rectangles, axis, preferred, otherRails) {
+    const gap = 8;
+    const obstacles = rectangles.filter((rect) => rect !== parent && rect !== child);
+    const sharedLength = (segments) => segments.reduce((total, segment) => total + otherRails.reduce((overlap, other) =>
+      overlap + (segment.axis === other.axis && Math.abs(segment.rail - other.rail) < 6
+        ? Math.max(0, Math.min(segment.end, other.end) - Math.max(segment.start, other.start)) : 0), 0), 0);
+    let best = null;
+    let bestCost = Infinity;
+    if (preferred && clearOrthogonalPath(preferred, obstacles)) {
+      const segments = orthogonalSegments(preferred);
+      const shared = sharedLength(segments);
+      if (shared <= 16) return preferred;
+      best = preferred;
+      bestCost = segments.reduce((total, { start, end }) => total + end - start, 0) + shared;
+    }
+    const ports = (rect, toward) => {
+      const x = rect.x + rect.width / 2;
+      const y = rect.y + rect.height / 2;
+      const distance = axis === "x" ? toward.x + toward.width / 2 - x : toward.y + toward.height / 2 - y;
+      const direction = Math.sign(distance) || 1;
+      const blockers = [...obstacles, toward];
+      return [
+        { side: "x", sign: -1, edge: [rect.x, y], stub: [rect.x - gap, y] },
+        { side: "x", sign: 1, edge: [rect.x + rect.width, y], stub: [rect.x + rect.width + gap, y] },
+        { side: "y", sign: -1, edge: [x, rect.y], stub: [x, rect.y - gap] },
+        { side: "y", sign: 1, edge: [x, rect.y + rect.height], stub: [x, rect.y + rect.height + gap] },
+      ].filter(({ edge, stub }) => clearOrthogonalPath([edge, stub], blockers))
+        .map((port) => ({ ...port, penalty: port.side !== axis ? 16 : port.sign !== direction ? 24 : 0 }));
+    };
+    const from = ports(parent, child);
+    const to = ports(child, parent);
+    const channels = (axis) => {
+      const extent = axis === "x" ? "width" : "height";
+      const result = new Set(rectangles.flatMap((rect) => [rect[axis] - gap, rect[axis] + rect[extent] + gap]));
+      for (const { axis: direction, rail } of otherRails) {
+        if (direction === axis) continue;
+        result.add(rail - 6);
+        result.add(rail + 6);
+      }
+      return result;
+    };
+    const channelsX = channels("x");
+    const channelsY = channels("y");
+    for (const start of from) {
+      for (const end of to) {
+        const [x, y] = start.stub;
+        const [targetX, targetY] = end.stub;
+        const tryRoute = (bends) => {
+          const points = [start.stub, ...bends, end.stub];
+          const distance = points.slice(1).reduce((total, [nextX, nextY], index) =>
+            total + Math.abs(nextX - points[index][0]) + Math.abs(nextY - points[index][1]), 0);
+          let cost = distance + 2 * gap + 12 * bends.length + start.penalty + end.penalty;
+          if (cost >= bestCost || !clearOrthogonalPath(points, rectangles)) return;
+          const route = [start.edge, ...points, end.edge];
+          cost += sharedLength(orthogonalSegments(route));
+          if (cost >= bestCost) return;
+          bestCost = cost;
+          best = route;
+        };
+        if (x === targetX || y === targetY) tryRoute([]);
+        tryRoute([[targetX, y]]);
+        tryRoute([[x, targetY]]);
+        for (const rail of channelsX) tryRoute([[rail, y], [rail, targetY]]);
+        for (const rail of channelsY) tryRoute([[x, rail], [targetX, rail]]);
+      }
+    }
+    return best;
+  }
+
+  function sharedBranchRoutes(parent, children, rectangles, axis) {
+    const horizontal = axis === "x";
+    const along = horizontal ? "x" : "y";
+    const across = horizontal ? "y" : "x";
+    const length = horizontal ? "width" : "height";
+    const breadth = horizontal ? "height" : "width";
+    const clearance = 2;
+    const parentCenter = parent[across] + parent[breadth] / 2;
+    const point = (a, b) => horizontal ? `${a},${b}` : `${b},${a}`;
+    const segment = (a, b, c, d) => `M${point(a, b)} L${point(c, d)}`;
+    const overlaps = (a, b, start, size) =>
+      Math.max(a, b) > start - clearance && Math.min(a, b) < start + size + clearance;
+    const clear = (a, b, c, d, endpoint) => !rectangles.some((rect) =>
+      rect !== endpoint && overlaps(a, c, rect[along], rect[length]) &&
+      overlaps(b, d, rect[across], rect[breadth]));
+    const bundles = [];
+    for (const direction of [-1, 1]) {
+      const start = parent[along] + (direction > 0 ? parent[length] : 0);
+      const branches = children.map(({ id, rect }) => ({
+        id, rect,
+        end: rect[along] + (direction < 0 ? rect[length] : 0),
+        center: rect[across] + rect[breadth] / 2,
+      })).filter(({ end }) => direction * (end - start) >= 8)
+        .sort((a, b) => a.center - b.center);
+      if (branches.length < 2 || branches.some(({ center }, index) =>
+        index > 0 && center - branches[index - 1].center < 8)) continue;
+
+      const near = Math.min(...branches.map(({ end }) => direction * (end - start)));
+      const top = Math.min(parentCenter, branches[0].center);
+      const bottom = Math.max(parentCenter, branches.at(-1).center);
+      const rail = [0.5, 0.33, 0.67].map((fraction) => start + direction * near * fraction)
+        .find((candidate) => clear(start, parentCenter, candidate, parentCenter, parent) &&
+          clear(candidate, top, candidate, bottom) && branches.every(({ rect, end, center }) =>
+            clear(candidate, center, end, center, rect)));
+      if (rail === undefined) continue;
+
+      const edges = branches.map(({ id, end, center }) => {
+        const hit = segment(rail, center, end, center);
+        const lead = `M${point(start, parentCenter)}`;
+        const radius = Math.min(8, Math.abs(rail - start) / 2, Math.abs(end - rail) / 2,
+          Math.abs(center - parentCenter) / 2);
+        if (!radius) return { id, d: `${lead} L${point(end, center)}`, hit };
+        const bend = Math.sign(center - parentCenter) * radius;
+        const inset = direction * radius;
+        const d = `${lead} L${point(rail - inset, parentCenter)} ` +
+          `Q${point(rail, parentCenter)} ${point(rail, parentCenter + bend)} ` +
+          `L${point(rail, center - bend)} Q${point(rail, center)} ${point(rail + inset, center)} ` +
+          `L${point(end, center)}`;
+        return { id, d, hit };
+      });
+      const d = [segment(start, parentCenter, rail, parentCenter), segment(rail, top, rail, bottom),
+        ...edges.map(({ hit }) => hit)].join(" ");
+      bundles.push({ d, edges });
+    }
+    return bundles;
+  }
+
   function compactCardRows(cards) {
     const positions = new Map();
     if (!cards.length) return positions;
@@ -212,8 +390,7 @@
     return positions;
   }
 
-  // A two-sided tidy forest: reserve each subtree's full height before placing it.
-  function layoutBranches(nodes, core, compact = false) {
+  function layoutBranches(nodes, core, compact = false, { twoSided = true, sectionColumns = false } = {}) {
     const gapX = compact ? 52 : 88;
     const gapY = compact ? 22 : 36;
     const byId = new Map();
@@ -226,45 +403,107 @@
       else roots.push(item);
       byId.set(node.id, item);
     }
-    function measure(node) {
-      const childrenHeight = node.children.reduce((sum, child) => sum + measure(child), 0) +
-        Math.max(0, node.children.length - 1) * gapY;
-      node.span = Math.max(node.height, childrenHeight);
-      return node.span;
+    function sectionGrid(sections) {
+      const farOffset = Math.max(...sections.filter((_, index) => index % 2 === 0).map(({ width }) => width)) + gapY;
+      const slots = [];
+      let nearBottom = -gapY;
+      let farBottom = -Infinity;
+      for (let index = 0; index < sections.length; index += 2) {
+        const near = sections[index];
+        const far = sections[index + 1];
+        let nearY = nearBottom + gapY;
+        if (far) {
+          // Place the outer card's connector port in the gap after the inner card.
+          const port = Math.max(nearY + near.height + gapY / 2, farBottom + gapY + far.height / 2);
+          nearY = port - gapY / 2 - near.height;
+          const farY = port - far.height / 2;
+          slots.push({ card: far, offset: farOffset, y: farY });
+          farBottom = farY + far.height;
+        }
+        slots.push({ card: near, offset: 0, y: nearY });
+        nearBottom = nearY + near.height;
+      }
+      const top = Math.min(...slots.map(({ y }) => y));
+      return { slots, top, height: Math.max(nearBottom, farBottom) - top };
+    }
+
+    function groupSections(items) {
+      if (!sectionColumns) return items;
+      const sectionsByAnswer = new Map();
+      for (const item of items) {
+        if (!item.sectionOf || item.children.length) continue;
+        if (!sectionsByAnswer.has(item.sectionOf)) sectionsByAnswer.set(item.sectionOf, []);
+        sectionsByAnswer.get(item.sectionOf).push(item);
+      }
+      return items.flatMap((item) => {
+        const sections = sectionsByAnswer.get(item.sectionOf);
+        if (!sections || sections.length < sectionColumnThreshold || item.children.length) return [item];
+        return item === sections[0] ? [sectionGrid(sections)] : [];
+      });
+    }
+
+    function pack(branches) {
+      const cards = [];
+      let top = 0;
+      let bottom = 0;
+      for (const [index, branch] of branches.entries()) {
+        let offset = index ? bottom + gapY - branch.top : 0;
+        // Align the nearby cards first. Deeper cards only add spacing where they share horizontal space.
+        for (const rect of branch.cards) {
+          for (const previous of cards) {
+            if (rect.x < previous.x + previous.width + 8 && rect.x + rect.width + 8 > previous.x) {
+              offset = Math.max(offset, previous.y + previous.height + gapY - rect.y);
+            }
+          }
+        }
+        for (const rect of branch.cards) cards.push({ ...rect, y: rect.y + offset });
+        if (!index) top = branch.top + offset;
+        bottom = branch.bottom + offset;
+      }
+      return { cards, top, bottom };
+    }
+
+    function build(node) {
+      if (node.slots) {
+        const cards = node.slots.map(({ card, offset, y }) =>
+          ({ id: card.id, x: offset, y: y - node.top, width: card.width, height: card.height }));
+        return { cards, top: 0, bottom: node.height };
+      }
+      const { id, width, height } = node;
+      const children = pack(groupSections(node.children).map(build));
+      const center = (children.top + children.bottom) / 2;
+      const cards = [{ id, x: 0, y: -height / 2, width, height }, ...children.cards.map((rect) =>
+        ({ ...rect, x: rect.x + width + gapX, y: rect.y - center }))];
+      return { cards, top: -height / 2, bottom: height / 2 };
+    }
+
+    const branches = groupSections(roots).map(build);
+    const heightsOf = new Map(branches.map((branch) => [branch,
+      Math.max(...branch.cards.map(({ y, height }) => y + height)) - Math.min(...branch.cards.map(({ y }) => y))]));
+    const byHeight = twoSided ? [...branches].sort((a, b) => heightsOf.get(b) - heightsOf.get(a)) : branches;
+    const sideOf = new Map();
+    const heights = [0, 0];
+    for (const root of byHeight) {
+      const side = twoSided && heights[1] < heights[0] ? 1 : 0;
+      sideOf.set(root, side);
+      heights[side] += heightsOf.get(root) + gapY;
     }
     const sides = [[], []];
-    const heights = [0, 0];
-    for (const root of roots) {
-      measure(root);
-      const side = heights[0] <= heights[1] ? 0 : 1;
-      sides[side].push(root);
-      heights[side] += root.span + gapY;
-    }
+    for (const root of branches) sides[sideOf.get(root)].push(root);
     const result = new Map();
-    function place(node, edge, top, direction) {
-      const x = direction > 0 ? edge + gapX : edge - gapX - node.width;
-      const y = top + (node.span - node.height) / 2;
-      result.set(node.id, { x, y, width: node.width, height: node.height });
-      const total = node.children.reduce((sum, child) => sum + child.span, 0) +
-        Math.max(0, node.children.length - 1) * gapY;
-      let childTop = top + (node.span - total) / 2;
-      for (const child of node.children) {
-        place(child, direction > 0 ? x + node.width : x, childTop, direction);
-        childTop += child.span + gapY;
-      }
-    }
     sides.forEach((items, side) => {
-      let top = core.y + core.height / 2 - Math.max(0, heights[side] - gapY) / 2;
-      for (const item of items) {
-        place(item, side === 0 ? core.x + core.width : core.x, top, side === 0 ? 1 : -1);
-        top += item.span + gapY;
+      const { cards, top, bottom } = pack(items);
+      const offsetY = core.y + core.height / 2 - (top + bottom) / 2;
+      for (const { id, x, y, width, height } of cards) {
+        const left = side === 0 ? core.x + core.width + gapX + x : core.x - gapX - x - width;
+        result.set(id, { x: left, y: y + offsetY, width, height });
       }
     });
     return result;
   }
 
-  const geometry = { scenePoint, bounds, contains, intersectsShape, isLasso, placeNote,
-    routeAcrossCards, compactCardRows, layoutBranches };
+  const geometry = { scenePoint, bounds, contains, intersectsShape, isLasso, placeNote, placeNoteGroup,
+    routeAcrossCards, orthogonalSegments, routeAroundCards, sharedBranchRoutes, compactCardRows, layoutBranches, sectionColumnThreshold };
   if (typeof window !== 'undefined') window.BoardGeometry = geometry;
   if (typeof module !== 'undefined') module.exports = geometry;
 })();

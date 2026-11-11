@@ -1,14 +1,161 @@
 (() => {
-  const storageKey = "whiteboard.codex.v1";
+  const originalPrefix = "whiteboard.codex";
+  const preferenceKey = `${originalPrefix}.active-board.v1`;
+  const catalogKey = `${originalPrefix}.boards.v1`;
+  const projectBoard = "project-design";
+  const repoManual = "repo-manual";
+  const repoAtlas = "repo-atlas";
+  const projectWorkbench = "project-workbench";
+  const builtInBoards = new Map([
+    ["original", "原白板"],
+    [projectBoard, "项目定义与交付"],
+    [repoManual, "代码仓库详解手册"],
+    [repoAtlas, "源码架构手册（Codex）"],
+    [projectWorkbench, "项目工作台"],
+  ]);
+  const initialBoards = listBoards();
+  const activeBoard = selectActiveBoard(initialBoards);
+  const activeBoardInfo = initialBoards.find(({ id }) => id === activeBoard);
+  const prefix = boardPrefix(activeBoard);
+  const storageKey = `${prefix}.v1`;
+  const organizationKey = `${prefix}.organization.v1`;
+  const storageKeys = Object.freeze({ memory: storageKey, organization: organizationKey });
+  let knownStorage = null;
+  let storageConflicted = false;
+
+  function storageSnapshot() {
+    return [storageKey, organizationKey].map((key) => window.localStorage.getItem(key));
+  }
+
+  function storageIsCurrent() {
+    try {
+      const current = storageSnapshot();
+      if (!knownStorage) knownStorage = current;
+      if (!storageConflicted) {
+        if (listBoards().some(({ id }) => id === activeBoard) &&
+            current.every((value, index) => value === knownStorage[index])) return true;
+        storageConflicted = true;
+        window.dispatchEvent(new Event("whiteboard-storage-conflict"));
+      }
+    } catch { /* Storage errors are reported by the caller as unsaved changes. */ }
+    return false;
+  }
+
+  function writeStorage(key, value) {
+    if (![storageKey, organizationKey].includes(key) || !storageIsCurrent()) return false;
+    try {
+      window.localStorage.setItem(key, value);
+      knownStorage[[storageKey, organizationKey].indexOf(key)] = value;
+      return true;
+    } catch { return false; }
+  }
+  const templateBackupKey = `${prefix}.template-backup.v1`;
+  const guideBackupKey = `${prefix}.project-guide-backup.v1`;
   const defaultGoal = "边体验、边改进这张白板，弄清圈选、分支记忆和 Codex 改码是怎么实现的。";
   const defaultConstraints = ["保留圈选和就地批注的交互", "项目主线只记录用户确认过的决定"];
-  const sourceFiles = new Set(["index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "server.py", "zcode_backend.py", "zcode_workspace.py", "attachments.py"]);
+  const sourceFiles = new Set(["index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "run_gate.js",
+    "server.py", "zcode_backend.py", "zcode_workspace.py", "attachments.py", "backends.py", "api_backend.py", "board_tools.py"]);
   const branchLabels = {
     E01: "E01 · 圈选与坐标",
     E02: "E02 · 提问与批注定位",
     E03: "E03 · 分支与项目记忆",
-    board: "整板 · 白板实现",
+    board: activeBoard === "original" ? "整板 · 白板实现" : activeBoardInfo && `整板 · ${activeBoardInfo.title}`,
   };
+
+  function boardPrefix(id) {
+    return id === "original" ? originalPrefix : `${originalPrefix}.${id}`;
+  }
+
+  function listBoards() {
+    try {
+      const saved = window.localStorage.getItem(catalogKey);
+      const entries = saved === null ? null : JSON.parse(saved);
+      if (Array.isArray(entries)) {
+        const unique = new Map();
+        for (const entry of entries) {
+          const id = entry?.id;
+          if (typeof id !== "string" || unique.has(id)) continue;
+          const custom = !builtInBoards.has(id);
+          const title = custom ? text(entry.title, 80).trim() : builtInBoards.get(id);
+          if (title && (!custom || /^board-[0-9a-f]{32}$/.test(id))) unique.set(id, { id, title, custom });
+        }
+        return [...unique.values()];
+      }
+    } catch { /* Default boards still open if the catalog cannot be read. */ }
+    return Array.from(builtInBoards, ([id, title]) => ({ id, title, custom: false }));
+  }
+
+  function selectActiveBoard(boards) {
+    const search = window.location?.search;
+    const params = search ? new URLSearchParams(search) : null;
+    const requested = params?.get("board") ?? null;
+    const exists = (boardId) => boards.some(({ id }) => id === boardId);
+    const fallback = exists("original") ? "original" : boards[0]?.id ?? null;
+    if (exists(requested)) {
+      try { window.localStorage.setItem(preferenceKey, requested); } catch { /* The explicit link still works. */ }
+      return requested;
+    }
+    if (requested !== null || params?.has("project-guide") || params?.has("rebuild-project") ||
+        window.location?.hash === "#project-template") return fallback;
+    try {
+      const remembered = window.localStorage.getItem(preferenceKey);
+      return exists(remembered) ? remembered : fallback;
+    } catch {
+      return fallback;
+    }
+  }
+
+  function changeBoards(change) {
+    return window.navigator?.locks
+      ? window.navigator.locks.request(catalogKey, change)
+      : Promise.resolve().then(change);
+  }
+
+  function saveBoardList(boards) {
+    window.localStorage.setItem(catalogKey, JSON.stringify(boards.map(({ id, title }) => ({ id, title }))));
+  }
+
+  function createBoard(title) {
+    return changeBoards(() => {
+      const name = title.trim();
+      if (!name || name.length > 80) throw new Error("请填写白板名称，最多 80 字。");
+      const token = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+        byte.toString(16).padStart(2, "0")).join("");
+      const id = `board-${token}`;
+      saveBoardList([...listBoards(), { id, title: name }]);
+      return id;
+    });
+  }
+
+  function deleteActiveBoard() {
+    return changeBoards(() => {
+      if (!activeBoard || !storageIsCurrent()) throw new Error("白板已在另一页面变更，请刷新后重试。");
+      const storage = window.localStorage;
+      const previousCatalog = storage.getItem(catalogKey);
+      const remaining = listBoards().filter(({ id }) => id !== activeBoard);
+      const keys = [storageKey, organizationKey, templateBackupKey, guideBackupKey];
+      const previousValues = keys.map((key) => storage.getItem(key));
+      saveBoardList(remaining);
+      try {
+        keys.forEach((key) => storage.removeItem(key));
+      } catch (error) {
+        for (const [index, key] of keys.entries()) {
+          if (previousValues[index] !== null) storage.setItem(key, previousValues[index]);
+        }
+        if (previousCatalog === null) storage.removeItem(catalogKey);
+        else storage.setItem(catalogKey, previousCatalog);
+        throw error;
+      }
+      const fallback = remaining[0]?.id ?? null;
+      try {
+        if (storage.getItem(preferenceKey) === activeBoard) {
+          if (fallback) storage.setItem(preferenceKey, fallback);
+          else storage.removeItem(preferenceKey);
+        }
+      } catch { /* Active selection falls back to a registered board. */ }
+      return fallback;
+    });
+  }
 
   function list(value) {
     return Array.isArray(value) ? value : [];
@@ -49,10 +196,10 @@
 
   function projectState(value) {
     return {
-      goal: typeof value?.goal === "string" ? text(value.goal, 800) : defaultGoal,
+      goal: typeof value?.goal === "string" ? text(value.goal, 800) : activeBoardInfo?.custom ? "" : defaultGoal,
       constraints: Array.isArray(value?.constraints)
         ? value.constraints.map((entry) => text(entry, 300).trim()).filter(Boolean).slice(0, 24)
-        : [...defaultConstraints],
+        : activeBoardInfo?.custom ? [] : [...defaultConstraints],
       decisions: list(value?.decisions).flatMap((entry) => {
         const decision = text(entry?.text, 700).trim();
         return decision ? [{ text: decision, sourceIds: ids(entry.sourceIds) }] : [];
@@ -66,6 +213,8 @@
     const box = rectangle(value?.anchor?.box);
     if (!question || !elementIds.length || !box) return null;
     const anchor = { elementIds, box, quote: text(value.anchor.quote, 600) };
+    const wholeCardIds = ids(value.anchor.wholeCardIds).filter((id) => id !== "board" && elementIds.includes(id));
+    if (wholeCardIds.length) anchor.wholeCardIds = wholeCardIds;
     if (Array.isArray(value.anchor.sourceFiles)) {
       anchor.sourceFiles = [...new Set(value.anchor.sourceFiles.filter((file) => sourceFiles.has(file)))];
     }
@@ -91,7 +240,10 @@
     const attachments = cleanAttachments(value.attachments);
     if (attachments.length) payload.attachments = attachments;
     if (value.mode === "ask" || value.mode === "edit") payload.mode = value.mode;
-    if (value.scope === "extend") payload.scope = value.scope;
+    if (["extend", "explain", "independent"].includes(value.scope)) payload.scope = value.scope;
+    if (value.scope === "explain" && typeof value.sourceAnswer?.answer === "string") {
+      payload.sourceAnswer = { question: text(value.sourceAnswer.question, 1000), answer: text(value.sourceAnswer.answer, 16000) };
+    }
     const revision = value.revisionContext;
     if (ids([revision?.elementId]).length) {
       payload.revisionContext = { elementId: revision.elementId, quote: text(revision.quote, 600) };
@@ -107,6 +259,11 @@
       const rect = rectangle(entry.rect);
       const payload = notePayload(entry.payload);
       if (!rect || !payload || typeof entry.answer !== "string") continue;
+      const delivery = ["pending", "failed", "stopped", "interrupted"].includes(entry.delivery) ? entry.delivery : null;
+      const retryPayload = delivery ? notePayload(entry.retryPayload) : null;
+      const sectionOf = noteId(entry.sectionOf);
+      const outline = entry.outline === true;
+      const originalAnswer = outline ? text(entry.originalAnswer, 16000) : "";
       notes.set(id, {
         id,
         kind: entry.kind === "branch" ? "branch" : "note",
@@ -117,6 +274,11 @@
         sourceCardIds: ids(entry.sourceCardIds),
         answer: text(entry.answer, 16000),
         anchors: list(entry.anchors).map(rectangle).filter(Boolean).slice(0, 24),
+        ...(delivery ? { delivery, deliveryMessage: text(entry.deliveryMessage, 1000) } : {}),
+        ...(retryPayload ? { retryPayload } : {}),
+        ...(sectionOf && sectionOf !== id && payload.anchor.elementIds.includes(sectionOf) ? { sectionOf } : {}),
+        ...(outline ? { outline, outlineCollapsed: entry.outlineCollapsed === true } : {}),
+        ...(originalAnswer ? { originalAnswer } : {}),
       });
     }
     const pinnedIds = [...new Set(list(value?.pinnedIds).filter((id) =>
@@ -129,6 +291,7 @@
 
   function load() {
     try {
+      if (!knownStorage) knownStorage = storageSnapshot();
       return state(JSON.parse(window.localStorage.getItem(storageKey)));
     } catch {
       return state(null);
@@ -136,12 +299,111 @@
   }
 
   function save(value) {
+    return writeStorage(storageKey, JSON.stringify(state(value)));
+  }
+
+  function exchangeBoard(next, backupKey, formatBackup = (previous) => previous) {
+    if (!storageIsCurrent()) throw new Error("白板已在另一页面更新，请保留草稿后刷新。");
+    const storage = window.localStorage;
+    const keys = [storageKey, organizationKey];
+    const previous = keys.map((key) => storage.getItem(key));
+    const previousBackup = storage.getItem(backupKey);
+    const write = (values) => keys.forEach((key, index) => {
+      if (values[index] === null) storage.removeItem(key);
+      else storage.setItem(key, values[index]);
+    });
+    storage.setItem(backupKey, JSON.stringify(formatBackup(previous)));
     try {
-      window.localStorage.setItem(storageKey, JSON.stringify(state(value)));
-      return true;
-    } catch {
-      return false;
+      write(next);
+      knownStorage = storageSnapshot();
+    } catch (error) {
+      write(previous);
+      if (previousBackup === null) storage.removeItem(backupKey);
+      else storage.setItem(backupKey, previousBackup);
+      throw error;
     }
+  }
+
+  function boardBackup(backupKey) {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem(backupKey));
+      const values = Array.isArray(saved) ? saved : saved?.values;
+      return Array.isArray(values) && values.length === 2 && values.every((value) =>
+        value === null || typeof value === "string") ? { values, guideId: saved.guideId || "" } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function boardContents(value, sampleIds, appliedGuideId, initialProject) {
+    const current = window.BoardOrganization.clean(value);
+    const roots = current?.items.filter((item) => item.parentId === null);
+    if (!current || roots.length !== 1 || current.items.length !== value.items.length ||
+        current.items.length > 64 || current.items.some((item, index) => item.parentId !== value.items[index].parentId ||
+          !/^E\d+$/.test(item.id) || sampleIds.includes(item.id))) {
+      return null;
+    }
+    const project = initialProject ? projectState(initialProject) : load().project;
+    if (project.goal === defaultGoal) project.goal = "把圈问白板做成可按粒度展开的项目管理与设计模板。";
+    project.decisions.forEach((decision) => { decision.sourceIds = []; });
+    const memory = state({ project, deletedIds: sampleIds, pinnedIds: [roots[0].id] });
+    return [JSON.stringify(memory), JSON.stringify({ current, appliedGuideId, undoAvailable: false })];
+  }
+
+  function installBoard(value, sampleIds, backupKey, appliedGuideId = "") {
+    const backup = boardBackup(backupKey);
+    if (backup && (!appliedGuideId || backup.guideId === appliedGuideId)) return false;
+    const contents = boardContents(value, sampleIds, appliedGuideId);
+    if (!contents) return false;
+    const active = appliedGuideId && window.BoardOrganization.load();
+    const updatingGuide = backup && active?.current?.projectGuide &&
+      (!backup.guideId || active.appliedGuideId === backup.guideId);
+    exchangeBoard(contents, backupKey,
+      appliedGuideId ? (previous) => ({ guideId: appliedGuideId, values: updatingGuide ? backup.values : previous }) : undefined);
+    return true;
+  }
+
+  function legacyProjectContents(guideId, rootId) {
+    const storage = window.localStorage;
+    const memory = storage.getItem(`${originalPrefix}.v1`);
+    const organization = storage.getItem(`${originalPrefix}.organization.v1`);
+    if (!memory || !organization || !guideId || !rootId) return null;
+    try {
+      const plan = JSON.parse(organization);
+      if (plan?.appliedGuideId !== guideId || window.BoardOrganization.clean(plan.current)?.projectGuide?.rootId !== rootId) return null;
+      const saved = JSON.parse(memory);
+      return Array.isArray(saved?.notes) && Array.isArray(saved?.deletedIds) ? [memory, organization] : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function initializeProjectBoard(value, sampleIds, guideId, initialProject) {
+    if (activeBoard === "original") return false;
+    const storage = window.localStorage;
+    const keys = [storageKey, organizationKey];
+    if (keys.some((key) => storage.getItem(key) !== null)) return false;
+    const fresh = boardContents(value, sampleIds, guideId, initialProject);
+    if (!fresh) return false;
+    const contents = (activeBoard === projectBoard && legacyProjectContents(guideId, value.projectGuide?.rootId)) || fresh;
+    if (keys.some((key) => storage.getItem(key) !== null)) return false;
+    try {
+      keys.forEach((key, index) => storage.setItem(key, contents[index]));
+      knownStorage = storageSnapshot();
+      return true;
+    } catch (error) {
+      keys.forEach((key, index) => {
+        if (storage.getItem(key) === contents[index]) storage.removeItem(key);
+      });
+      throw error;
+    }
+  }
+
+  function restoreBoard(backupKey) {
+    const backup = boardBackup(backupKey);
+    if (!backup) return false;
+    exchangeBoard(backup.values, backupKey, backup.guideId ? (previous) => ({ guideId: backup.guideId, values: previous }) : undefined);
+    return true;
   }
 
   function isRootId(id) {
@@ -153,20 +415,22 @@
       .find(isRootId) || "board";
   }
 
-  function branchFor(anchorIds, notes) {
+  function branchFor(anchorIds, notes, resolveMembership) {
     const history = list(notes).filter((note) => typeof note?.id === "string");
     const byId = new Map(history.map((note) => [note.id, note]));
-    const selectedIds = list(anchorIds);
-    const branchAnchor = selectedIds.map((id) => byId.get(id)).find((note) => noteId(note?.branchId));
-    const branchId = noteId(branchAnchor?.branchId);
-    const root = branchId ? rootFor(byId.get(branchId) || branchAnchor) : selectedIds.map((id) => {
+    const membership = resolveMembership || ((id) => {
       const note = byId.get(id);
-      return note ? rootFor(note) : isRootId(id) ? id : null;
-    }).find(Boolean) || "board";
+      const branchId = noteId(note?.branchId);
+      const root = note ? rootFor(byId.get(branchId) || note) : isRootId(id) ? id : "board";
+      return { root, branchId };
+    });
+    const anchors = list(anchorIds).map(membership);
+    const { root, branchId } = anchors.find((anchor) => anchor.branchId) ||
+      anchors.find((anchor) => anchor.root !== "board") || { root: "board" };
     const matches = history.filter((note) => {
-      if (typeof note.answer !== "string" || !note.answer.trim()) return false;
-      const noteBranch = noteId(note.branchId);
-      return branchId ? noteBranch === branchId || note.id === branchId : !noteBranch && rootFor(note) === root;
+      if (note.sectionOf || typeof note.answer !== "string" || !note.answer.trim() || (note.delivery && !note.retryPayload)) return false;
+      const group = membership(note.id);
+      return branchId ? group.branchId === branchId || note.id === branchId : !group.branchId && group.root === root;
     });
     const recent = matches.slice(-4).map((note) => ({
       question: text(note.payload?.question, 250),
@@ -196,8 +460,21 @@
     const included = new Set(nodes.map((node) => node.id));
     return nodes.map((node) => ({ ...node,
       parentIds: (node.parentIds || []).filter((id) => id !== node.id && included.has(id)),
+      ...(Object.hasOwn(node, "layoutParentId") ? {
+        layoutParentId: included.has(node.layoutParentId) ? node.layoutParentId : null,
+      } : {}),
     }));
   }
 
-  window.BoardMemory = { load, save, branchFor, deletionPlan, repairNodes, cleanAttachments };
+  window.BoardMemory = { load, save, branchFor, deletionPlan, repairNodes, cleanAttachments,
+    activeBoard, activeBoardInfo, catalogKey, listBoards, createBoard, deleteActiveBoard,
+    storageKeys, initializeProjectBoard, storageIsCurrent, writeStorage,
+    templateBackup: () => boardBackup(templateBackupKey),
+    installTemplate: (value, sampleIds) => installBoard(value, sampleIds, templateBackupKey),
+    restoreTemplate: () => restoreBoard(templateBackupKey),
+    projectGuideBackup: () => boardBackup(guideBackupKey),
+    projectGuideApplied: (id) => boardBackup(guideBackupKey)?.guideId === id,
+    installProjectGuide: (value, sampleIds, guideId) => installBoard(value, sampleIds, guideBackupKey, guideId),
+    restoreProjectGuide: () => restoreBoard(guideBackupKey),
+  };
 })();

@@ -1,0 +1,206 @@
+{
+  "schemaVersion": 2,
+  "status": "DESIGN_MAPPED_AND_OFFLINE_RUN_2026-11-10",
+  "fixture": {
+    "id": "whiteboard-contract-v1",
+    "file": "acceptance/fixtures.py",
+    "root": "E01",
+    "child": "A01",
+    "reserved": ["E04", "E05"],
+    "credentialPolicy": "TEST-ONLY-NOT-A-REAL-KEY; no real credential or provider is used"
+  },
+  "offlineCommand": "python -B docs/acceptance/run_offline_acceptance.py",
+  "evidence": {
+    "machine": "acceptance/offline-report.json",
+    "human": "acceptance/offline-report.md",
+    "meaning": "SIMULATED_OFFLINE evidence never establishes a real backend, login, model, browser, or billable call."
+  },
+  "cases": [
+    {
+      "id": "F01", "area": "factory", "level": "L1", "status": "PARTIAL",
+      "precondition": "Three registered adapters", "action": "Construct normalized request", "expected": "One explicit request/event contract",
+      "testRef": "acceptance/test_offline_acceptance.py::FactoryAcceptanceTests.test_factory_request_contract_is_explicit; FactoryAcceptanceTests.test_three_adapters_expose_one_cancel_contract; HttpBoundaryAcceptanceTests.test_same_origin_cancel_routes_active_adapter_token_to_fake_process_only",
+      "coverage": "SIMULATED_L1_L2_CONTRACT", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json F01 request propagation and three-adapter cancellation-token records = PASS", "notImplemented": "No real provider cancellation is asserted. API marks/discards a late result at request boundaries; CLI termination is exercised only with a fake process."
+    },
+    {
+      "id": "F02", "area": "factory", "level": "L1", "status": "PARTIAL",
+      "precondition": "Unknown backend ID", "action": "Select other/null/list/object", "expected": "Reject without model execution or fallback",
+      "testRef": "acceptance/test_offline_acceptance.py::FactoryAcceptanceTests.test_factory_rejects_unknown_without_adapter",
+      "coverage": "SIMULATED_L1_FULL", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record F02 = PASS", "notImplemented": "No real transport was invoked; this only proves factory selection rejection."
+    },
+    {
+      "id": "F03", "area": "capability", "level": "L1", "status": "PARTIAL",
+      "precondition": "Fake installed Codex, absent ZCode, unconfigured API", "action": "Read factory status", "expected": "installed/configured/verified remain distinct",
+      "testRef": "acceptance/test_offline_acceptance.py::FactoryAcceptanceTests.test_status_distinguishes_installation_configuration_and_verification",
+      "coverage": "SIMULATED_L1_FULL", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record F03 = PASS", "notImplemented": "No login or upstream verification occurs in status."
+    },
+    {
+      "id": "F04", "area": "factory", "level": "L1", "status": "PARTIAL",
+      "precondition": "API legacy edit request", "action": "Validate before dispatch", "expected": "Reject before network or file mutation",
+      "testRef": "acceptance/test_offline_acceptance.py::FactoryAcceptanceTests.test_api_legacy_source_edit_is_rejected_before_dispatch",
+      "coverage": "SIMULATED_L1_LEGACY_COMPATIBILITY", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record F04 = PASS", "notImplemented": "Legacy mode=edit remains accepted and is normalized to intent=source_edit at the controller."
+    },
+    {
+      "id": "T01", "area": "read", "level": "L1", "status": "PARTIAL",
+      "precondition": "Pinned E01 and A01 fixture", "action": "Read board and E01, mutate returned objects", "expected": "Scoped copy-isolated snapshot and no filesystem access",
+      "testRef": "acceptance/test_offline_acceptance.py::BoardToolAcceptanceTests.test_read_results_are_copy_isolated",
+      "coverage": "SIMULATED_L1_FULL", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record T01 = PASS", "notImplemented": "Does not prove browser storage isolation."
+    },
+    {
+      "id": "T02", "area": "write", "level": "L1", "status": "PARTIAL",
+      "precondition": "Reserved E04", "action": "Create E04, update it, reparent A01", "expected": "Valid draft only; browser unchanged until commit",
+      "testRef": "acceptance/test_offline_acceptance.py::BoardToolAcceptanceTests.test_create_update_and_reparent_are_staged",
+      "coverage": "SIMULATED_L1_DRAFT", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record T02 = PASS", "notImplemented": "Browser transaction commit/undo is L3, not proven here."
+    },
+    {
+      "id": "T03", "area": "write", "level": "L1", "status": "PARTIAL",
+      "precondition": "Pinned E01", "action": "Archive E01", "expected": "Reject and preserve exact draft",
+      "testRef": "acceptance/test_offline_acceptance.py::BoardToolAcceptanceTests.test_invalid_mutations_are_atomic; ApiLoopAcceptanceTests.test_tool_call_ids_pair_results_and_invalid_batches_execute_nothing; ApiLoopAcceptanceTests.test_conflicting_tool_batch_rolls_back_but_later_round_can_correct",
+      "coverage": "SIMULATED_L1_FULL", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record T03/T04/T05/T09 = PASS", "notImplemented": "No browser render assertion."
+    },
+    {
+      "id": "T04", "area": "write", "level": "L1", "status": "PARTIAL",
+      "precondition": "A01 child of E01", "action": "Reparent E01 to A01", "expected": "Reject cycle and preserve exact draft",
+      "testRef": "acceptance/test_offline_acceptance.py::BoardToolAcceptanceTests.test_invalid_mutations_are_atomic",
+      "coverage": "SIMULATED_L1_FULL", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record T03/T04/T05/T09 = PASS", "notImplemented": "No multi-tab graph test."
+    },
+    {
+      "id": "T05", "area": "write", "level": "L1", "status": "PARTIAL",
+      "precondition": "E99 absent and unreserved", "action": "Update and create E99", "expected": "Reject unknown/unreserved ID",
+      "testRef": "acceptance/test_offline_acceptance.py::BoardToolAcceptanceTests.test_invalid_mutations_are_atomic",
+      "coverage": "SIMULATED_L1_FULL", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record T03/T04/T05/T09 = PASS", "notImplemented": "No real model call."
+    },
+    {
+      "id": "T06", "area": "write", "level": "L1", "status": "PARTIAL",
+      "precondition": "A01 exists", "action": "Archive then restore A01", "expected": "No permanent deletion; item becomes visible/recoverable",
+      "testRef": "acceptance/test_offline_acceptance.py::BoardToolAcceptanceTests.test_archive_restore_and_layout_density",
+      "coverage": "SIMULATED_L1_DRAFT", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record T06/T07 = PASS", "notImplemented": "UI folded-state and undo evidence remains L3."
+    },
+    {
+      "id": "T07", "area": "layout", "level": "L1", "status": "PARTIAL",
+      "precondition": "Supported layout and density", "action": "Set vertical/compact then invalid flow", "expected": "First staged; invalid leaves prior state intact",
+      "testRef": "acceptance/test_offline_acceptance.py::BoardToolAcceptanceTests.test_archive_restore_and_layout_density",
+      "coverage": "SIMULATED_L1_FULL", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record T06/T07 = PASS", "notImplemented": "No visual layout proof."
+    },
+    {
+      "id": "T08", "area": "permissions", "level": "L1", "status": "PARTIAL",
+      "precondition": "Read-only ask", "action": "Call every board write tool and execute_command", "expected": "All unavailable; no state change",
+      "testRef": "acceptance/test_offline_acceptance.py::BoardToolAcceptanceTests.test_read_only_refuses_every_write_tool",
+      "coverage": "SIMULATED_L1_FULL", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record T08 = PASS", "notImplemented": "Does not prove provider tool-choice compliance."
+    },
+    {
+      "id": "T09", "area": "schema", "level": "L1", "status": "PARTIAL",
+      "precondition": "Valid fixture", "action": "Use overlong/type-invalid/extra-field calls", "expected": "Reject without partial mutation",
+      "testRef": "acceptance/test_offline_acceptance.py::BoardToolAcceptanceTests.test_invalid_mutations_are_atomic",
+      "coverage": "SIMULATED_L1_FULL", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record T03/T04/T05/T09 = PASS", "notImplemented": "Schema is exercised through dispatcher, not a browser."
+    },
+    {
+      "id": "L01", "area": "loop", "level": "L1", "status": "PARTIAL",
+      "precondition": "Fake native function-calling API", "action": "Read/update/final-answer loop", "expected": "Tool response returns to model and valid draft stays staged",
+      "testRef": "acceptance/test_offline_acceptance.py::ApiLoopAcceptanceTests.test_native_tool_roundtrip_uses_shared_fixture; ApiLoopAcceptanceTests.test_tool_call_ids_pair_results_and_invalid_batches_execute_nothing",
+      "coverage": "SIMULATED_L1_API_ONLY", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record L01 = PASS", "notImplemented": "Codex/ZCode do not use this native loop."
+    },
+    {
+      "id": "L02", "area": "loop", "level": "L1", "status": "PARTIAL",
+      "precondition": "Fake API returns invalid tool then correction", "action": "Unauthorized call followed by update", "expected": "Structured error permits valid retry",
+      "testRef": "acceptance/test_offline_acceptance.py::ApiLoopAcceptanceTests.test_invalid_tool_then_valid_correction_is_safe; ApiLoopAcceptanceTests.test_conflicting_tool_batch_rolls_back_but_later_round_can_correct",
+      "coverage": "SIMULATED_L1_API_ONLY", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record L02 = PASS", "notImplemented": "No real model retry behavior."
+    },
+    {
+      "id": "L03", "area": "budget", "level": "L1", "status": "PARTIAL",
+      "precondition": "Fake tool changes draft then budget fails", "action": "Abort after staged mutation", "expected": "No map/candidate reaches client",
+      "testRef": "acceptance/test_offline_acceptance.py::ApiLoopAcceptanceTests.test_budget_or_cancel_after_draft_change_never_emits_map; ApiLoopAcceptanceTests.test_normalized_smaller_api_budget_is_the_execution_budget; ApiLoopAcceptanceTests.test_budget_rejects_invalid_values_and_clamps_browser_upward_requests",
+      "coverage": "SIMULATED_L1_SERVICE_TRANSACTION", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record L03/L05 = PASS", "notImplemented": "No UI commit/undo test."
+    },
+    {
+      "id": "L04", "area": "network", "level": "L1", "status": "PARTIAL",
+      "precondition": "Fake timeout/malformed transport", "action": "Raise transport failures", "expected": "Safe error without test key; next lock test remains runnable",
+      "testRef": "acceptance/test_offline_acceptance.py::ApiLoopAcceptanceTests.test_transport_errors_redact_test_material; HttpBoundaryAcceptanceTests.test_turn_lock_returns_409_then_releases",
+      "coverage": "SIMULATED_L1_L2", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance records L04 and H02 = PASS", "notImplemented": "401/429 wording is old-test coverage; no real API."
+    },
+    {
+      "id": "L05", "area": "cancel", "level": "L1", "status": "PARTIAL",
+      "precondition": "Fake API mutates draft then signals cancel", "action": "Abort before terminal commit", "expected": "Discard candidate; no immediate upstream cancellation claim",
+      "testRef": "acceptance/test_offline_acceptance.py::ApiLoopAcceptanceTests.test_budget_or_cancel_after_draft_change_never_emits_map; CliAndWorkspaceAcceptanceTests.test_cli_eof_then_cancel_never_applies_staged_edits_or_success_events; HttpBoundaryAcceptanceTests.test_same_origin_cancel_routes_active_adapter_token_to_fake_process_only",
+      "coverage": "SIMULATED_L1_SERVICE_TRANSACTION", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json L05 staged-result and shared cancellation-token records = PASS", "notImplemented": "No actual HTTP cancellation can be asserted; in-flight API HTTP remains bounded by timeout and late results are discarded."
+    },
+    {
+      "id": "H01", "area": "http", "level": "L2", "status": "PARTIAL",
+      "precondition": "Temporary 127.0.0.1 random-port Controller", "action": "Bad Host/Origin/type/oversized Content-Length", "expected": "Reject before fake adapter",
+      "testRef": "acceptance/test_offline_acceptance.py::HttpBoundaryAcceptanceTests.test_host_origin_type_and_body_limits_reject_before_adapter",
+      "coverage": "SIMULATED_L2_LOOPBACK", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json safety.loopbackRandomPorts and H01 = PASS", "notImplemented": "No listener on 8791 and no production browser request."
+    },
+    {
+      "id": "H02", "area": "http", "level": "L2", "status": "PARTIAL",
+      "precondition": "Fake adapter holds TURN_LOCK on temporary Controller", "action": "Send second then released third request", "expected": "409 then success after release",
+      "testRef": "acceptance/test_offline_acceptance.py::HttpBoundaryAcceptanceTests.test_turn_lock_returns_409_then_releases",
+      "coverage": "SIMULATED_L2_LOOPBACK", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record H02 = PASS", "notImplemented": "No real CLI/API operation is held."
+    },
+    {
+      "id": "H03", "area": "events", "level": "L2", "status": "PARTIAL",
+      "precondition": "All three fake adapters and malformed double-terminal adapter", "action": "Emit NDJSON happy path and done then error", "expected": "Canonical events and exactly one terminal outcome",
+      "testRef": "acceptance/test_offline_acceptance.py::HttpBoundaryAcceptanceTests.test_fake_backends_have_same_ndjson_happy_path; HttpBoundaryAcceptanceTests.test_controller_rejects_second_terminal_event",
+      "coverage": "SIMULATED_L2_PARTIAL", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json H03 fake happy paths and done→map/error rejection = PASS", "notImplemented": "No real provider event stream was exercised."
+    },
+    {
+      "id": "U01", "area": "ui", "level": "L3", "status": "BLOCKED",
+      "precondition": "Clean isolated browser", "action": "Switch all services repeatedly", "expected": "Capability fields correct and CLI behavior preserved",
+      "testRef": null, "coverage": "UNIMPLEMENTED_L3", "runCommand": "BLOCKED: no approved isolated browser runner is present", "evidence": "offline-report.json browser.status = BLOCKED", "notImplemented": "No browser capability-switching evidence."
+    },
+    {
+      "id": "U02", "area": "credentials", "level": "L3", "status": "BLOCKED",
+      "precondition": "TEST-ONLY entered in isolated browser", "action": "Send, inspect storage/debug, refresh", "expected": "No key persists/displays and refresh clears it",
+      "testRef": "acceptance/test_offline_acceptance.py::BrowserGateStaticEvidenceTests.test_static_key_nonpersistence_evidence",
+      "coverage": "L0_STATIC_ONLY", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py; browser command BLOCKED", "evidence": "offline-report.json U02 static test = PASS; browser.status = BLOCKED", "notImplemented": "Static text cannot prove localStorage, DOM, network/error redaction or refresh behavior."
+    },
+    {
+      "id": "U03", "area": "transaction", "level": "L3", "status": "BLOCKED",
+      "precondition": "Valid staged tool response in isolated browser", "action": "Commit then undo", "expected": "One transaction restores content, relations and layout",
+      "testRef": null, "coverage": "UNIMPLEMENTED_L3", "runCommand": "BLOCKED: no approved isolated browser runner is present", "evidence": "offline-report.json browser.status = BLOCKED", "notImplemented": "L1 staged draft does not prove UI commit/undo."
+    },
+    {
+      "id": "U04", "area": "conflict", "level": "L3", "status": "PARTIAL",
+      "precondition": "Delayed model response and local/other-tab changes", "action": "Attempt stale apply for each backend", "expected": "Reject stale candidate and preserve newer edits",
+      "testRef": "acceptance/test_offline_acceptance.py::BrowserGateStaticEvidenceTests.test_conflict_protection_is_not_api_only",
+      "coverage": "L0_STATIC_PLUS_IMPLEMENTATION", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json U04 static gate = PASS; shared exact organization/storage snapshot comparison now executes before every candidate commit", "notImplemented": "No isolated browser, delayed CLI, or cross-tab run was authorized."
+    },
+    {
+      "id": "U05", "area": "interrupt", "level": "L3", "status": "BLOCKED",
+      "precondition": "Delayed tool response", "action": "Cancel/close/back/reload/repeated send", "expected": "No duplicate commit and no stuck busy UI",
+      "testRef": "acceptance/test_offline_acceptance.py::BrowserGateStaticEvidenceTests.test_static_stop_control_aborts_fetch_and_uses_same_origin_cancel", "coverage": "L0_STATIC_ONLY", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py; browser command BLOCKED", "evidence": "offline-report.json U05 static control evidence = PASS; browser.status = BLOCKED", "notImplemented": "Static code cannot prove browser cancellation, delayed response suppression or repeated-click timing."
+    },
+    {
+      "id": "C01", "area": "cli", "level": "L1", "status": "PARTIAL",
+      "precondition": "Fake Popen raises missing executable", "action": "Start Codex request", "expected": "Specific safe error and no fallback backend",
+      "testRef": "acceptance/test_offline_acceptance.py::CliAndWorkspaceAcceptanceTests.test_missing_cli_is_specific_and_never_falls_back",
+      "coverage": "SIMULATED_L1_FAKE_PROCESS", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record C01 = PASS", "notImplemented": "No actual CLI or login failure is invoked."
+    },
+    {
+      "id": "C02", "area": "cli", "level": "L1", "status": "PARTIAL",
+      "precondition": "Fake running Codex process and fixture attachment", "action": "Simulate disconnect", "expected": "Terminate local child and leave attachment unchanged",
+      "testRef": "acceptance/test_offline_acceptance.py::CliAndWorkspaceAcceptanceTests.test_cancelled_fake_cli_with_attachment_is_terminated; CliAndWorkspaceAcceptanceTests.test_cli_eof_then_cancel_never_applies_staged_edits_or_success_events; HttpBoundaryAcceptanceTests.test_same_origin_cancel_routes_active_adapter_token_to_fake_process_only",
+      "coverage": "SIMULATED_L1_FAKE_PROCESS", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json C02 fake-process termination and shared cancellation-token records = PASS", "notImplemented": "No actual subprocess group, ZCode protocol cancel, or provider cancellation is exercised."
+    },
+    {
+      "id": "C03", "area": "regression", "level": "L1", "status": "PARTIAL",
+      "precondition": "Workspace fixture and existing regression suite", "action": "Reject invalid write ID/read-only write; rerun existing tests", "expected": "Workspace constraints and legacy paths remain protected",
+      "testRef": "acceptance/test_offline_acceptance.py::CliAndWorkspaceAcceptanceTests.test_workspace_tools_reject_invalid_and_read_only_writes; ../test_backends.py",
+      "coverage": "SIMULATED_L1_PLUS_OLD_REGRESSION", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json C03 = PASS; existingRegression returnCode = 0 (26 tests)", "notImplemented": "No real CLI attachments/organize/source_edit interaction."
+    },
+    {
+      "id": "R01", "area": "real", "level": "L4", "status": "NOT_RUN",
+      "precondition": "User-selected tool-capable API and explicit authorization", "action": "Common read/create/reparent/archive/layout scenario", "expected": "Actual tool evidence and board effects",
+      "testRef": null, "coverage": "UNRUN_L4", "runCommand": "NOT_RUN: separate user-approved API model, input and billable-call authorization required", "evidence": "offline-report.json realBackends.R01 = NOT_RUN", "notImplemented": "No provider call, credential, model or network was used."
+    },
+    {
+      "id": "R02", "area": "real", "level": "L4", "status": "NOT_RUN",
+      "precondition": "User-approved Codex model and CLI session", "action": "Common scenario", "expected": "Actual CLI trace/results with capability caveats",
+      "testRef": null, "coverage": "UNRUN_L4", "runCommand": "NOT_RUN: separate user-approved Codex integration authorization required", "evidence": "offline-report.json realBackends.R02 = NOT_RUN", "notImplemented": "No Codex CLI process or login state was read."
+    },
+    {
+      "id": "R03", "area": "real", "level": "L4", "status": "NOT_RUN",
+      "precondition": "User-approved ZCode model and CLI session", "action": "Common scenario", "expected": "Actual stdio trace/results with capability caveats",
+      "testRef": null, "coverage": "UNRUN_L4", "runCommand": "NOT_RUN: separate user-approved ZCode integration authorization required", "evidence": "offline-report.json realBackends.R03 = NOT_RUN", "notImplemented": "No ZCode process, provider or login state was read."
+    }
+  ]
+}

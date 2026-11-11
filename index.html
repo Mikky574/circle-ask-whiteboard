@@ -9,6 +9,7 @@
   <script defer src="geometry.js"></script>
   <script defer src="memory.js"></script>
   <script defer src="organization.js"></script>
+  <script defer src="run_gate.js"></script>
   <script defer src="app.js"></script>
 </head>
 <body>
@@ -23,27 +24,78 @@
           <h1>圈问白板</h1>
         </div>
       </div>
+      <div class="board-picker" role="group" aria-label="白板管理">
+        <label for="board-switcher">切换白板</label>
+        <select id="board-switcher">
+          <option value="original">原白板</option>
+          <option value="project-design">项目定义与交付</option>
+          <option value="repo-manual">代码仓库详解手册</option>
+          <option value="repo-atlas">源码架构手册（Codex）</option>
+          <option value="project-workbench">项目工作台</option>
+        </select>
+        <button id="board-manage" class="tool-button" type="button" aria-expanded="false" aria-controls="board-actions" title="管理白板">管理</button>
+        <div id="board-actions" role="group" aria-label="白板操作" hidden>
+          <button id="board-create" class="tool-button" type="button" aria-haspopup="dialog">新建白板</button>
+          <button id="board-delete" class="tool-button" type="button" aria-haspopup="dialog">删除当前白板</button>
+        </div>
+      </div>
       <div class="connection-area">
         <div class="demo-label" role="status"><span class="connection-dot" aria-hidden="true"></span><span id="connection-label">正在连接本地服务…</span></div>
         <details class="connection-settings">
           <summary>连接设置</summary>
           <div class="connection-fields">
             <label for="backend-select">服务</label>
-            <select id="backend-select"><option value="codex">Codex</option><option value="zcode">ZCode</option></select>
+            <select id="backend-select"><option value="codex">Codex</option><option value="zcode">ZCode</option><option value="api">API 直连</option></select>
             <label for="model-input">模型</label>
             <input id="model-input" type="text" list="model-options" maxlength="120" autocomplete="off" placeholder="使用服务默认模型">
             <datalist id="model-options"></datalist>
+            <div id="api-fields" hidden>
+              <label for="api-url">API 基础地址</label>
+              <input id="api-url" type="url" value="https://api.openai.com/v1" autocomplete="off" spellcheck="false">
+              <label for="api-key">API Key（仅当前页面，刷新清除）</label>
+              <input id="api-key" type="password" autocomplete="off" spellcheck="false">
+              <p>支持 OpenAI 兼容 Chat Completions。发送后，所选白板内容和附件会交给此接口处理。支持问答、图片/文本附件和白板工具调用（读卡片、新建、更新、关联、归档、布局），整批校验后应用，可撤销；改代码请切换 Codex/ZCode。</p>
+            </div>
           </div>
         </details>
       </div>
     </header>
 
-    <main class="workspace">
+    <p id="board-lifecycle-status" role="status"></p>
+    <dialog id="board-create-dialog" class="board-dialog" aria-labelledby="board-create-heading">
+      <form id="board-create-form">
+        <h2 id="board-create-heading">新建白板</h2>
+        <label for="board-name">白板名称</label>
+        <input id="board-name" type="text" maxlength="80" required autofocus>
+        <p id="board-create-error" class="board-dialog-error" role="alert" hidden></p>
+        <div class="board-dialog-actions">
+          <button id="board-create-cancel" class="tool-button" type="button">取消</button>
+          <button id="board-create-submit" class="submit-button" type="submit">新建并打开</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="board-delete-dialog" class="board-dialog" aria-labelledby="board-delete-heading" aria-describedby="board-delete-description">
+      <h2 id="board-delete-heading">删除当前白板</h2>
+      <p id="board-delete-description">将删除「<strong id="board-delete-name"></strong>」及其卡片、批注和项目记忆。</p>
+      <p id="board-delete-error" class="board-dialog-error" role="alert" hidden></p>
+      <div class="board-dialog-actions">
+        <button id="board-delete-cancel" class="tool-button" type="button" autofocus>取消</button>
+        <button id="board-delete-confirm" class="tool-button board-delete-confirm" type="button">删除白板</button>
+      </div>
+    </dialog>
+
+    <p id="storage-conflict" role="alert" hidden>另一页面已更新这张白板，本页已暂停保存。本页未保存的目标、约束、决定和问题草稿仍留在当前页；刷新会丢弃这些未保存内容，请先复制，再点「刷新白板」。</p>
+    <p id="autosave-warning" role="alert" hidden></p>
+    <section id="board-empty-state" aria-labelledby="board-empty-heading" hidden>
+      <h2 id="board-empty-heading">还没有白板</h2>
+      <button id="board-empty-create" class="submit-button" type="button" aria-haspopup="dialog">新建白板</button>
+    </section>
+    <main id="board-workspace" class="workspace">
       <section class="canvas-panel" aria-label="白板实现说明">
         <header class="canvas-bar">
           <div class="canvas-name">
             <p class="overline">项目画布 <span>/</span> 01</p>
-            <h2>这块白板是怎么实现的？</h2>
+            <h2 id="canvas-title">这块白板是怎么实现的？</h2>
           </div>
           <div class="toolbar" aria-label="画布操作">
             <div class="tool-group" role="group" aria-label="交互模式">
@@ -51,7 +103,7 @@
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.6 8.6c0 3.6-3.7 6.1-7.1 6.1-3 0-5.7-1.3-5.7-3.8 0-3.3 3.7-6.2 7.4-6.2 3 0 5.4 1.6 5.4 3.9Z"/><path d="M7.7 14.6 5.2 17"/></svg>
                 圈选
               </button>
-              <button id="pan-mode" type="button" class="tool-button mode-button" aria-pressed="false" title="拖动组件或画布">
+              <button id="pan-mode" type="button" class="tool-button mode-button" aria-pressed="false" title="Shift 点选多张卡，拖任一选中卡一起移动">
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.8v14.4M2.8 10h14.4M8 4.8l2-2 2 2m-4 10.4 2 2 2-2M4.8 8l-2 2 2 2m10.4-4 2 2-2 2"/></svg>
                 移动
               </button>
@@ -59,20 +111,43 @@
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3h6l-.8 4 2.6 2.7v1.8H5.2V9.7L7.8 7 7 3zM10 11.5v5.5"/></svg>
                 图钉
               </button>
+              <button id="connect-mode" type="button" class="tool-button mode-button" aria-pressed="false" title="按住 Shift 从父卡拖向子卡，也可依次点选两张卡">连线</button>
             </div>
             <div class="tool-group zoom-group" role="group" aria-label="缩放比例">
               <button id="zoom-out" type="button" class="tool-button icon-button" aria-label="缩小" title="缩小">−</button>
               <output id="zoom-value" aria-label="当前缩放">100%</output>
               <button id="zoom-in" type="button" class="tool-button icon-button" aria-label="放大" title="放大">+</button>
             </div>
+            <button id="new-card" type="button" class="tool-button" title="在当前白板新建一张卡片">＋ 新建卡片</button>
             <button id="delete-selection" type="button" class="tool-button" disabled>删除选中</button>
+            <button id="delete-connection" type="button" class="tool-button" hidden disabled>删除连线</button>
             <button id="undo-delete" type="button" class="tool-button" hidden>撤销删除</button>
             <button id="repair-delete" type="button" class="tool-button" hidden>重试关系整理</button>
             <div id="deletion-status" hidden>
               <span id="deletion-status-text" role="status" aria-live="polite" aria-atomic="true"></span>
               <button id="dismiss-deletion-status" type="button" aria-label="关闭删除提示">×</button>
             </div>
-            <button id="fit" type="button" class="tool-button icon-button" title="适应视图" aria-label="适应视图">
+            <div class="canvas-navigation" role="group" aria-label="卡片导航">
+              <details id="card-search">
+                <summary id="card-search-toggle" class="tool-button" aria-controls="card-search-panel">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.6" cy="8.6" r="4.8"/><path d="m12 12 4.3 4.3"/></svg>
+                  搜卡
+                </summary>
+                <div id="card-search-panel" role="search" aria-label="白板卡片搜索">
+                  <form id="card-search-form">
+                    <label class="visually-hidden" for="card-search-input">搜索卡片</label>
+                    <input id="card-search-input" type="search" placeholder="搜标题、编号或源码符号" autocomplete="off" spellcheck="false" enterkeyhint="search">
+                  </form>
+                  <p id="card-search-status" role="status"></p>
+                  <ul id="card-search-results" aria-label="卡片搜索结果"></ul>
+                </div>
+              </details>
+              <button id="return-overview" type="button" class="tool-button" hidden>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5 3 10l5 5m-5-5h9a4 4 0 0 1 4 4"/></svg>
+                回到总览
+              </button>
+            </div>
+            <button id="fit" type="button" class="tool-button icon-button" title="适应整个白板" aria-label="适应整个白板">
               <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M7 3.5H3.5V7m9.5-3.5h3.5V7m0 6v3.5H13m-6 0H3.5V13"/></svg>
             </button>
           </div>
@@ -114,24 +189,55 @@
             <div class="notes-guide" aria-hidden="true"><span></span> 圈一段内容，和 AI 一起读源码</div>
             <div id="organization-labels" aria-hidden="true"></div>
             <svg id="overlay" viewBox="0 0 1050 700" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker id="connection-tip" viewBox="0 0 12 12" refX="12" refY="6" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+                  <path d="M0 0 L12 6 L0 12 Z" fill="#a3cdb5"></path>
+                </marker>
+              </defs>
               <g id="connections"></g>
             </svg>
             <div id="threads" aria-label="画布批注"></div>
             <svg id="note-overlay" viewBox="0 0 1050 700" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker id="connection-preview-tip" viewBox="0 0 12 12" refX="12" refY="6" markerWidth="13" markerHeight="13" markerUnits="userSpaceOnUse" orient="auto">
+                  <path d="M0 0 L12 6 L0 12 Z" fill="#ffb889"></path>
+                </marker>
+              </defs>
               <g id="selection-highlights"></g>
               <path id="lasso-path"></path>
+              <path id="connection-preview" marker-end="url(#connection-preview-tip)" hidden></path>
             </svg>
           </div>
 
-          <div id="ask-popover" role="group" aria-label="选区提问" hidden>
-            <button id="ask-open" type="button" aria-expanded="false" aria-controls="ask-composer">
-              <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.8a7.2 7.2 0 0 1 7.2 7.2c0 4-3.2 6.7-7.2 6.7H3.1l1.6-2.9A6.4 6.4 0 0 1 2.8 10 7.2 7.2 0 0 1 10 2.8Z"/><path d="M10 7.1v5.3m-2.7-2.7h5.4"/></svg>
-              问 AI 这段内容 <span aria-hidden="true">↗</span>
-            </button>
+          <div id="canvas-menu" role="group" aria-label="画布右键菜单" hidden>
+            <div class="canvas-menu-modes" role="group" aria-label="操作模式">
+              <button id="canvas-menu-select" type="button" data-canvas-mode="select" aria-pressed="false">圈选</button>
+              <button id="canvas-menu-pan" type="button" data-canvas-mode="pan" aria-pressed="false">移动</button>
+              <button id="canvas-menu-pin-mode" type="button" data-canvas-mode="pin" aria-pressed="false">图钉</button>
+              <button id="canvas-menu-connect" type="button" data-canvas-mode="connect" aria-pressed="false">连线</button>
+            </div>
+            <button id="canvas-menu-new" type="button" hidden>在此新建卡片</button>
+            <button id="canvas-menu-ask-independent" type="button" hidden>在此独立提问</button>
+            <button id="canvas-menu-edit" type="button" hidden>编辑卡片</button>
+            <button id="canvas-menu-pin" type="button" hidden>固定卡片</button>
+            <button id="canvas-menu-delete" type="button" hidden>删除此卡片</button>
+            <button id="canvas-menu-delete-edge" type="button" hidden>删除连线</button>
+          </div>
+          <div id="ask-popover" role="group" aria-label="选区操作" hidden>
+            <div id="selection-toolbar">
+              <button id="ask-open" type="button" aria-expanded="false" aria-controls="ask-composer">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.8a7.2 7.2 0 0 1 7.2 7.2c0 4-3.2 6.7-7.2 6.7H3.1l1.6-2.9A6.4 6.4 0 0 1 2.8 10 7.2 7.2 0 0 1 10 2.8Z"/><path d="M10 7.1v5.3m-2.7-2.7h5.4"/></svg>
+                问 AI 这段内容 <span aria-hidden="true">↗</span>
+              </button>
+              <button id="move-selection" type="button" class="tool-button" title="拖动把手移动卡片。也可以点击后拖动卡片。" hidden>
+                <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.8v14.4M2.8 10h14.4M8 4.8l2-2 2 2m-4 10.4 2 2 2-2M4.8 8l-2 2 2 2m10.4-4 2 2-2 2"/></svg>
+                <span id="move-selection-label">拖动卡片</span>
+              </button>
+            </div>
 
             <div id="ask-composer" hidden>
               <header class="ask-heading">
-                <h3>想做什么？</h3>
+                <h3 id="ask-title">想做什么？</h3>
                 <button id="ask-close" type="button" class="tool-button icon-button" aria-label="关闭提问" title="关闭提问">×</button>
               </header>
               <p id="ask-scope"></p>
@@ -141,72 +247,159 @@
                 <p id="attachment-hint">可拖入文件或 Ctrl+V 粘贴截图，单个最多 10 MiB。</p>
                 <ul id="attachment-list" aria-label="本次附件" hidden></ul>
                 <p id="attachment-status" role="status" hidden></p>
+                <label id="source-edit-consent" class="source-edit-consent" title="请先确认问题、选区、附件、服务和模型；这些内容变化后需重新勾选。"><input id="allow-source-edit" type="checkbox" autocomplete="off">允许本次修改代码</label>
                 <div class="ask-actions">
                   <input id="attachment-input" type="file" multiple hidden>
                   <button id="attach-files" type="button" class="tool-button" aria-describedby="attachment-hint">添加附件</button>
                   <button id="submit-question" type="submit" class="submit-button" disabled>发送 <span aria-hidden="true">↗</span></button>
                 </div>
+                <p id="ask-feedback" role="status" hidden></p>
               </form>
             </div>
           </div>
         </div>
 
         <footer class="canvas-footer">
-          <span><span class="legend-dot" aria-hidden="true"></span><span id="canvas-gesture-hint">点选整张卡片，或按住拖动画圈选取局部</span></span>
+          <span><span class="legend-dot" aria-hidden="true"></span><span id="canvas-gesture-hint">点选或圈选内容。右键空白处可在此新建卡片</span></span>
         </footer>
       </section>
 
       <aside class="context-panel" aria-labelledby="context-title">
         <header class="context-header">
-          <p class="overline">白板工作台</p>
-          <h2 id="context-title">项目上下文</h2>
-          <p>圈住内容就地提问，也可以延伸成分支，再圈住分支中的内容继续问。</p>
-          <div class="context-actions">
+          <h2 id="context-title">白板操作</h2>
+          <div class="context-primary-actions">
             <button id="ask-board" type="button" class="tool-button context-action">问整个白板 <span aria-hidden="true">↗</span></button>
+            <button id="ask-independent" type="button" class="tool-button context-action" title="把问题和回答先留在独立草稿里">独立提问</button>
             <button id="organize-board" type="button" class="tool-button context-action organize-action">整理白板</button>
-            <button id="quick-reorder" type="button" class="tool-button context-action" title="在本地展开分支、避开重叠">快速重排</button>
+            <button id="quick-reorder" type="button" class="tool-button context-action" title="快速重排整张白板。每次点击切换紧凑树形、横向展开、双侧展开">快速重排整个白板</button>
+          </div>
+          <div class="context-actions context-run-actions">
+            <button id="stop-ai" type="button" class="tool-button context-action" hidden disabled>停止</button>
             <button id="undo-organization" type="button" class="tool-button context-action" hidden>撤销整理</button>
             <button id="reload-board" type="button" class="tool-button context-action" hidden>刷新白板</button>
           </div>
-          <div class="organization-opinion-field">
-            <label for="organization-opinion">整理意见 <span>可选</span></label>
-            <textarea id="organization-opinion" rows="2" maxlength="1200" placeholder="例如：沿一条主干排布，把坐标换算的追问挂在圈选模块旁。"></textarea>
-            <p id="organization-status" role="status"></p>
-          </div>
+          <p id="organization-status" role="status"></p>
         </header>
 
         <div class="context-body">
           <section class="selection-section" aria-labelledby="selection-heading">
-            <h3 id="selection-heading"><span class="step-marker">01</span>选中的内容 <span id="branch-label">整板</span></h3>
-            <ul id="selection-list" aria-live="polite"><li class="empty-selection">尚未选中内容</li></ul>
-            <p id="status" role="status">选中内容后可以提问。</p>
+            <h3 id="selection-heading">选中的内容 <span id="branch-label" hidden></span></h3>
+            <ul id="selection-list" aria-live="polite"><li class="empty-selection">点选卡片，或圈选一段内容。</li></ul>
+            <p id="status" role="status"></p>
+            <div id="draft-branch-actions" class="context-actions" hidden>
+              <button id="integrate-draft" type="button" class="tool-button context-action" title="确认草稿已经验收后，为整个分支选择父模块">整合到白板</button>
+            </div>
+            <div id="selection-actions" class="context-actions" hidden>
+              <button id="split-module" type="button" class="tool-button context-action" disabled>拆分模块</button>
+              <button id="organize-branch" type="button" class="tool-button context-action" disabled>整理分支</button>
+              <button id="regenerate-branch" type="button" class="tool-button context-action" title="重写选中卡片及其所有下级，包括已收起的卡片" disabled>重新生成分支</button>
+            </div>
+            <p id="branch-scope" hidden></p>
           </section>
 
-          <details class="payload-details">
-            <summary>查看选区载荷</summary>
-            <pre id="payload">[]</pre>
-          </details>
-          <details class="payload-details" id="sent-context-details">
-            <summary>查看模型实际收到的内容</summary>
-            <pre id="sent-context">尚未发送提问</pre>
-          </details>
-
-          <section class="project-section" aria-labelledby="project-heading">
-            <h3 id="project-heading"><span class="step-marker">02</span>项目记忆</h3>
-            <label for="project-goal">目标</label>
-            <textarea id="project-goal" rows="2">在白板上圈问自己的实现，并交给 Codex 继续修改。</textarea>
-            <label for="project-constraints">约束 <span>每行一条</span></label>
-            <textarea id="project-constraints" rows="2">回答与代码修改分开
-只修改当前白板原型的文件</textarea>
-            <h4>已确认决定</h4>
-            <ul id="project-decisions"><li class="empty-decision">尚无已确认决定</li></ul>
-            <form id="decision-form">
-              <label class="visually-hidden" for="decision-text">添加已确认决定</label>
-              <input id="decision-text" type="text" maxlength="240" placeholder="记录一条已确认决定" required>
-              <button id="adopt-selection" type="button" class="tool-button context-action" disabled>引用选区</button>
-              <button type="submit" class="tool-button context-action">确认</button>
+          <section id="workbench-card-editor" class="project-section" aria-label="卡片编辑" hidden>
+            <button id="edit-workbench-card" type="button" class="tool-button context-action">编辑卡片</button>
+            <form id="workbench-card-form" hidden>
+              <h3 id="workbench-card-form-title">编辑卡片</h3>
+              <label for="workbench-card-title">标题</label>
+              <input id="workbench-card-title" type="text" maxlength="100" required>
+              <label for="workbench-card-body">正文</label>
+              <textarea id="workbench-card-body" rows="5" maxlength="800"></textarea>
+              <div id="workbench-card-task-fields" hidden>
+                <label for="workbench-card-dependencies">依赖 <span>每行一条</span></label>
+                <textarea id="workbench-card-dependencies" rows="2" maxlength="905"></textarea>
+                <label for="workbench-card-acceptance">验收条件 <span>每行一条</span></label>
+                <textarea id="workbench-card-acceptance" rows="3" maxlength="905"></textarea>
+              </div>
+              <div id="workbench-card-kind-field" hidden>
+                <label for="workbench-card-kind">用途</label>
+                <select id="workbench-card-kind">
+                  <option value="">说明</option>
+                  <option value="constraint">约束</option>
+                  <option value="requirement">需求</option>
+                  <option value="case">测试用例</option>
+                </select>
+                <p id="constraint-card-hint" hidden>连到模块并用图钉固定后，提问时会带上这条约束。</p>
+              </div>
+              <div class="context-actions">
+                <button id="save-workbench-card" type="submit" class="tool-button context-action">保存卡片</button>
+                <button id="cancel-workbench-card" type="button" class="tool-button context-action">取消</button>
+              </div>
             </form>
+            <p id="workbench-card-status" role="status"></p>
           </section>
+
+          <details id="organization-options" class="sidebar-disclosure">
+            <summary>整理选项 <span id="organization-opinion-state" hidden>已有意见</span></summary>
+            <div class="sidebar-tool-content organization-opinion-field">
+              <label for="organization-opinion">整理意见 <span>可选</span></label>
+              <textarea id="organization-opinion" rows="2" maxlength="1200" placeholder="例如：保留主干，把实现细节放在对应模块下。"></textarea>
+              <button id="file-orphans" type="button" class="tool-button context-action" title="选中时只处理选区内的孤立卡，空选区时查找整板的孤立卡" hidden disabled>归位孤立卡片</button>
+            </div>
+          </details>
+
+          <details id="sidebar-tools" class="sidebar-disclosure">
+            <summary>更多工具</summary>
+            <div class="sidebar-tool-list">
+              <details id="repo-index-panel" class="sidebar-disclosure repo-index-panel" hidden>
+                <summary id="repo-index-heading">仓库源码索引</summary>
+                <div class="sidebar-tool-content">
+                  <button id="scan-repository" type="button" class="tool-button context-action">扫描当前仓库</button>
+                  <p id="repo-index-status" role="status"></p>
+                  <div id="repo-index-results" hidden>
+                    <p id="repo-index-summary"></p>
+                    <p id="repo-index-chapter"></p>
+                    <div id="repo-index-chapter-symbols"></div>
+                    <form id="repo-index-form">
+                      <label for="repo-index-symbol">函数或符号名称</label>
+                      <div class="repo-symbol-controls">
+                        <input id="repo-index-symbol" list="repo-index-symbols" maxlength="256" placeholder="例如 decomposeBoard" autocomplete="off" required>
+                        <datalist id="repo-index-symbols"></datalist>
+                        <button id="query-repo-symbol" type="submit" class="tool-button context-action">查调用</button>
+                      </div>
+                    </form>
+                    <div id="repo-index-context"></div>
+                  </div>
+                </div>
+              </details>
+              <details id="project-memory" class="sidebar-disclosure">
+                <summary>项目规则</summary>
+                <div class="sidebar-tool-content project-section">
+                  <label for="project-goal">目标</label>
+                  <textarea id="project-goal" rows="2"></textarea>
+                  <label for="project-constraints">约束 <span>每行一条</span></label>
+                  <textarea id="project-constraints" rows="2"></textarea>
+                  <h4>已确认决定</h4>
+                  <ul id="project-decisions"></ul>
+                  <form id="decision-form">
+                    <label class="visually-hidden" for="decision-text">添加已确认决定</label>
+                    <input id="decision-text" type="text" maxlength="240" placeholder="记录一条决定" required>
+                    <button id="adopt-selection" type="button" class="tool-button context-action" disabled>引用选区</button>
+                    <button type="submit" class="tool-button context-action">确认</button>
+                  </form>
+                </div>
+              </details>
+              <details id="request-details" class="sidebar-disclosure">
+                <summary>请求详情</summary>
+                <div class="sidebar-tool-content request-content">
+                  <h4>选区数据</h4>
+                  <pre id="payload">[]</pre>
+                  <h4>本轮提示词和白板上下文</h4>
+                  <pre id="sent-context">尚未发送提问</pre>
+                </div>
+              </details>
+              <details id="project-template" class="sidebar-disclosure">
+                <summary>项目设计模板</summary>
+                <div class="sidebar-tool-content">
+                  <p>替换当前白板时会先保存本机备份。</p>
+                  <button id="install-project-template" type="button" class="tool-button context-action">用项目模板替换白板</button>
+                  <button id="restore-project-template" type="button" class="tool-button context-action" hidden>撤销上次白板替换</button>
+                  <button id="restore-project-guide" type="button" class="tool-button context-action" hidden>恢复替换前的白板</button>
+                  <p id="project-template-status" role="status"></p>
+                </div>
+              </details>
+            </div>
+          </details>
         </div>
 
         <footer class="context-footer">
@@ -215,5 +408,304 @@
       </aside>
     </main>
   </div>
+  <script id="project-template-data" type="application/json">
+    {
+      "title": "圈问白板｜项目总览",
+      "summary": "本机浏览器运行的单用户白板讨论原型，用于围绕卡片就地讨论、追问、分支与 AI 整理。已具备卡片折叠归档、本机保存、回环 Python 桥和多种 AI 接入，支持按层展开和收起子节点；不含正式任务验收、协作同步和语义检索。",
+      "layout": {"flow": "vertical", "density": "spacious"},
+      "collapsedBranches": ["E05", "E08", "E11", "E14"],
+      "items": [
+        {"id": "E04", "category": "main", "parentId": null, "title": "圈问白板｜项目总览", "summary": "本机浏览器运行的单用户白板讨论原型，用于围绕卡片就地讨论、追问、分支与 AI 整理。已具备卡片折叠归档、本机保存、回环 Python 桥和多种 AI 接入，支持按层展开和收起子节点；不含正式任务验收、协作同步和语义检索。"},
+        {"id": "E05", "category": "reference", "parentId": "E04", "title": "白板交互与内容组织", "summary": "在单张白板上完成圈选提问、沿批注追问、延伸分支与视图操作，并管理卡片状态和分支级收起展开。", "side": "left", "folded": false},
+        {"id": "E06", "parentId": "E05", "category": "reference", "side": "left", "title": "现状｜圈选与就地讨论", "summary": "可选中卡片或圈选正文，就地发起问答，沿批注锚点继续追问并延伸分支。视图支持拖动、平移、缩放与图钉固定。", "folded": false},
+        {"id": "E07", "parentId": "E05", "category": "reference", "side": "left", "title": "现状｜卡片与分支收起", "summary": "卡片正文可单独折叠。分支的展开下级与收起下级可切换所有后代的可见性，记住各层选择，不删除卡片。", "folded": false},
+        {"id": "E08", "category": "reference", "parentId": "E04", "title": "数据保存与上下文组装", "summary": "浏览器侧保存白板、批注及项目目标、约束和已确认决定；追问时按锚点和近期分支组装上下文。", "side": "right", "folded": false},
+        {"id": "E09", "parentId": "E08", "category": "reference", "side": "right", "title": "现状｜本机持久与项目资料", "summary": "白板、批注和项目目标、约束、已确认决定保存在浏览器中，作为项目讨论的长期依据。", "folded": false},
+        {"id": "E10", "parentId": "E08", "category": "reference", "side": "right", "title": "边界｜追问上下文范围", "summary": "追问上下文由锚点和近期分支组装，不包含语义检索，也不存在跨会话的正式结构化项目模型。", "folded": false},
+        {"id": "E11", "category": "reference", "parentId": "E04", "title": "AI 接入与执行边界", "summary": "Codex、ZCode 与 API 直连共用请求取消和结果接口；三者权限不同，API 仅能在白板草稿范围内操作。", "side": "left", "folded": false},
+        {"id": "E12", "parentId": "E11", "category": "reference", "side": "left", "title": "现状｜三种接入的分工", "summary": "Codex 与 ZCode 可检查源码，并在授权范围内暂存和提交前端改动；API 直连只接收明确提供的选区、相关分支、项目资料和兼容附件。", "folded": false},
+        {"id": "E13", "parentId": "E11", "category": "reference", "side": "left", "title": "边界｜API 工具与安全限制", "summary": "API 可通过受限工具新建、更新、挂接、归档节点和布局草稿，不能读源码、运行命令或改文件。桥只监听回环并校验同源与请求体。", "folded": false},
+        {"id": "E14", "category": "reference", "parentId": "E04", "title": "整理校验与演进验收", "summary": "AI 整理先出草稿，应用前校验编号、无环关系、图钉约束和版本，可撤销；后续演进需明确规划项与验收条件。", "side": "right", "folded": false},
+        {"id": "E15", "parentId": "E14", "category": "reference", "side": "right", "title": "现状｜草稿校验与撤销", "summary": "AI 整理先生成草稿，应用前校验编号、无环关系、图钉约束和版本，应用后可撤销。取消会丢弃迟到结果，但在途 HTTP 仍可能结束。", "folded": false},
+        {"id": "E16", "parentId": "E14", "category": "optimize", "side": "right", "title": "规划｜后续演进与验收", "summary": "建设方向是用同一张白板承载可分层导航的项目设计结构，尚未建立任务验收、负责人、依赖、里程碑、协作与跨设备同步模型。", "folded": false}
+      ]
+    }
+  </script>
+  <script id="published-project-guide-data" type="application/json">
+    {
+      "id": "2149548999b04766a0c2c9bb2bd8e33d",
+      "title": "DeepSeek 项目导览",
+      "summary": "DeepSeek 工具生成的三层项目导览。模块覆盖产品交互、项目结构与记忆、后端与工程交付。",
+      "collapsedBranches": ["E05", "E06", "E07"],
+      "items": [
+        {"id": "E04", "category": "main", "parentId": null, "title": "圈问白板｜项目设计导览", "summary": "面向个人开发者的本机工作台。在同一张白板上逐层展开项目理解、方案讨论和任务拆解。AI 调用需配置服务，跨端同步仍在规划中。", "side": "auto", "sources": []},
+        {"id": "E05", "category": "reference", "parentId": "E04", "title": "产品与交互设计", "summary": "圈选后原位提问，沿批注追问，讨论始终贴着原内容。拖动、缩放和图钉帮助聚焦重点，离线重排支持撤销。", "side": "auto", "sources": []},
+        {"id": "E06", "category": "reference", "parentId": "E04", "title": "项目结构与记忆", "summary": "父子节点逐层展开。分支、项目目标、约束、确认决定、布局和折叠状态保存在浏览器。拆解会带上祖先路径和已有下级。", "side": "auto", "sources": []},
+        {"id": "E07", "category": "reference", "parentId": "E04", "title": "后端与工程交付", "summary": "回环服务校验同源与预算，浏览器按版本提交或撤销。API 直连只操作授权草稿。CLI 可核查源码，获授权改码先暂存，只提交允许的前端改动。", "side": "auto", "sources": []},
+        {"id": "E08", "category": "reference", "parentId": "E05", "title": "圈选、原位追问、拖动和整理的交互细节", "summary": "细看核心手势与反馈：圈选片段确定提问范围，点卡片进入原位追问，批注可沿线程继续延伸；拖动平移缩放保持空间感，图钉标记整理时要保留的重点，离线时可快速重排并用撤销回退。可核对的是每次操作都对应明确选区与可见状态变化，不丢失原节点。", "side": "auto", "sources": [], "folded": true},
+        {"id": "E09", "category": "reference", "parentId": "E06", "title": "项目记忆、附件和隐私边界", "summary": "附件原件在本机保存，每件上限 10 MiB，可拖放或粘贴截图。本轮选中的资料和兼容附件会发给配置的模型服务。API 地址和 Key 在页面内存中使用，刷新清除。API 直连没有读取项目文件、执行命令或改代码的工具。", "side": "auto", "sources": [], "folded": true},
+        {"id": "E10", "category": "reference", "parentId": "E06", "title": "递归拆任务、依赖和验收", "summary": "描述用同一发送入口请求拆解：单选一个模块或任务，服务返回最多 6 个直接下级；任务卡包含工作内容、前置依赖和可核对的验收标准，任务还能继续拆。依赖目前只是卡片字段，连线表达父子层级而非调度关系。可核对的是下级数量上限、验收项可检查、原节点保留。", "side": "auto", "sources": [], "folded": true},
+        {"id": "E11", "category": "reference", "parentId": "E07", "title": "三后端权限、草稿校验、测试和后续演进", "summary": "Codex、ZCode 和 API 直连共用本机回环服务，各自权限有别。隔离浏览器和回环模拟 API 已验证两级拆解、折叠刷新、撤销和原节点保留；本次 DeepSeek 在真实 API 中调用八次创建工具并通过草稿校验。任务负责人、里程碑、依赖调度和协作仍属规划。", "side": "auto", "sources": [], "folded": true}
+      ]
+    }
+  </script>
+  <script id="project-structure-data" type="application/json">
+    {
+      "id": "79a4c7f4f0c74d74a0c0c2b3fa0d6ee7",
+      "title": "圈问白板｜项目结构",
+      "summary": "项目定义、系统设计、交付里程碑和可执行任务共用一张白板。",
+      "layout": {"flow": "vertical", "density": "normal"},
+      "collapsedBranches": ["E05", "E06", "E07", "E16", "E17"],
+      "items": [
+        {"id": "E04", "parentId": null, "title": "圈问白板｜项目定义与交付", "summary": "面向个人开发者的项目设计工作台。在同一张白板理解现状、明确方案，再把模块拆成有依赖和验收标准的任务。总览说明设计边界与交付顺序。", "category": "main"},
+        {"id": "E05", "parentId": "E04", "title": "产品定义", "summary": "明确服务对象、V0 范围和一条可演示的使用路径。用它判断新功能是否服务于项目理解和设计。", "category": "reference"},
+        {"id": "E06", "parentId": "E04", "title": "系统设计", "summary": "明确板内对象、上下文、执行权限与提交边界。每项设计都能追到当前实现或已知缺口。", "category": "reference"},
+        {"id": "E07", "parentId": "E04", "title": "交付与验收", "summary": "先核实已有能力，再按里程碑推进工具闭环和任务管理。待办写明依赖与可核对的完成条件。", "category": "reference"},
+        {"id": "E08", "parentId": "E05", "title": "使用对象与成功场景", "summary": "目标用户是需要接手代码项目或设计一个方案的个人开发者。成功场景：打开总览即可说明项目目的、当前边界和下一步，选中一个模块即可追问并逐层拆出能执行的工作。", "category": "reference", "folded": true},
+        {"id": "E09", "parentId": "E05", "title": "V0 范围与取舍", "summary": "V0 采用本机单用户、同一画布和手动确认项目决定。保留圈选、就地讨论、递归拆解、分支折叠与可撤销整理。负责人、时间、跨分支依赖调度、协作与跨端同步属于后续能力。", "category": "reference", "folded": true},
+        {"id": "E10", "parentId": "E05", "title": "核心用户流程", "summary": "总览定位模块 → 圈选证据或选中模块 → 用同一个发送入口提问或请求拆解 → 校验后把任务挂在原节点下 → 检查任务与验收 → 收起分支回到总览。需要核对源码时选择支持本机文件读取的 CLI。", "category": "reference", "folded": true, "sources": ["app.js"]},
+        {"id": "E11", "parentId": "E06", "title": "领域对象与关系", "summary": "模块承载项目结构，批注保留讨论锚点，任务卡记录工作内容、依赖与验收。当前以稳定节点 ID 和 parentId 表达唯一层级，归档与折叠影响可见性。任务依赖当前为文本，依赖关系和调度需要单独建模。", "category": "reference", "folded": true, "sources": ["organization.js", "app.js"]},
+        {"id": "E12", "parentId": "E06", "title": "上下文、项目记忆与附件", "summary": "项目目标、约束和已确认决定保存在浏览器。普通提问带选区及锚点匹配的最多四条近期讨论，拆解补充祖先路径和已有直接下级。附件原件留本机，选中的兼容附件随请求发送。API 地址与 Key 刷新清除。", "category": "reference", "folded": true, "sources": ["memory.js", "attachments.py"]},
+        {"id": "E13", "parentId": "E06", "title": "执行路由与权限", "summary": "发送先判断意图，再进入问答、拆解、整理或改码路径。API 直连仅处理提供的资料和授权草稿。Codex、ZCode 可只读核查源码，获授权的改码先暂存，只提交允许的前端文件。回环服务负责请求范围和预算。", "category": "reference", "folded": true, "sources": ["server.py", "backends.py"]},
+        {"id": "E14", "parentId": "E06", "title": "草稿提交与失败恢复", "summary": "工具操作先写草稿，本地校验编号、父子无环和图钉约束。浏览器收到完整结果后检查版本再提交，支持撤销。停止、过期或结构错误的结果不写入。已知缺口：批量回滚时模型仍可能收到单项成功回执。", "category": "reference", "folded": true, "sources": ["api_backend.py", "board_tools.py", "run_gate.js"]},
+        {"id": "E15", "parentId": "E07", "title": "已交付能力与实验证据", "summary": "隔离 Edge 和回环模拟 API 已验证原有白板、两级拆解、折叠刷新、旧节点保留与撤销。DeepSeek 真实请求曾在限定草稿里完成八次创建调用。日常浏览器连接与真实三后端的完整联调仍需单独验收。", "category": "done", "folded": true},
+        {"id": "E16", "parentId": "E07", "title": "里程碑 M1｜白板工具闭环", "summary": "先统一回滚与提交回执，再让模型一次提出可验证的子树，最后用浏览器常规连接复验。里程碑完成条件是用户能区分已提案、已校验和已落板。", "category": "optimize", "folded": true},
+        {"id": "E17", "parentId": "E07", "title": "里程碑 M2｜任务管理闭环", "summary": "在 M1 稳定后为任务增加进度和负责人，并把文本前置条件升级为可检查的任务引用。总览聚合进度，展开分支才查看执行细节。", "category": "optimize", "folded": true},
+        {"id": "E18", "parentId": "E07", "title": "发布门槛与后续范围", "summary": "发布验收从现有项目白板出发，覆盖拆解、递归、展开、撤销、回滚与跨页冲突。先完成本机单人路径；跨端同步和多人协作单独设计数据归属、冲突和权限后再排期。", "category": "reference", "folded": true},
+        {"id": "E19", "parentId": "E16", "title": "P0｜统一回滚与提交回执", "summary": "校正模型、服务和浏览器对同一轮操作的状态表达。", "category": "optimize", "folded": true, "taskDetails": {"task": "统一工具结果与 UI 终态。区分草稿校验通过、整批回滚、白板提交成功和已撤销，并给失败项可修复的原因。", "dependencies": ["现有原子批次与浏览器版本校验契约", "离线复现：第二项失败时第一项仍回传 ok"], "acceptance": ["一批第二项失败后无新增卡，第一项回执显示已回滚", "过期或取消的请求不会标记为已提交"]}},
+        {"id": "E20", "parentId": "E16", "title": "P1｜批量子树提案工具", "summary": "让模型用临时引用提交整棵子树，由本机分配正式编号并校验。", "category": "optimize", "folded": true, "taskDetails": {"task": "增加只提交子树草稿的能力。输入临时 ID、父子关系与内容；本地分配正式 ID、预览变更和原子提交。", "dependencies": ["P0 回滚与提交回执", "当前节点 ID、图钉和无环校验"], "acceptance": ["一次提案生成三层结构并保持原卡片与关系", "重复临时 ID、未知父节点或成环会拒绝整批", "提交后可撤销，重复结果不会追加第二棵树"]}},
+        {"id": "E21", "parentId": "E16", "title": "P1｜验证日常 DeepSeek 工具链", "summary": "从白板连接设置实测 DeepSeek 工具续轮与提交。", "category": "optimize", "folded": true, "taskDetails": {"task": "验证真实浏览器 API 连接的工具调用和结果续轮，并给配置与请求失败提供清晰诊断。", "dependencies": ["P0 状态回执", "支持工具调用的 DeepSeek 模型和经授权的测试额度"], "acceptance": ["同一轮能看到工具调用、草稿校验与浏览器提交三类证据", "请求失败时无白板变更，日志不含 API Key"]}},
+        {"id": "E22", "parentId": "E17", "title": "P2｜任务状态与里程碑", "summary": "补齐任务状态、负责人和里程碑聚合，让总览能呈现进度。", "category": "optimize", "folded": true, "taskDetails": {"task": "设计任务的待办、进行中、完成和阻塞状态，可记录负责人与归属里程碑，并在模块上汇总状态。", "dependencies": ["M1 工具闭环稳定", "保留现有任务卡与旧白板数据"], "acceptance": ["旧任务能继续打开和拆解", "调整任务状态后，祖先模块进度同步，刷新后可恢复"]}},
+        {"id": "E23", "parentId": "E17", "title": "P2｜依赖引用与阻塞检查", "summary": "引入稳定的任务引用表达依赖，并提示阻塞和无效关系。", "category": "optimize", "folded": true, "taskDetails": {"task": "让前置依赖可引用已有任务，校验环和无效 ID。用户在任务卡看阻塞原因，在总览看层级。", "dependencies": ["P2 任务状态与稳定 ID", "现有父子层级用于组织分支"], "acceptance": ["引用未完成任务会显示阻塞，完成前置任务后更新", "无效 ID、循环依赖会被拒绝，父子层级保持完整"]}}
+      ]
+    }
+  </script>
+  <script id="repo-manual-data" type="application/json">
+    {
+      "id": "repo-manual-v2",
+      "title": "代码仓库详解手册",
+      "summary": "从白板的功能与需求出发，逐级读懂浏览器、模型执行、文件调用与数据保存，再按维护约束修改和验收。",
+      "layout": {"flow":"vertical","density":"normal"},
+      "collapsedBranches": ["E05","E06","E07","E08","E09","E10","E11","E12","E14","E16","E17","E18","E19","E21","E22","E23","E24","E25","E26","E27","E28","E30","E32","E34","E35","E39","E44","E50","E54"],
+      "items": [
+        {"id":"E04","parentId":null,"title":"圈问白板｜代码仓库详解手册","summary":"在项目结构里选中具体内容，把问题、证据和回答留在一起。沿四条主线看懂一次操作背后的界面、状态、模型请求和验证路径。","category":"main","sources":["index.html","app.js","server.py"]},
+        {"id":"E05","parentId":"E04","title":"为什么用白板","summary":"从一个问题出发，观察圈选、原位批注、续问和任务拆分怎样让讨论留在它所解释的结构旁边。","category":"main","sources":["index.html","app.js","memory.js"]},
+        {"id":"E06","parentId":"E04","title":"浏览器怎样实现","summary":"跟踪屏幕坐标、文本命中、卡片树、布局和本机状态。看清数据关系与画法各由哪段代码决定。","category":"main","sources":["app.js","geometry.js","memory.js","organization.js"]},
+        {"id":"E07","parentId":"E04","title":"请求怎样到模型","summary":"沿本机 HTTP 入口读请求校验、适配器、结构化输出、权限和提交条件。","category":"main","sources":["server.py","backends.py","api_backend.py","board_tools.py"]},
+        {"id":"E08","parentId":"E04","title":"如何沿源码验证","summary":"按一条真实交互读函数、输入和结果，区分离线契约、隔离浏览器和真实供应商各自的证据。","category":"main","sources":["app.js","server.py","run_gate.js"]},
+        {"id":"E09","parentId":"E05","title":"把讨论留在被解释的位置","summary":"卡片和批注共享一张画布。选区给回答一个可回看的锚点，父子树提供总览与局部展开，项目目标、约束和已确认决定随白板保存。适合个人开发者边读项目边追问，之后还能找到当时的材料与判断。","category":"reference","folded":true,"sources":["index.html","app.js","memory.js"]},
+        {"id":"E10","parentId":"E05","title":"一次问答｜从圈选到批注","summary":"在 index.html 的画布上圈选或点卡片。app.js 的 getPayload 组装元素 ID、摘录、坐标和问题。发送时 planRequest 判断意图，普通问答经 createReply 创建批注位置，runCodex 消费事件更新回答，完成后保存。","category":"reference","folded":true,"sources":["index.html","app.js","memory.js"]},
+        {"id":"E11","parentId":"E10","title":"续问怎样找回原分支","summary":"memory.js 的 branchFor 用选中的批注 ID、branchId 和原始锚点匹配记录，发送该分支最多四条近期已回答的简短问答。批注可以贴着原选区追问，也可以开启延伸分支。检索范围由锚点和本机记录决定。","category":"reference","folded":true,"sources":["memory.js","app.js"]},
+        {"id":"E12","parentId":"E05","title":"一次拆分｜把任务挂在选中卡片下","summary":"以「项目定义与交付」白板的 E20 为例，展开里程碑并选中它，再提出拆分要求。计划请求选择 decompose 后，app.js 的 decomposeBoard 读取目标路径和已有直接下级。模型返回子任务内容，浏览器分配编号并把本轮新卡挂在 E20 下。","category":"reference","folded":true,"sources":["app.js","server.py","organization.js"]},
+        {"id":"E13","parentId":"E12","title":"拆分前后怎么对照","summary":"从上下文面板核对选区、目标、路径和已有下级。API 适配器还会在出站消息追加 JSON 结构要求。模型的 children 包含任务、依赖和验收，浏览器在完整终态与修订校验后把新卡 parentId 固定为选中节点。","category":"reference","folded":true,"sources":["app.js","server.py","api_backend.py"]},
+        {"id":"E35","parentId":"E06","title":"运行入口｜从启动到第一屏","summary":"在仓库运行 python -B server.py，Python 启动回环 HTTP 服务并提供 index.html。页面按顺序加载 geometry.js、memory.js、organization.js、run_gate.js 和 app.js。app.js 恢复选定白板的数据、挂载卡片，再取 /api/status 更新服务状态。","category":"reference","folded":true,"sources":["server.py","index.html","app.js"]},
+        {"id":"E14","parentId":"E06","title":"画布坐标与卡片命中","summary":"app.js 的 toScene 和 rectInScene 把指针、DOM 矩形变回画布坐标，消除平移和缩放的影响。geometry.js 提供 scenePoint、contains、intersectsShape 等纯几何计算。移动、圈选与多选最终转成同一种元素 ID 和矩形。","category":"reference","folded":true,"sources":["app.js","geometry.js"]},
+        {"id":"E15","parentId":"E14","title":"一段字怎样成为可发送的摘录","summary":"readTextHits 用 TreeWalker、Intl.Segmenter 和 DOM Range 取字素的屏幕位置，再用圈选多边形判断命中。命中文本按行合并高亮框。公式整段使用 data-source，部分公式同时保留摘录与原式，图形按矩形相交命中。","category":"reference","folded":true,"sources":["app.js","geometry.js","index.html"]},
+        {"id":"E16","parentId":"E06","title":"父子树、位置和连线分别从哪来","summary":"organization.js 的 clean 规整 ID、分类、父边、坐标和折叠状态，并处理坏引用和环。guideLayout 及通用 layout 根据结构与卡片尺寸算位置。app.js 再用 drawOrganizedConnections 把可见卡片的父子关系画成边。","category":"reference","folded":true,"sources":["organization.js","app.js"]},
+        {"id":"E17","parentId":"E16","title":"折叠、重排和手动摆放","summary":"branchVisibility 计算收起分支的隐藏后代，卡片正文的展开由各项 folded 控制。拖动写入坐标覆盖。快速重排循环紧凑树形、横向展开和双侧展开，保留固定位置。quickUndo 记录上一档和原位置。任务依赖文字保存在 taskDetails 内。","category":"reference","folded":true,"sources":["organization.js","app.js","geometry.js"]},
+        {"id":"E18","parentId":"E06","title":"切换白板与本机状态","summary":"index.html 提供切换入口。memory.js 的 selectActiveBoard 读取 board 参数与上次选中的白板，确定本地存储键。新板初始化时从页面内嵌的计划装入自己的命名空间，之后从该空间读写。","category":"reference","folded":true,"sources":["index.html","memory.js","organization.js","app.js"]},
+        {"id":"E19","parentId":"E18","title":"讨论记录和组织快照如何协作","summary":"BoardMemory 持久化批注、锚点、项目资料、图钉、已删除节点和待修复信息。BoardOrganization 持久化当前树、上一版、排布和折叠。换模板会先备份，两个写入失败时尝试恢复旧值。","category":"reference","folded":true,"sources":["memory.js","organization.js"]},
+        {"id":"E20","parentId":"E18","title":"删除、局部修复和恢复","summary":"deleteSelection 以显式选中的节点做删除计划，记录撤销快照，并清除旧锚点引用。有关联节点时保留待修复记录，整理请求只带受影响的快照。本机可以恢复这次删除和对应的状态。","category":"reference","folded":true,"sources":["app.js","memory.js","organization.js"]},
+        {"id":"E21","parentId":"E07","title":"HTTP 入口与统一请求","summary":"server.py 监听 127.0.0.1:8791。WhiteboardHandler 校验 Host、Origin、类型和长度，再把 POST /api/codex 解析成 BackendRequest。BackendFactory 选择 API、Codex 或 ZCode，权限和预算由本机校验。一次执行由 TURN_LOCK 管理。","category":"reference","folded":true,"sources":["server.py","backends.py"]},
+        {"id":"E22","parentId":"E21","title":"意图、上下文和返回形状","summary":"前端 planRequest 先走 scope=plan，再按问答、拆分、整理或改码构造实际请求。build_prompt 区分当前指令和引用数据。parse_decomposition 约束单目标和路径，parse_children 校验 1 至 6 项任务的形状、长度和重名。验收项能否实际核对要结合源码。","category":"reference","folded":true,"sources":["app.js","server.py"]},
+        {"id":"E23","parentId":"E07","title":"API 直连怎样使用上下文","summary":"api_backend.py 验证地址与 Key，把提示和附件构造成 Chat Completions 消息。普通问答收文本，拆分返回 children。带白板快照的实际执行可以读取草稿，整理权限允许写工具。API 获取的是提交的内容和附件。","category":"reference","folded":true,"sources":["api_backend.py","server.py","backends.py"]},
+        {"id":"E24","parentId":"E23","title":"工具草稿怎样变成可提交的图","summary":"BoardTools 以显式快照建立草稿，每步检查工具参数、预留 ID、父边和图钉约束。api_backend.run_api 按批处理工具调用，遇到失败恢复该批前的草稿。有效终态由本机验证后发送 map，浏览器核对修订后应用。","category":"reference","folded":true,"sources":["board_tools.py","api_backend.py","server.py","app.js"]},
+        {"id":"E25","parentId":"E07","title":"Codex 与 ZCode 走本机工作区","summary":"Codex 通过 exec 和只读或工作区写入模式运行，结构化任务带输出 schema。ZCode 通过本机 CLI 连接会话，工作区工具限制文件名和模式。ZCode 请求、带附件的 Codex 请求和授权改码会用临时工作区。","category":"reference","folded":true,"sources":["server.py","zcode_backend.py","zcode_workspace.py","backends.py"]},
+        {"id":"E26","parentId":"E25","title":"暂存的代码怎样安全落地","summary":"改码前记录静态源文件哈希，在允许的工作区里产生差异。apply_staged_edits 验证大小、UTF-8 和本机版本，在获得提交权后替换允许的静态文件。替换中途出错时用原件回滚已应用的部分。","category":"reference","folded":true,"sources":["server.py","backends.py","zcode_workspace.py"]},
+        {"id":"E27","parentId":"E07","title":"附件、连接设置和事件流","summary":"浏览器在请求前上传附件，attachments.py 检查大小与文件名，按 ID 保存本机副本。API 读取本轮获选资料，CLI 可获得暂存副本。API Key 与地址在当前页输入，模型与服务选项可保存在本机。回复沿 NDJSON 传 context、状态、结果和终态。","category":"reference","folded":true,"sources":["app.js","attachments.py","api_backend.py","server.py"]},
+        {"id":"E28","parentId":"E27","title":"取消与版本冲突的两道检查","summary":"浏览器先用 run_gate.js 让旧运行失效，再请求取消并中断读取。服务以请求 ID 找到取消令牌，CLI 可终止本机子进程，API 用预算限制在途请求。拆分和整理提交前核对运行身份、终态和白板修订。","category":"reference","folded":true,"sources":["run_gate.js","app.js","backends.py","server.py"]},
+        {"id":"E29","parentId":"E08","title":"最短读码顺序","summary":"先看 index.html 的白板、提问和审查面板，再顺 app.js 的表单提交、planRequest、decomposeBoard。到 server.py 看 do_POST、build_prompt、run_api_turn；最后回 app.js 看孩子怎样生成、画线和保存。","category":"reference","folded":true,"sources":["index.html","app.js","server.py"]},
+        {"id":"E34","parentId":"E08","title":"从章节定位改动与验证","summary":"选中具体实现卡并描述期望行为，getPayload 会携带卡上的源码文件名。Codex 或 ZCode 可沿这些文件核查调用路径，明确授权的板内改码提交允许的前端文件。先复现问题，改后查看差异并复跑对应检查。涉及后端文件时在仓库工作区处理。","category":"reference","folded":true,"sources":["app.js","server.py","zcode_workspace.py"]},
+        {"id":"E30","parentId":"E08","title":"哪些行为有可重跑的检查","summary":"根目录有 API、后端和停止闸门测试。docs/acceptance 还提供离线合同验收、隔离 Edge 交互验收和单独的供应商验收。浏览器用例覆盖展开、撤销、两级拆分、切换白板和嵌套父边。","category":"reference","folded":true,"sources":["api_backend.py","backends.py","run_gate.js"]},
+        {"id":"E31","parentId":"E30","title":"怎样解释一份验收结果","summary":"离线合同用假 HTTP 和假 CLI 验证校验与事件。隔离浏览器用假中继验证实际界面和本地保存。供应商实测单独记录配置、真实响应和成功边界。阅读 README 的启动要求和 docs/acceptance 的运行说明后，按要核验的问题选取一类。","category":"reference","folded":true,"sources":["server.py","api_backend.py","run_gate.js"]},
+        {"id":"E32","parentId":"E08","title":"遇到画错关系时怎么定位","summary":"先在组织快照查看 child.parentId，再看 drawOrganizedConnections 用哪张父卡的矩形起线。任务前置条件查看 taskDetails.dependencies。拆分问题沿「提交的目标与路径 → children 结果 → 本机实际保存」对照。","category":"reference","folded":true,"sources":["organization.js","app.js","server.py"]},
+        {"id":"E33","parentId":"E32","title":"读懂目前的证据边界","summary":"白板的任务字段已经记录任务、依赖文字和验收，负责人、依赖图与自动调度属于另行建模的范围。批量工具失败后草稿会回滚，单项成功消息仍可能出现在回传里，判断落板时以整轮终态和保存结果为准。","category":"reference","folded":true,"sources":["app.js","organization.js","board_tools.py","api_backend.py"]}
+      ],
+      "details": [
+        {"id":"E36","parentId":"E09","title":"SE 需求｜从读懂项目到完成一次修改","summary":"接手人从总览按功能找到实现卡，展开到函数、输入和状态字段，再圈选具体内容发问。回答要能回到原选区，已有讨论可以沿分支追问。准备修改时，从卡片的文件与函数进入，先写清期望行为、写入范围和复验方法。完成后刷新白板，核对原讨论、分支关系与折叠能恢复。","category":"reference","folded":true,"sources":["index.html","app.js","memory.js"]},
+        {"id":"E37","parentId":"E35","title":"浏览器文件怎样接起来","summary":"server.py 的 STATIC 决定服务提供哪些静态文件。index.html 声明界面，styles.css 定义卡片与控件样式。geometry.js、memory.js、organization.js、run_gate.js 分别提供坐标计算、记忆存储、父子树和布局状态、运行身份检查。app.js 组合这些接口，挂载卡片并发起请求。新增脚本时核对加载顺序、静态清单和首屏恢复。","category":"reference","folded":true,"sources":["index.html","styles.css","app.js","server.py"]},
+        {"id":"E38","parentId":"E11","title":"沿一次圈选核对续问载荷","summary":"readTextHits 从渲染字素的矩形得出命中片段。getPayload 带上模块 ID、画布包围盒、摘录和可用的源码线索。memory.js 的 branchFor 根据分支或根锚点取最近四条可用问答，说明卡本身通过总览关系定位上下文。改命中逻辑时，分别圈选缩放后的部分公式和旧批注，核对摘录、原问题与来源 ID。","category":"reference","folded":true,"sources":["app.js","geometry.js","memory.js"]},
+        {"id":"E39","parentId":"E17","title":"回答结构｜总览、说明卡与两列布局","summary":"mountExplanationSections 以回答总览为父卡生成说明卡，写入 sectionOf 并保留锚点。geometry.js 的 layoutBranches 在横向和双侧布局中把同一父卡下至少四张参与排布的末级说明卡排成两列。外列连线可经过内列间隙。改卡宽或间距时，用六张长短不同的卡检查排布、穿线和刷新。","category":"reference","folded":true,"sources":["app.js","geometry.js","organization.js"]},
+        {"id":"E40","parentId":"E39","title":"局部快排的写入边界","summary":"reorderQuickly 读取选区并确定子树。organization.js 的 reflowQuickBranch 对可移动的后代重排，以父卡、图钉和范围外卡片作为固定矩形。branchQuickModes 记录分支样式，quickUndo 记录上次位置。复验时只选总览卡，比较父卡和相邻章节的坐标，再刷新并撤销。","category":"reference","folded":true,"sources":["app.js","organization.js","geometry.js"]},
+        {"id":"E41","parentId":"E16","title":"移动、连线和折叠分别改什么","summary":"移动写坐标覆盖。editConnection 在整理态更新子卡的 parentId，提交前拒绝环并保留现有位置。drawOrganizedConnections 按父边和矩形绘线。branchVisibility 从父边推导哪些后代隐藏，正文有独立折叠状态。用同一对子卡分别做拖动、改挂和收起，核对坐标、父边与可见性。","category":"reference","folded":true,"sources":["app.js","organization.js","geometry.js"]},
+        {"id":"E42","parentId":"E19","title":"两份本机快照怎样避免覆盖","summary":"memory.js 的 storageSnapshot 对比当前白板的记忆和组织存储。writeStorage 遇到另一页更新时拒绝旧页写入。记忆保存讨论与来源，组织保存树、折叠和位置。追加手册前预留已有编号、删除记录与锚点引用。改存储时用旧版记录验证升级和刷新，再用同板两页及不同白板验证写入隔离。","category":"reference","folded":true,"sources":["memory.js","organization.js","app.js"]},
+        {"id":"E43","parentId":"E21","title":"本机 HTTP 怎样校验请求","summary":"app.js 把操作送到回环服务，附件上传使用单独的二进制入口。server.py 的 do_POST 校验 Host、同源 Origin、Content-Type 和长度。parse_request 检查 mode、scope 与上下文，backend_request_from_body 组装 BackendRequest，由服务按操作派生权限。改路由或字段时回放正常、跨源和超限请求，核对错误在模型调用前返回。","category":"reference","folded":true,"sources":["app.js","server.py","backends.py"]},
+        {"id":"E44","parentId":"E22","title":"意图判断与本轮改码授权","summary":"发送表单先记录选区和问题，上传附件后固定白板修订，再由 planRequest 判断操作类型，进入问答、拆分、整理或改码。改源码需要勾选本轮授权，sourceEditContext 把授权绑定到服务、模型、问题、选区、项目和附件。用模拟规划器返回 edit，分别检查未勾选、上下文变化和 API 直连的拒绝行为。","category":"reference","folded":true,"sources":["app.js","server.py","backends.py"]},
+        {"id":"E45","parentId":"E24","title":"API 工具怎样回滚一批草稿操作","summary":"server.py 的 run_api_turn 把快照交给 BoardTools。board_tools.py 的 call 先复制、修改和校验候选，再替换草稿。api_backend.py 的 run_api 在每批前记录旧草稿和 dirty，批内失败时恢复。复验用一条合法操作加一条无效操作，核对草稿回到批前。浏览器收到有效 map 与 done 后再核对当前白板修订。","category":"reference","folded":true,"sources":["server.py","board_tools.py","api_backend.py","app.js"]},
+        {"id":"E46","parentId":"E26","title":"CLI 怎样从暂存差异写回源码","summary":"server.py 的 run_turn 为 ZCode、带附件的 Codex 和授权改码准备临时源码副本。ZCode 的 call_tool 按 READABLE、EDITABLE 与模式限制文件操作。apply_staged_edits 检查静态文件路径、UTF-8、大小、原仓库哈希与提交权，再替换文件。改动权限时回放只读替换、运行中源码变化和提交失败。","category":"reference","folded":true,"sources":["server.py","zcode_workspace.py","backends.py"]},
+        {"id":"E47","parentId":"E27","title":"附件与密钥在哪一步传出","summary":"uploadAttachments 把附件交给本机 attachments.py 保存，白板记录附件引用。规划提示使用附件名称。执行时 API 的 build_content 编入获选图片或 UTF-8 文本，CLI 可读暂存副本。上传单件限 10 MiB，每轮限 16 件。API 附件另有合计 20 MiB、单件文本 120 KB 上限。连接存储保存后端和模型，地址与 Key 从当前页读取。","category":"reference","folded":true,"sources":["app.js","attachments.py","api_backend.py","server.py"]},
+        {"id":"E48","parentId":"E28","title":"停止后晚到的事件怎样处理","summary":"server.py 通过 NDJSON 回传状态、候选和终态，事件带请求身份与修订信息。停止时 run_gate.js 先把运行标为停止中，app.js 请求 /api/cancel 并中断读取。CancellationToken 协调取消与源码提交，提交先获权且请求仍登记时，取消返回 409。复验停止后迟到的 map 或 done，以及源码已提交时的提示。","category":"reference","folded":true,"sources":["server.py","run_gate.js","app.js","backends.py"]},
+        {"id":"E49","parentId":"E44","title":"任务拆分只挂到选中的模块","summary":"decomposeBoard 读取单个可见目标、祖先路径、直属下级和预留数量。server.py 的 parse_decomposition 检查目标，parse_children 校验最多六项的任务、依赖和验收。浏览器等 children 和 done，检查同级重名与当前修订，再写目标 parentId。复测缺终态、同名和另一页更新，核对卡片数量。","category":"reference","folded":true,"sources":["app.js","server.py","organization.js","run_gate.js"]},
+        {"id":"E50","parentId":"E34","title":"修改路线｜按现象找第一处入口","summary":"先记下可重复的操作、选区和实际结果。展开下级，按症状检查排布与连线、保存与撤销、源码调用入口。修改前写下预计变化的卡片、关系、文件或存储字段，修改后按同一条路径操作，再核对保存后的状态。涉及多个文件时，先从调用方确认输入输出，再到负责该状态的文件修改。","sources":["app.js","organization.js","memory.js","server.py"],"category":"reference","folded":true},
+        {"id":"E51","parentId":"E50","title":"位置、连线与分支范围怎么核对","summary":"卡片摆远时，从 app.js 的 reorderQuickly 查选中的分支范围，再看 organization.js 的 reflowQuickBranch 和 geometry.js 的 layoutBranches。连线异常先核对当前卡片的 parentId，再看 drawOrganizedConnections 选用的矩形。局部快排用 U34、U35 核对父卡和范围外卡片的坐标、图钉、刷新与撤销。","sources":["app.js","organization.js","geometry.js"],"category":"reference","folded":true},
+        {"id":"E52","parentId":"E50","title":"刷新、折叠与撤销从哪份数据查起","summary":"批注、锚点和项目决定从 memory.js 的 load 查起。树、collapsedBranches 和 positions 从 organization.js 的 load 查起。切板用本机命名空间区分数据，模板替换通过 exchangeBoard 保存原值。修改保存逻辑时验证同板两页的写入冲突、切板后各自恢复、撤销后关系和位置一起恢复。","sources":["memory.js","organization.js","app.js"],"category":"reference","folded":true},
+        {"id":"E53","parentId":"E50","title":"用源码索引验证调用与文件归属","summary":"在工作台扫描当前仓库后，点选章节查看关联文件，或输入 app.js#decomposeBoard 查声明和直接调用。app.js 的 requestRepoIndex 请求 /api/repo-index，server.py 把查询交给 repo_index.py 的 RepositoryIndex。跨浏览器和 Python 的请求关系要沿 fetch 与服务路由核对。源码改动后重新扫描。","sources":["app.js","server.py"],"category":"reference","folded":true},
+        {"id":"E54","parentId":"E08","title":"SE 维护约束｜需求、关系与证据","summary":"把需求写成用户动作、可见结果和验收条件。树的连线来自 parentId，任务前置条件记录在 taskDetails.dependencies，项目决定经过用户确认。新增模型动作要明确读取范围、结果结构、应用条件和取消行为。验收记录应能指出执行入口、输入、回传和保存结果，注明使用假中继还是实际服务。","sources":["app.js","memory.js","organization.js","server.py"],"category":"reference","folded":true},
+        {"id":"E55","parentId":"E54","title":"源码修改以一次授权和提交检查为界","summary":"在白板勾选「允许本次修改代码」时，app.js 的 sourceEditContext 将授权绑定到问题、选区、附件、服务和模型。server.py 的 apply_staged_edits 检查暂存文件、UTF-8、源文件哈希和取消状态，只将静态前端清单中的文件回写。要修改后端实现，在仓库工作区按明确范围处理。","sources":["app.js","server.py","backends.py","zcode_workspace.py"],"category":"reference","folded":true},
+        {"id":"E56","parentId":"E54","title":"提交前核对终态与当前白板修订","summary":"organizeBoard、decomposeBoard 在收到候选结构后仍需等待 done，并核对运行身份与 sameBoardRevision。run_gate.js 的 stop 先把运行标为停止中，再向服务请求取消。改动这些入口时，复测取消后迟到的结果和另一标签页的保存，以当前白板真正写入的快照作为验收依据。","sources":["app.js","run_gate.js","memory.js","server.py"],"category":"reference","folded":true},
+        {"id":"E57","parentId":"E30","title":"接手后怎样执行验收","summary":"在仓库根目录运行 python -B -m unittest discover -p \"test_*.py\" -v 和 node test_run_gate.js，核对后端契约与停止门禁。用 node docs/acceptance/run_browser_acceptance.mjs 重放界面操作，需要 Playwright 和本机 Edge。浏览器脚本走临时假中继，真实模型或 CLI 的运行结果单独核实。","sources":["app.js","server.py","run_gate.js","backends.py"],"category":"reference","folded":true}
+      ]
+    }
+  </script>
+  <script id="repo-manual-ndjson-data" type="application/json" data-guide-board="repo-manual" data-guide-id="repo-manual-ndjson-v1">
+    {
+      "id": "repo-manual-ndjson-v1",
+      "title": "NDJSON 跨分片解码与断线恢复",
+      "destination": {"id":"E27","title":"附件、连接设置和事件流"},
+      "items": [
+        {"id":"E58","parentId":null,"category":"reference","title":"NDJSON 跨分片解码与断线恢复","summary":"理解 app.js 的 readEvents 与 runCodex。网络可能在一个 UTF-8 字符或一行 NDJSON 中间切片，最后一行也可能没有换行。如果流提前结束且没有 done，白板怎样处理已显示的候选回答、保存旧回答和恢复重试？需要拆成可用源码逐项验收的任务。","sources":["app.js"]},
+        {"id":"E59","parentId":"E58","category":"reference","title":"梳理 app.js 的 readEvents/runCodex 网络分片与 NDJSON 解码","sources":["app.js"],"taskDetails":{"task":"仅做源码理解：在核对 app.js 版本后，围绕 readEvents 与 runCodex 梳理流式 chunk 进入、UTF-8 跨分片解码、行缓冲、NDJSON 逐行解析、无换行末行及 done 事件边界；把可确认行为与需运行验证的假设分开记录，不做修改。","dependencies":["获取与当前白板修订一致的 app.js 源码或可引用片段（版本需核验）"],"acceptance":["输出 chunk→解码→缓冲→逐行解析→事件分发的路径说明，并标注 readEvents/runCodex 的源码位置或引用。","明确列出 UTF-8 字符被分片、NDJSON 行被分片、末行无换行三类输入的处理方式。","对每个结论标记“源码可确认”或“需运行验证”，不声称已完成实现验收。"]},"summary":"仅做源码理解：在核对 app.js 版本后，围绕 readEvents 与 runCodex 梳理流式 chunk 进入、UTF-8 跨分片解码、行缓冲、NDJSON 逐行解析、无换行末行及 done 事件边界；把可确认行为与需运行验证的假设分开记录，不做修改。"},
+        {"id":"E60","parentId":"E58","category":"reference","title":"理解 runCodex 流缺少 done 时的候选显示、旧回答保存与重试","sources":["app.js"],"taskDetails":{"task":"仅做源码理解：沿 runCodex 及其调用/持久化路径，梳理流提前结束且未收到 done 时的 UI 候选回答状态、旧回答是否保存、错误或断线如何暴露、重试/恢复从何处触发；引用 app.js 的 runCodex 与相关 readEvents 边界，列出待核验项，不做修改。","dependencies":["完成“梳理 app.js 的 readEvents/runCodex 网络分片与 NDJSON 解码”理解任务"],"acceptance":["给出无 done 提前结束时从流结束到 UI/保存/重试的状态序列，并标注 runCodex 相关源码引用。","分别说明已显示候选回答的保留或回滚、旧回答保存路径是否被调用，以及重试入口条件。","把模拟可验证项与真实服务/完整终态检查项分开，未核验处明确标注。"]},"summary":"仅做源码理解：沿 runCodex 及其调用/持久化路径，梳理流提前结束且未收到 done 时的 UI 候选回答状态、旧回答是否保存、错误或断线如何暴露、重试/恢复从何处触发；引用 app.js 的 runCodex 与相关 readEvents 边界，列出待核验项，不做修改。"},
+        {"id":"E61","parentId":"E59","category":"reference","title":"验证中文字符 UTF-8 字节跨 readEvents 两个网络分片解码","sources":["app.js"],"taskDetails":{"task":"仅做源码理解与验证设计，不修改代码。基于已核验版本的 app.js readEvents（版本、源码位置及可引用片段尚待核验），构造含一个中文字符的流式输入，并把该字符的 UTF-8 字节序列拆到两个连续网络 chunk。记录 chunk 进入、流式解码、缓冲及事件输出路径；明确哪些结论来自源码、哪些需运行验证。","dependencies":["获取并核验与当前白板修订一致的 app.js readEvents 源码或可引用片段（当前未核验）","确认可用于观察 readEvents 输出的隔离验证方式（是否可运行尚待验证）"],"acceptance":["输入检查：同一中文字符的 UTF-8 字节被两个连续 chunk 分片，分片边界落在该字符字节中间。","路径检查：记录跨分片字节进入解码器、字符重组及后续缓冲/事件输出的观察点。","运行观察（若可运行）：输出中该中文字符完整出现，且无替换符 U+FFFD 或乱码；不能运行时仅标为需运行验证。","结论检查：逐项标记“源码可确认”或“需运行验证”，不声称已完成实现验收。"]},"summary":"仅做源码理解与验证设计，不修改代码。基于已核验版本的 app.js readEvents（版本、源码位置及可引用片段尚待核验），构造含一个中文字符的流式输入，并把该字符的 UTF-8 字节序列拆到两个连续网络 chunk。记录 chunk 进入、流式解码、缓冲及事件输出路径；明确哪些结论来自源码、哪些需运行验证。"},
+        {"id":"E62","parentId":"E59","category":"reference","title":"验证 JSON 行跨 readEvents 分片及末行无换行解析","sources":["app.js"],"taskDetails":{"task":"仅做源码理解与验证设计，不修改代码。基于已核验版本的 app.js readEvents（版本、源码位置及可引用片段尚待核验），构造一个 NDJSON JSON 对象被两个网络 chunk 从中间切开，并追加一个没有换行符的末行。梳理行缓冲、逐行解析、末行 flush 与事件分发；对无换行末行是否解析必须标注源码依据或需运行验证。","dependencies":["获取并核验与当前白板修订一致的 app.js readEvents 源码或可引用片段（当前未核验）","确认可用于观察行解析与事件分发的验证入口或运行条件（当前未核验）"],"acceptance":["输入检查：一条完整 JSON 行被两个连续 chunk 从 JSON 中间切开，且另有一条无换行末行。","跨分片检查：完整 JSON 行在拼接后只解析一次，并只分发一个对应事件。","末行检查：记录无换行末行的实际处理；若被解析/分发，记录源码位置或运行观察，若被丢弃也记录依据。","结论检查：所有结论标记“源码可确认”或“需运行验证”，不声称已完成实现验收。"]},"summary":"仅做源码理解与验证设计，不修改代码。基于已核验版本的 app.js readEvents（版本、源码位置及可引用片段尚待核验），构造一个 NDJSON JSON 对象被两个网络 chunk 从中间切开，并追加一个没有换行符的末行。梳理行缓冲、逐行解析、末行 flush 与事件分发；对无换行末行是否解析必须标注源码依据或需运行验证。"}
+      ]
+    }
+  </script>
+  <script id="repo-manual-a03-data" type="application/json">
+    [
+      {"topic":"白板交互","items":[
+        {"id":"E37","title":"从鼠标轨迹到文字选区","summary":"index.html 声明工具栏和画布。app.js 的 startGesture、moveGesture、endGesture 收集手势，toScene 将屏幕位置换算为画布坐标。readTextHits 用 DOM Range 找到渲染后的文字，再调用 geometry.js 的 contains。改命中范围从 hit 与 readTextHits 入手。分别在原尺寸与缩小视图圈同一段公式，对照高亮、摘录和完整原式。","sources":["index.html","app.js","geometry.js"],"category":"reference","folded":true},
+        {"id":"E40","title":"只选父卡时如何快速重排","summary":"点击快速重排后，reorderQuickly 根据选区找子树，固定父卡、图钉和范围外卡片。organization.js 的 reflowQuickBranch 避开固定矩形，geometry.js 的 layoutBranches 计算侧向布局和说明卡两列。改间距或分列从这两处入手。复验只选 A03 时 E07 的位置、两列的连接、刷新和撤销。","sources":["app.js","organization.js","geometry.js"],"category":"reference","folded":true},
+        {"id":"E41","title":"拖动、连线与折叠各改什么","summary":"拖动只写坐标。连线模式可依次点父卡和子卡，也可按 Shift 拖线。整理态 editConnection 校验环并写子卡 parentId。drawOrganizedConnections 按父边绘线，branchVisibility 按父边计算隐藏的后代。改挂接与画法分别检查这两个入口。验收拖动、改挂、试建环和折叠后的坐标、父边与可见性。","sources":["app.js","organization.js","geometry.js"],"category":"reference","folded":true}
+      ]},
+      {"topic":"内容对话","items":[
+        {"id":"E38","title":"一次圈问和续问带哪些内容","summary":"getPayload 组装模块 ID、引用摘录、场景包围盒，以及可用的公式和源码线索。选中已有批注时还能看到原问题和来源。memory.js 的 branchFor 按分支 ID 或根锚点取最近四条可用问答，说明卡本身通过总览关系定位。改上下文时，从这两处入手，分别用普通卡、部分公式和旧批注核对选区载荷。","sources":["app.js","memory.js","geometry.js"],"category":"reference","folded":true},
+        {"id":"E36","title":"发送后怎样判断是问答还是操作","summary":"提交表单先记录选区和问题，上传附件后固定白板修订。app.js 的 planRequest 请求 scope=plan，server.py 的 structured_candidate 校验动作，浏览器再分流到问答、拆分、整理或改码。修改分流时检查选区、附件与修订的一致性。用模拟规划结果 ask 和 edit 验证普通问答可落板，未授权编辑在执行前停止。","sources":["app.js","server.py","run_gate.js"],"category":"reference","folded":true},
+        {"id":"E52","title":"回答怎样变成总览和说明卡","summary":"runCodex 用 readEvents 读取 answer 或 explanation。server.py 的 parse_explanation 校验总览与说明项。收到完整终态且本机存储仍一致后，mountExplanationSections 为各说明写 sectionOf 和父卡锚点。改回答结构时同时复测缺终态、停止后迟到结果和刷新展开，核对保存数量及对应父边。","sources":["app.js","server.py","run_gate.js","memory.js"],"category":"reference","folded":true}
+      ]},
+      {"topic":"项目组织","items":[
+        {"id":"E49","title":"任务拆解后怎样挂到选中模块","summary":"decomposeBoard 将单个目标、祖先路径和直属下级交给 server.py，parse_children 校验任务、依赖与验收。浏览器等到 children 和 done，再核对修订和同级重名，把新卡 parentId 固定到目标。任务依赖作为文字保存在 taskDetails.dependencies。改拆分时复验正常、重名、缺终态三种结果，并刷新核对父边。","sources":["app.js","server.py","organization.js"],"category":"reference","folded":true},
+        {"id":"E51","title":"局部整理与快排各写哪些字段","summary":"organizeSelectedBranch 把选中子树交给模型。validateBranchPlan 核对候选范围，applyBranchPlan 更新允许修改的内容和父边。快速重排由 reorderQuickly 调用 reflowQuickBranch，仅计算后代位置。改范围规则时，对比两次操作前后的标题、parentId、位置与折叠，并逐项核对 E07 等范围外卡片。","sources":["app.js","organization.js","geometry.js"],"category":"reference","folded":true},
+        {"id":"E42","title":"刷新和撤销查哪份数据","summary":"memory.js 保存讨论、来源锚点、项目目标与决定。organization.js 保存父边、坐标、折叠、当前树和上一版，快排另有 quickUndo。saveOrganization 通过 writeStorage 核对同板两份存储，另一页先保存时旧页暂停写入。改保存逻辑时分别复验同板两页、切板刷新和撤销恢复。","sources":["memory.js","organization.js","app.js"],"category":"reference","folded":true}
+      ]},
+      {"topic":"模型接入","items":[
+        {"id":"E43","title":"发送请求怎样选中后端","summary":"连接设置指定服务和模型。app.js 的 connectionTarget 读取配置，执行请求到 server.py 的 /api/codex。parse_request 校验输入，backend_request_from_body 组装 BackendRequest，再由 backends.py 的 BackendFactory 选择 API、Codex 或 ZCode。改路由时核对 mode、scope 和服务能力，分别复验请求和终态。","sources":["app.js","server.py","backends.py"],"category":"reference","folded":true},
+        {"id":"E45","title":"API 怎样对草稿执行一批工具","summary":"run_api_turn 将白板快照交给 board_tools.py 的 BoardTools。整板整理可写草稿，api_backend.py 的 run_api 处理工具批次，批内失败恢复草稿。改工具时先查权限和参数校验，用一条合法操作加一条无效操作复验回滚。再核对有效 map、done 和当前修订都齐全时才落板。","sources":["server.py","api_backend.py","board_tools.py","app.js"],"category":"reference","folded":true},
+        {"id":"E47","title":"API 与本机 CLI 读取哪些材料","summary":"app.js 上传附件并保存引用。API 执行轮由 api_backend.py 的 build_content 编入选中的图片或 UTF-8 文本。本机 CLI 可以读取暂存副本，ZCode 的工具路径受 zcode_workspace.py 清单约束。连接保存后端与模型，API 地址和密钥取当前输入。改接入时复验附件上限、只读能力及刷新后密钥是否需要重新输入。","sources":["app.js","api_backend.py","server.py","zcode_workspace.py"],"category":"reference","folded":true}
+      ]},
+      {"topic":"执行边界","items":[
+        {"id":"E55","title":"本轮改码授权怎样传到执行入口","summary":"sourceEditContext 把「允许本次修改代码」绑定到问题、选区、附件、项目、后端和模型。提交时消耗授权，planRequest 返回 edit 后再校验上下文与白板修订。改入口先看 question-form，再看 server.py 的 parse_request 和后端权限派生。用模拟 edit 复验未勾选、勾选和勾选后换选区三种路径。","sources":["app.js","server.py","backends.py"],"category":"reference","folded":true},
+        {"id":"E46","title":"CLI 什么时候才会写回源码","summary":"server.py 的 run_turn 准备工作区，run_agent 启动 Codex 或 ZCode。ZCode 的 call_tool 按清单和模式限制文件操作。apply_staged_edits 检查静态文件路径、大小、UTF-8 和运行前的源码哈希，取得提交权后替换。修改写回时复验正常差异、运行中源码变化、只读替换与失败回滚。","sources":["server.py","zcode_workspace.py","backends.py"],"category":"reference","folded":true},
+        {"id":"E48","title":"停止和结果提交怎样判先后","summary":"readEvents 读取 NDJSON。整理与拆分等到 map 或 children 和 done，再核对运行身份及 sameBoardRevision。停止时 run_gate.js 先标记停止中，随后请求取消。backends.py 的 CancellationToken 仲裁服务端取消与源码提交。复验另一页先保存、停止后结果迟到，以及提交先获权时的提示与文件差异。","sources":["app.js","run_gate.js","backends.py","server.py"],"category":"reference","folded":true}
+      ]},
+      {"topic":"工程维护","items":[
+        {"id":"E53","title":"按问题所在层找修改入口","summary":"先记录复现动作、选区和期望。选区与显示从 app.js 查起，位置算法看 geometry.js 和 organization.js，刷新后的状态查 memory.js。模型执行沿浏览器 fetch 查 server.py 路由。工作台扫描仓库后，可用 app.js#decomposeBoard 查声明和直接调用。改完沿同一条操作复验。","sources":["app.js","geometry.js","organization.js","server.py"],"category":"reference","folded":true},
+        {"id":"E57","title":"离线契约和浏览器回归怎样复跑","summary":"在仓库根运行 python -B -m unittest discover 和 node test_run_gate.js 核对后端契约及停止门禁。用 node docs/acceptance/run_browser_acceptance.mjs 在隔离 Edge 重放界面，可用 BROWSER_CASES 选用例。局部排布看 U34、U35。验收同时核对界面反馈、实际父边和刷新后状态。","sources":["app.js","organization.js","run_gate.js","server.py"],"category":"reference","folded":true},
+        {"id":"E56","title":"怎样验收真实服务与实际写入","summary":"离线测试使用假 HTTP 和假 CLI，隔离浏览器使用假中继。实测时在连接设置选目标服务和模型，用一条可复现的只读问题或结构操作，核对实际回传、完整终态与本机保存。记录测试使用的服务、模型和证据。涉及改码时另外检查仓库差异，并复验修改影响的操作。","sources":["app.js","server.py","backends.py","api_backend.py"],"category":"reference","folded":true}
+      ]}
+    ]
+  </script>
+  <script id="repo-atlas-data" type="application/json">
+    {
+      "id": "repo-atlas-v1",
+      "title": "圈问白板｜源码架构手册",
+      "summary": "跟着一次圈问，读懂圈问白板从命中、执行到落板的完整实现。最后用可复现的例子判断代码边界和修改入口。",
+      "layout": {"flow":"vertical","density":"spacious"},
+      "collapsedBranches": ["E05","E06","E07","E08","E09","E12","E14","E16","E20","E22","E26","E29","E33","E37"],
+      "items": [
+        {"id":"E04","parentId":null,"category":"main","title":"读懂一次圈问","summary":"这块白板把问题、回答和后续改动留在原文旁边。按 01→04 读一遍，就能从一次鼠标动作追到代码入口、模型权限和最终落板。","folded":false,"sources":["app.js","server.py"]},
+        {"id":"E05","parentId":"E04","category":"main","title":"01 命中｜白板怎么知道你在问哪段","summary":"从鼠标轨迹走到具体字词，再把命中的原文和位置装成提问锚点。","folded":false,"sources":["geometry.js","app.js"]},
+        {"id":"E06","parentId":"E04","category":"main","title":"02 执行｜一句话怎么交给 AI","summary":"跟随发送按钮，理解模型如何判意图，以及 API、Codex、ZCode 分别能读取和改变什么。","folded":false,"sources":["app.js","server.py","backends.py"]},
+        {"id":"E07","parentId":"E04","category":"main","title":"03 落板｜回答怎样变成新的结构","summary":"以拆出子卡为例，追到父子关系、终态校验和本机保存，再对照回答、整理和改码。","folded":false,"sources":["app.js","organization.js","memory.js"]},
+        {"id":"E08","parentId":"E04","category":"main","title":"04 维护｜从现象定位到代码","summary":"把结构审查、已复现的风险和改动入口放在一起，按你遇到的问题继续展开。","folded":false,"sources":["app.js","server.py","organization.js"]},
+        {"id":"E09","parentId":"E05","category":"reference","title":"命中｜像素如何变成选区","summary":"画圈与卡片使用同一套场景坐标。先做坐标转换，再按文字或图形各自的命中规则选取内容。","folded":false,"sources":["app.js","geometry.js"]},
+        {"id":"E10","parentId":"E09","category":"reference","title":"缩放后为什么还能选准","summary":"指针和元素矩形都换算到画布的逻辑坐标。geometry.js 的 scenePoint 用屏幕位置减去画布边界，再除以缩放倍率。app.js 的 rectInScene 用同一套转换处理文字矩形。复现偏移时，对照当前缩放值与两端坐标。","folded":true,"sources":["geometry.js","app.js"]},
+        {"id":"E11","parentId":"E09","category":"reference","title":"为什么能只圈公式里的几个字","summary":"选中文字由实际渲染位置决定。readTextHits 用 Intl.Segmenter 遍历字素，DOM Range 取得每段的矩形，再用矩形中心做多边形测试。圈中部分公式时，hit 同时记录片段与完整公式。想改宽松度，先测换行、缩放与圈边的字。","folded":true,"sources":["app.js","geometry.js"]},
+        {"id":"E12","parentId":"E05","category":"reference","title":"锚点｜一次选区如何被记录","summary":"锚点把问题和原始内容联系起来。getPayload 记录模块 ID、引用片段、场景包围盒，以及可用的源码文件、公式片段和批注上下文。","folded":false,"sources":["app.js","memory.js"]},
+        {"id":"E13","parentId":"E12","category":"reference","title":"追问如何沿着原讨论继续","summary":"分支上下文从所选 ID 向原始来源追溯。选中已有批注时，getPayload 加入它的原问题和来源卡片 ID。branchFor 根据相关来源挑最近讨论，项目目标、约束和决定由 projectContext 单独加入请求。用右侧载荷检查每类信息从哪里来。","folded":true,"sources":["app.js","memory.js"]},
+        {"id":"E14","parentId":"E06","category":"reference","title":"发送｜为什么可能有两次模型请求","summary":"第一次把用户的话归类为动作，第二次才执行该动作。planRequest 先获取 ask、extend、decompose、organize、edit 等意图，表单再选择对应的实际执行分支。","folded":false,"sources":["app.js","server.py"]},
+        {"id":"E15","parentId":"E14","category":"reference","title":"附件什么时候离开浏览器","summary":"拖入和粘贴先进入当前页面的附件草稿。点发送时，uploadAttachments 把新文件交给本机保存，再合并选区继承的附件引用。规划轮提供附件名，执行轮按后端能力提交内容或放到临时工作区。","folded":true,"sources":["app.js","attachments.py","server.py","api_backend.py"]},
+        {"id":"E16","parentId":"E06","category":"reference","title":"权限｜三种后端各能做什么","summary":"三种连接共用一套白板请求，读取与执行能力各有边界。展开对照远端 API 的白板工具和两套本机 CLI 的代码访问。","folded":false,"sources":["backends.py","server.py","api_backend.py","zcode_workspace.py"]},
+        {"id":"E17","parentId":"E16","category":"reference","title":"API 直连 · 提供数据，执行白板工具","summary":"API 读取本轮提交的选区、相关讨论、项目记忆和支持的附件。整理轮可调用 BoardTools，在服务器内存的白板草稿上创建、更新、挂接和归档。run_api 约束请求与工具预算，服务校验草稿后才发 map。","folded":true,"sources":["api_backend.py","board_tools.py","server.py"]},
+        {"id":"E18","parentId":"E16","category":"reference","title":"Codex · 在本机读码与暂存改动","summary":"Codex 由本机服务启动，执行模式决定沙箱权限。普通读码走只读模式，源码编辑在临时副本里运行，结构化任务携带结果 schema。回写的实际入口是 apply_staged_edits。","folded":true,"sources":["server.py","backends.py"]},
+        {"id":"E19","parentId":"E16","category":"reference","title":"ZCode · 会话与受限工作区工具","summary":"ZCode 通过 app-server 的 stdio 协议创建会话。临时工作区工具提供列文件和读文件，编辑模式再开放唯一文本替换。文件名和工作模式由 zcode_workspace.py 校验。","folded":true,"sources":["zcode_backend.py","zcode_workspace.py","backends.py","server.py"]},
+        {"id":"E20","parentId":"E06","category":"reference","title":"协议｜浏览器和服务怎样交接","summary":"浏览器走本机 POST /api/codex。WhiteboardHandler 校验来源和体积，构造 BackendRequest，再由 BackendFactory 选择执行器。","folded":false,"sources":["app.js","server.py","backends.py"]},
+        {"id":"E21","parentId":"E20","category":"reference","title":"流里哪些信息有提交意义","summary":"NDJSON 把上下文、进度、候选和终态逐行传回。readEvents 读取事件，context 供检查提示词，status 供等待提示。answer、children、map 分别带候选，接收路径还会检查运行身份与 done。","folded":true,"sources":["app.js","server.py","run_gate.js"]},
+        {"id":"E22","parentId":"E07","category":"reference","title":"实例｜把一个模块拆成直属子卡","summary":"选中一个模块后，拆解会生成它的直属子卡。沿着三张细卡依次看浏览器给模型什么、服务校验什么、浏览器最终保存什么。","folded":false,"sources":["app.js","server.py","organization.js"]},
+        {"id":"E23","parentId":"E22","category":"reference","title":"输入 · 一条祖先路径和现有孩子","summary":"decompositionContext 给模型一个明确的拆解边界。输入含单一目标、从根到目标的祖先路径和已有直属下级。decomposeBoard 预留本轮最多六个编号，服务校验目标是否与选区一致。","folded":true,"sources":["app.js","server.py"]},
+        {"id":"E24","parentId":"E22","category":"reference","title":"输出 · 任务内容需要过形状校验","summary":"parse_children 检查每项的标题、任务说明、依赖和验收标准。API 与 CLI 的候选都经过本机结构校验。dependencies 保存为任务文字，白板树上的线由 parentId 决定。","folded":true,"sources":["server.py","organization.js"]},
+        {"id":"E25","parentId":"E22","category":"reference","title":"保存 · 由浏览器决定孩子挂在哪里","summary":"浏览器收到 children 和有效终态后才生成新卡。decomposeBoard 检查白板修订、同级重名和任务字段，给每张卡分配编号，并把 parentId 固定成选中的模块 ID。任务卡还能按同一条路径继续拆。","folded":true,"sources":["app.js","organization.js","run_gate.js"]},
+        {"id":"E26","parentId":"E07","category":"reference","title":"提交｜一段回答和一次修改如何生效","summary":"普通回答更新批注，整理提交白板快照，改码由本机服务回写文件。每个路径都有自己的提交条件。","folded":false,"sources":["app.js","server.py","memory.js","organization.js"]},
+        {"id":"E27","parentId":"E26","category":"reference","title":"整理和快速重排的写入范围","summary":"整理会提交卡片关系和分类，快速重排主要更新位置。organizeBoard 等待候选 map 与终态后核对修订并保存可撤销快照。reorderQuickly 读取现有结构，在浏览器算坐标并保留撤销入口。","folded":true,"sources":["app.js","organization.js","geometry.js"]},
+        {"id":"E28","parentId":"E26","category":"reference","title":"停止和源码回写如何判定先后","summary":"停止首先使浏览器的旧运行失效。服务的 CancellationToken 再决定取消与提交谁先发生。apply_staged_edits 比较源码哈希并检查暂存文件，通过提交闸门才写回允许的前端文件。发生写入错误时尝试恢复已替换文件。","folded":true,"sources":["run_gate.js","app.js","backends.py","server.py"]},
+        {"id":"E29","parentId":"E07","category":"reference","title":"状态｜树、画面与项目记忆分开看","summary":"父子关系、屏幕位置和讨论记忆是三类状态。先读 parentId，再看折叠、布局和连线，最后检查浏览器保存的两份快照。","folded":false,"sources":["memory.js","organization.js","app.js"]},
+        {"id":"E30","parentId":"E29","category":"reference","title":"折叠为什么只该隐藏当前后代","summary":"branchVisibility 从父边推导可见节点，折叠值单独保存。guideLayout 给顶层章节各自的列，细项按深度缩进。drawOrganizedConnections 使用可见卡片的矩形画线，正文折叠另有独立开关。","folded":true,"sources":["organization.js","app.js"]},
+        {"id":"E31","parentId":"E29","category":"reference","title":"刷新与切换时从哪里恢复","summary":"当前白板 ID 决定本地存储命名空间。memory.js 保存批注、目标、约束、决定和删除等状态，organization.js 保存树、排布与折叠。initializeProjectBoard 只在两份状态都缺失时写入该板种子。","folded":true,"sources":["memory.js","organization.js","app.js"]},
+        {"id":"E32","parentId":"E29","category":"reference","title":"整理错了该检查哪份快照","summary":"先看组织状态里的 current 与 previous，判断候选是否真的应用。涉及删除还要检查批注与删除状态。模板交换通过 exchangeBoard 保存两份旧值并尝试回滚，备份同样属于当前白板的命名空间。","folded":true,"sources":["app.js","memory.js","organization.js"]},
+        {"id":"E33","parentId":"E08","category":"reference","title":"结构审查｜保留哪些边界","summary":"本机原型的分层基本成立。几何可独立核对，模型适配共享请求契约，候选有独立的落板检查。最需要收紧的是授权和提交之间的边界，其次是集中过多的入口。","folded":false,"sources":["geometry.js","run_gate.js","backends.py","app.js","server.py"]},
+        {"id":"E34","parentId":"E33","category":"reference","title":"优先 · 意图识别能打开编辑模式","summary":"用假规划器回放时，明确只要求解释也能触发编辑请求。表单把 planRequest 返回的 edit 直接映射为 mode，服务再从 mode 派生编辑权限。建议单独证明用户授权，仍然保留同一个提问框。该回放没有执行实际写入。","folded":true,"sources":["app.js","server.py","backends.py"]},
+        {"id":"E35","parentId":"E33","category":"reference","title":"已复现 · 两页写入会覆盖对方","summary":"同一白板开两页，先改 A 页目标，再在 B 页只改约束，旧目标会被 B 页写回。persist 保存整份页内状态。另一次模拟中，A 页等待意图分类时 B 页改了标题，A 随后的整理仍用旧图覆盖它。整理需在规划结束后核对同一份修订。","folded":true,"sources":["app.js","memory.js","organization.js"]},
+        {"id":"E36","parentId":"E33","category":"reference","title":"演进成本 · 入口聚集与权限清单漂移","summary":"app.js 同时负责指针、渲染、状态和请求，server.py 集中 HTTP、校验、提示词与执行协调。索引能查到 repo_index.py，但章节来源与 CLI 暂存清单没有收录它。扩展时先明确文件可引用、可读和可写的各自契约。","folded":true,"sources":["app.js","server.py","organization.js","zcode_workspace.py"]},
+        {"id":"E37","parentId":"E08","category":"reference","title":"接手指南｜按现象挑第一处入口","summary":"动手前先确定错在输入、结果、存储还是绘制。下面四张卡分别给出第一处代码入口和一条验证路径。","folded":false,"sources":["app.js","server.py","organization.js"]},
+        {"id":"E38","parentId":"E37","category":"reference","title":"线画错了 · 先查 parentId","summary":"普通整理的主干线可能把两个同级卡视觉上串起来。隔离回放保留了共同父节点，画面仍沿主干位置画出一条连续线。先核对持久化父边，再进 drawOrganizedConnections 判断通用主干和手册层级的画法。","folded":true,"sources":["app.js","organization.js"]},
+        {"id":"E39","parentId":"E37","category":"reference","title":"模型答了却没上板 · 找终态","summary":"依次核对选区载荷、服务上下文、候选事件、终态和最终存储。拆解先查 children 与 done 是否齐全，再检查运行 ID、修订和父节点。整理先检查草稿是否真的改过，再核对 map 是否被应用。","folded":true,"sources":["app.js","server.py","api_backend.py","run_gate.js"]},
+        {"id":"E40","parentId":"E37","category":"reference","title":"顺着调用找源码 · 扫描后查符号","summary":"GitNexus 在临时源码快照里查符号和直接调用。试着从 decomposeBoard 追到 decompositionContext，再到 server.py 的 structured_candidate 查 parse_children。中间的 HTTP 边用浏览器 fetch 和 WhiteboardHandler 对照。","folded":true,"sources":["app.js","server.py"]},
+        {"id":"E41","parentId":"E37","category":"reference","title":"改完怎么验证 · 按证据分层","summary":"先用离线测试验证请求校验和落板门禁，再在隔离浏览器重跑操作。供应商和 CLI 实际运行需要各自的证据。仓库的 docs/acceptance 记录用例和执行方式，可以按故障所在层选择验证。","folded":true,"sources":["app.js","server.py","run_gate.js"]}
+      ]
+    }
+  </script>
+  <script id="project-workbench-data" type="application/json">
+    {
+      "id":"project-workbench-v1",
+      "title":"圈问白板｜项目工作台",
+      "summary":"从使用者要完成的事进入项目。每项需求下面都有实现入口、可复现的用例和验证边界。",
+      "layout":{"flow":"vertical","density":"normal"},
+      "collapsedBranches":["E05","E06","E07","E08","E09","E10","E14","E17","E20","E24","E33","E36","E39","E42","E48"],
+      "items":[
+        {"id":"E04","parentId":null,"category":"main","title":"圈问白板｜项目工作台","summary":"个人开发者在本地白板读懂仓库、圈选发问、逐级改需求并复验。运行 python -B server.py 后打开 127.0.0.1:8791。板和讨论保存在浏览器本机，任务依赖是文字。展开任一章，沿需求找到实现和测试。","sources":["index.html","app.js","server.py","memory.js"]},
+        {"id":"E05","parentId":"E04","category":"main","title":"01｜圈选、提问和追问","summary":"从一段原文开始，核对 AI 实际收到的内容，再沿着原讨论继续问。","sources":["app.js","geometry.js","memory.js"]},
+        {"id":"E06","parentId":"E04","category":"main","title":"02｜拆任务和摆放分支","summary":"把目标拆到可以执行的粒度，再折叠或移动分支，随时返回项目总览。","sources":["app.js","organization.js","server.py"]},
+        {"id":"E07","parentId":"E04","category":"main","title":"03｜纠正一整支回答","summary":"指出偏差，重写所选卡和全部后代，核对保存和撤销是否符合预期。","sources":["app.js","server.py","organization.js"]},
+        {"id":"E08","parentId":"E04","category":"main","title":"04｜模型连接、授权与停止","summary":"了解一次提问走向哪种服务、能读写什么，以及中途停止后如何保护已有内容。","sources":["server.py","backends.py","api_backend.py","run_gate.js"]},
+        {"id":"E09","parentId":"E04","category":"main","title":"05｜从源码定位到交付验收","summary":"查一条真实调用路径，选对测试层，再把改动和复跑证据放回原需求。","sources":["app.js","server.py"]},
+
+        {"id":"E10","parentId":"E05","category":"reference","title":"圈中的内容和问题要一起留下","summary":"圈选卡片的部分文字后发送，AI 接收所圈原文和卡片编号，回答保留在相应选区。连接失败时可沿同一问题重试。","sources":["app.js","memory.js"],"spec":{"kind":"requirement","id":"REQ-ASK-01"}},
+        {"id":"E11","parentId":"E10","category":"reference","title":"实现｜从鼠标命中到批注","summary":"geometry.js 的 scenePoint 将屏幕点转成画布坐标。app.js 的 readTextHits 找到圈中文字，getPayload 组装编号、原文和矩形，planRequest 选择动作，runCodex 接收回答，memory.js 保存问题、回答和锚点。命中偏差先查坐标与字素，落板异常再查事件和保存。","folded":true,"sources":["geometry.js","app.js","memory.js"]},
+        {"id":"E12","parentId":"E10","category":"reference","title":"圈中折叠章节的标题并保存回答","summary":"给定源码架构手册 E05 已收起下级。\n当真实鼠标圈住 E05 标题并发送，模拟服务返回回答及 done。\n则请求 anchor.elementIds 等于 [E05]，quote 等于标题原文，回答显示在画布内。刷新后同一批注仍在，E05 仍收起。","folded":true,"sources":["app.js","memory.js"],"spec":{"kind":"case","id":"TC-ASK-01","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U16"}},
+        {"id":"E13","parentId":"E10","category":"reference","title":"重试复用失败的批注和选区","summary":"给定圈中 E05，首轮计划返回无效文本。\n当重新发送，执行轮先返回超时错误，再次重试后返回完整回答。\n则无效计划不发送执行请求，超时后草稿保留，成功时批注 ID、问题、引用和锚点都与失败轮一致，页面只有一张该问题的批注。","folded":true,"sources":["app.js","memory.js"],"spec":{"kind":"case","id":"TC-ASK-02","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U17"}},
+        {"id":"E14","parentId":"E05","category":"reference","title":"长解释按要点展开，还能就其中一条追问","summary":"要求解释多个环节时，白板显示一张简短总览和各自的说明卡。圈选某张说明卡续问时，模型能看见该卡内容与关联讨论。","sources":["app.js","server.py","memory.js"],"spec":{"kind":"requirement","id":"REQ-ASK-02"}},
+        {"id":"E15","parentId":"E14","category":"reference","title":"实现｜回答总览、细项和历史","summary":"server.py 的 parse_explanation 校验总览及 2 至 6 个细项。app.js 的 runCodex 收到完整结果后，通过 mountExplanationSections 把说明卡挂到总览。memory.js 的 branchFor 依所选锚点和分支编号取最近讨论。修改拆分时核对原问题、旧回答和细项归属。","folded":true,"sources":["server.py","app.js","memory.js"]},
+        {"id":"E16","parentId":"E14","category":"reference","title":"追问和再拆分保留原有分支","summary":"给定 E05 的问题由模拟服务返回一份总览与三张说明卡。\n当圈选其中一张追问，再把该说明卡原地拆细。\n则总览显示摘要，三张说明卡仍是原总览的直属下级，新细项只挂在被拆的那张卡下，收起再展开仍能找回。","folded":true,"sources":["app.js","server.py"],"spec":{"kind":"case","id":"TC-ASK-03","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U26"}},
+
+        {"id":"E17","parentId":"E06","category":"reference","title":"任务拆到所选模块下并附验收","summary":"选中一个模块或任务后，AI 可生成最多六张直属任务卡。每项写清要做什么、依赖和验收，现有任务可按同一方式继续拆。","sources":["app.js","server.py","organization.js"],"spec":{"kind":"requirement","id":"REQ-TREE-01"}},
+        {"id":"E18","parentId":"E17","category":"reference","title":"实现｜上下文、任务形状和落板","summary":"app.js 的 decompositionContext 读取祖先路径与已有直属下级。server.py 的 parse_decomposition 和 parse_children 校验目标及任务字段。decomposeBoard 等完整终态后分配 ID，把 parentId 固定为选中的卡。taskDetails.dependencies 是依赖文字，验收结果要由测试验证。","folded":true,"sources":["app.js","server.py","organization.js"]},
+        {"id":"E19","parentId":"E17","category":"reference","title":"两级拆解与折叠恢复","summary":"给定 E01 → E02，且 E02 已有直属 E04。\n当选 E02 拆任务，再选生成的任务向下拆，随后收起 E02 并刷新。\n则首轮请求路径为 [E01,E02]，新任务 parentId 为 E02，验收与依赖和夹具一致。孙任务挂在首轮任务下，刷新后仍隐藏。撤销第二轮只移除孙任务。","folded":true,"sources":["app.js","server.py","organization.js"],"spec":{"kind":"case","id":"TC-TREE-01","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U08"}},
+        {"id":"E20","parentId":"E06","category":"reference","title":"局部排布只移动目标分支或选中卡","summary":"选中父卡快速重排时，只重新计算它的后代位置，父卡、图钉卡和其他分支留在原处。多选拖动时保持所选卡间距。","sources":["app.js","organization.js","geometry.js"],"spec":{"kind":"requirement","id":"REQ-TREE-02"}},
+        {"id":"E21","parentId":"E20","category":"reference","title":"实现｜关系和坐标分开保存","summary":"organization.js 用 parentId 决定可见后代，positions 记录手动位置。app.js 的 reorderQuickly 计算受选分支，保留固定卡坐标并写 quickUndo。多选拖动走 saveMovedCards。查排布先核对存储坐标，再查 drawOrganizedConnections。","folded":true,"sources":["app.js","organization.js","geometry.js"]},
+        {"id":"E22","parentId":"E20","category":"reference","title":"局部三种排布保持分支边界","summary":"给定隔离白板有已展开分支、图钉后代和其他章节，记录其场景矩形。\n当选分支根，连续点击快速重排以切换三种排布，刷新后撤销最近一次。\n则根、图钉及外部矩形逐项与基线相等，内部布局变化，父子关系和折叠状态一致。","folded":true,"sources":["app.js","organization.js"],"spec":{"kind":"case","id":"TC-TREE-02","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U34"}},
+        {"id":"E23","parentId":"E20","category":"reference","title":"多选拖动保持卡片间距","summary":"给定移动模式中按 Shift 增减所选卡。\n当拖动任一选中卡并刷新。\n则保留选中卡各自的平移结果和组内间距，未选卡坐标与父子关系相同。另一次拖动中按 Esc、或拖动空白平移画布，均保留卡片场景坐标。","folded":true,"sources":["app.js","organization.js"],"spec":{"kind":"case","id":"TC-TREE-03","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U37"}},
+        {"id":"E48","parentId":"E06","category":"reference","title":"展开下级时保持总览的章节宽度","summary":"整板紧凑快排先排项目总览和同级章节，再排各章下级。展开较深或较多的后代时，同级章节仍保持原宽度和横向位置。","sources":["organization.js","app.js"],"spec":{"kind":"requirement","id":"REQ-TREE-03"}},
+        {"id":"E49","parentId":"E48","category":"reference","title":"实现｜父卡定宽，详情借用空列","summary":"organization.js 的 guideLayout 用固定章节宽度和间距排父卡。每章下级在自己的列内按层缩进；紧凑模式有三张或更多直属下级时，可以借用相邻收起章节下方的空列。","folded":true,"sources":["organization.js"]},
+        {"id":"E50","parentId":"E48","category":"reference","title":"展开深浅混合的章节，父卡尺寸不变","summary":"给定工作台五个章节处于紧凑树形，并记录章节的场景 x 与 width。\n当展开圈问、任务和纠偏章节，并展开纠偏需求。\n则五张父卡的 x 和 width 逐项与初始值相等，所有可见卡片互不重叠。","folded":true,"sources":["organization.js","app.js"],"spec":{"kind":"case","id":"TC-TREE-04","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U39"}},
+
+        {"id":"E24","parentId":"E07","category":"reference","title":"替换一整支回答，可回到上一个版本","summary":"选中一张卡，可加调整意见并重新生成。范围包含全部后代与已收起的卡。整轮成功才保存，新内容保留原编号、父子关系与折叠。失败后原分支可继续读，成功后可撤销。","sources":["app.js","server.py","organization.js"],"spec":{"kind":"requirement","id":"REQ-REGEN-01"}},
+        {"id":"E25","parentId":"E24","category":"reference","title":"实现｜给模型什么","summary":"app.js 的 organizeSelectedBranch 从 hierarchyItems 和 subtreeIds 取整支节点，把根在请求里的 layoutParentId 设为 null。只读 POST /api/codex 使用 scope=organizeBranch，发送意见、选区、旧文、可用原问题及附件。server.py 用 parse_branch_result 验证候选。","folded":true,"sources":["app.js","server.py"]},
+        {"id":"E26","parentId":"E24","category":"reference","title":"实现｜何时保存与撤销","summary":"app.js 的 validateBranchPlan 比对候选 ID 和每张卡原父边。organizeSelectedBranch 等 done，核对运行身份与白板修订，再由 applyBranchPlan 写 organization.js 的 current 和 previous。原始批注留在记忆层。撤销整理恢复 previous，原分支根的外部父边仍由本机决定。","folded":true,"sources":["app.js","organization.js","memory.js","run_gate.js"]},
+        {"id":"E27","parentId":"E24","category":"reference","title":"收起的下级也会进入只读请求","summary":"给定 A01 下有 A02、A03、A04，A02 下的 E90 已收起。\n当选中 A01，填入纠偏意见后点重新生成分支。\n则请求是 ask / organizeBranch，branchRootId 为 A01，节点集合恰为 A01、A02、A03、A04、E90。A01 的请求父边为 null，E90 的请求父边为 A02，question 含纠偏意见。","folded":true,"sources":["app.js","server.py"],"spec":{"kind":"case","id":"TC-REGEN-01","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U38"}},
+        {"id":"E28","parentId":"E24","category":"reference","title":"完整候选一次替换所选分支","summary":"给定 A01 的外部父卡 E04，E90 折叠且有手动坐标。\n当模拟服务对五个节点返回相同 ID 与父边的新标题和正文，并返回匹配版本的 done。\n则五个节点内容均替换，A01 仍属 E04，E90 仍属 A02 且保持折叠、原坐标与来源。分支外条目和原始批注记录与基线相同。","folded":true,"sources":["app.js","organization.js","memory.js"],"spec":{"kind":"case","id":"TC-REGEN-02","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U38"}},
+        {"id":"E29","parentId":"E24","category":"reference","title":"父边错误或终态无效时拒绝提交","summary":"给定保存的组织快照与原始批注记录。\n当模拟服务分别把 E90 改挂 A01、只发候选缺少 done，或返回旧 baseRevision 的 done。\n则每轮结束后组织快照和原始批注逐项等于基线，旧撤销记录依然可用。","folded":true,"sources":["app.js","server.py","run_gate.js"],"spec":{"kind":"case","id":"TC-REGEN-03","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U38"}},
+        {"id":"E30","parentId":"E24","category":"reference","title":"刷新后能读新版，也能撤回","summary":"给定 A01 已完整重新生成。\n当刷新后展开 A02 查看 E90，再点撤销整理并再次刷新。\n则第一次刷新显示 A01 新正文，展开后看到 E90 新正文。撤销后 current 逐项等于生成前，旧 A01 回答和原始批注可再次读到。","folded":true,"sources":["app.js","organization.js","memory.js"],"spec":{"kind":"case","id":"TC-REGEN-04","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U38"}},
+        {"id":"E31","parentId":"E24","category":"optimize","title":"待验证｜真实模型纠正坐标误解","summary":"给定隔离测试板的两张旧卡把缩放乘除写反，并附 geometry.js 的 scenePoint 实现。\n当使用有源码访问能力的真实模型重新生成，意见要求写出公式和数值例子。\n则新正文说明先减画布边界再除以缩放，输入 x=260、边界 x=100、缩放 0.5 时得 320。记录服务、模型和返回证据。本例待实测。","folded":true,"sources":["geometry.js","app.js","server.py"],"spec":{"kind":"case","id":"TC-REGEN-05","status":"pending"}},
+        {"id":"E32","parentId":"E24","category":"optimize","title":"待补用例｜停止后迟到的分支结果","summary":"给定已有保存结果和撤销记录，模拟服务暂扣本轮 branch 和 done。\n当点停止并等待取消确认，再让服务发出此前暂扣的合法结果。\n则本轮请求 ID 已取消，卡片和 localStorage 快照与停止前一致，撤销仍指向上一个成功版本。整板停止已有 U05-A，本例待补分支专测。","folded":true,"sources":["app.js","run_gate.js","server.py"],"spec":{"kind":"case","id":"TC-REGEN-06","status":"pending"}},
+
+        {"id":"E33","parentId":"E08","category":"reference","title":"源码修改需要本轮授权","summary":"普通提问以只读执行。Codex 或 ZCode 改码需要在当前问题和选区确认授权。改码请求只应用白名单内源码的差异，API 直连保持只读源码边界。","sources":["app.js","server.py","backends.py","zcode_workspace.py"],"spec":{"kind":"requirement","id":"REQ-RUN-01"}},
+        {"id":"E34","parentId":"E33","category":"reference","title":"实现｜意图、权限和暂存提交","summary":"app.js 先用 planRequest 分类，再核对当前问题、附件和选区是否匹配授权。server.py 的 parse_request 与 BackendFactory 验证 mode 和服务能力。需要暂存的改码在独立工作区完成，由 apply_staged_edits 核对版本、写入范围和取消状态后提交。","folded":true,"sources":["app.js","server.py","backends.py","zcode_workspace.py"]},
+        {"id":"E35","parentId":"E33","category":"reference","title":"API 后端拒绝源码编辑请求","summary":"给定 BackendRequest 指定 api、模型 m 和 edit。\n当调用 BackendFactory 中 API 适配器的 validate。\n则抛出 ValueError。该单测覆盖后端权限校验，浏览器勾选和真实 CLI 写入另验。","folded":true,"sources":["backends.py","server.py"],"spec":{"kind":"case","id":"TC-RUN-01","status":"offline-pass","runner":"python -B -m unittest test_backends.FactoryTests.test_api_edit_denied"}},
+        {"id":"E36","parentId":"E08","category":"reference","title":"选定服务后才发送上下文和附件","summary":"用户可选 Codex、ZCode 或 API。按当前设置传递选区与已提交附件。API Key 仅在当前页面使用，刷新后需重新输入。","sources":["app.js","server.py","backends.py","api_backend.py","attachments.py"],"spec":{"kind":"requirement","id":"REQ-RUN-02"}},
+        {"id":"E37","parentId":"E36","category":"reference","title":"实现｜连接选择到服务适配","summary":"app.js 的 connectionTarget 汇总本轮服务、模型和临时配置，uploadAttachments 先上传草稿文件。server.py 的 WhiteboardHandler 核对本机来源并分派后端。API 适配器只收到发出的资料，CLI 可在规定范围内读本机源码。模型连通性以各服务的实测为准。","folded":true,"sources":["app.js","server.py","backends.py","api_backend.py","attachments.py"]},
+        {"id":"E38","parentId":"E36","category":"reference","title":"API Key 在刷新后清空","summary":"给定隔离浏览器使用合成 Key 发起整理并完成。\n当检查当前页面、localStorage 并刷新。\n则 Key 在刷新前只出现在输入值，存储序列化结果及页面正文不含该值，刷新后输入值为空。","folded":true,"sources":["app.js","api_backend.py"],"spec":{"kind":"case","id":"TC-RUN-02","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U02"}},
+        {"id":"E39","parentId":"E08","category":"reference","title":"停止后拒绝本轮迟到的结果","summary":"用户可停止等待中的 AI 请求。停止使这一轮失效，晚到的内容不能覆盖已保存的白板。","sources":["app.js","run_gate.js","server.py"],"spec":{"kind":"requirement","id":"REQ-RUN-03"}},
+        {"id":"E40","parentId":"E39","category":"reference","title":"实现｜浏览器取消与服务令牌","summary":"app.js 的 stopActiveRun 通过 run_gate.js 标记运行停止，按 requestId 发 /api/cancel 并中断流。后续候选先过 acceptsRunEvent，服务由 CancellationToken 管理取消与提交。停止竞态应分别核对页面状态和实际文件写入。","folded":true,"sources":["app.js","run_gate.js","server.py"]},
+        {"id":"E41","parentId":"E39","category":"reference","title":"停掉整板整理后迟到的结果不生效","summary":"给定模拟中继收到整理请求并延迟发送 map 和 done。\n当用户点停止，随后模拟中继尝试发送迟到事件。\n则同源取消请求已发出，页面没有因为这轮出现撤销整理按钮。测试记录须证明确实尝试发过迟到事件。","folded":true,"sources":["app.js","run_gate.js","server.py"],"spec":{"kind":"case","id":"TC-RUN-03","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U05-A"}},
+
+        {"id":"E42","parentId":"E09","category":"reference","title":"从当前需求定位到仓库实现","summary":"选中有关实现的卡，可按源码文件和函数追查直接调用。扫描、查询和失败重试都不写入白板。代码变更后应按新快照复查。","sources":["app.js","server.py"],"spec":{"kind":"requirement","id":"REQ-TRACE-01"}},
+        {"id":"E43","parentId":"E42","category":"reference","title":"实现｜本机索引与快照","summary":"app.js 的 requestRepoIndex 请求 /api/repo-index。server.py 交给 repo_index.py 的 RepositoryIndex，后者用临时快照和 GitNexus 查询函数。界面显示文件、位置与直接调用。跨 HTTP 的调用需分别核对浏览器请求和服务入口。","folded":true,"sources":["app.js","server.py"]},
+        {"id":"E44","parentId":"E42","category":"reference","title":"扫描失败可重试，查同名函数带文件","summary":"给定选中的章节对应 app.js，索引夹具有两个同名 decomposeBoard。\n当第一次扫描返回 503，重试成功后点击章节内符号。\n则查询指定 app.js，展示直接调用 decompositionContext。失败和成功前后的所有白板存储深度相等。","folded":true,"sources":["app.js","server.py"],"spec":{"kind":"case","id":"TC-TRACE-01","status":"mock-pass","runner":"docs/acceptance/run_browser_acceptance.mjs · U15"}},
+        {"id":"E45","parentId":"E42","category":"reference","title":"源码变化使旧索引快照失效","summary":"给定临时 app.js 含 entry 和 helper，测试替换 GitNexus 执行器。\n当扫描后查 entry，再修改源码并扫描。\n则第一次查询复用同一快照并返回 helper 为 callee，源码修改后快照指纹改变，执行器重新建立索引。","folded":true,"sources":["server.py"],"spec":{"kind":"case","id":"TC-TRACE-02","status":"offline-pass","runner":"python -B -m unittest test_repo_index.RepositoryIndexTests.test_scan_and_context_reuse_read_only_snapshot"}},
+        {"id":"E46","parentId":"E09","category":"reference","title":"怎样复跑一张测试卡","summary":"从仓库根运行。浏览器用例先设置 PowerShell 的 $env:BROWSER_CASES，例如赋值 U38，再运行 node docs/acceptance/run_browser_acceptance.mjs。单测按卡片的入口执行。记录用例编号、环境、实际断言和结果。模拟浏览器证明交互及保存，真实模型输出要在单独试验中核对。","folded":true},
+        {"id":"E47","parentId":"E09","category":"reference","title":"怎样把需求改动交给 AI","summary":"选中最具体的需求，写下新期望、原行为和本次范围。先核对实现与现有用例，给出能失败的测试。确认场景后再改代码并复跑受影响用例，将结果挂回该需求。需求和用例卡上的证据是记录，状态目前由人工核对。","folded":true}
+      ]
+    }
+  </script>
 </body>
 </html>

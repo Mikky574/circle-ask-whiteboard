@@ -7,7 +7,10 @@ from pathlib import Path
 
 
 EDITABLE = ("index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js")
-READABLE = (*EDITABLE, "server.py", "attachments.py", "zcode_backend.py", "zcode_workspace.py")
+READABLE = (
+    *EDITABLE, "run_gate.js", "server.py", "attachments.py", "zcode_backend.py", "zcode_workspace.py",
+    "backends.py", "api_backend.py", "board_tools.py",
+)
 ATTACHMENT = re.compile(r"attachments/attachment-[0-9]{1,2}\.[a-z0-9]{1,12}")
 TEXT = {"type": "string"}
 

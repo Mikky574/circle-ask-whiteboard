@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "syntheticApiKey": "TEST-ONLY-NOT-A-REAL-KEY",
+  "backends": [
+    { "id": "codex", "available": true, "models": ["codex-fixture-a", "codex-fixture-b"] },
+    { "id": "zcode", "available": true, "models": ["zcode-fixture-a"] },
+    { "id": "api", "available": true, "models": ["api-fixture-a", "api-fixture-b"] }
+  ],
+  "map": {
+    "title": "Synthetic organization",
+    "summary": "Fixture-only organization result.",
+    "layout": { "flow": "columns", "density": "normal" },
+    "items": [
+      { "id": "E01", "category": "main", "parentId": null, "title": "Fixture E01", "summary": "Synthetic item one." },
+      { "id": "E02", "category": "optimize", "parentId": "E01", "title": "Fixture E02", "summary": "Synthetic item two." },
+      { "id": "E03", "category": "reference", "parentId": "E01", "title": "Fixture E03", "summary": "Synthetic item three." }
+    ],
+    "positions": {}
+  }
+}
