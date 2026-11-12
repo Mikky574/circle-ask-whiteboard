@@ -36,6 +36,7 @@
         <button id="board-manage" class="tool-button" type="button" aria-expanded="false" aria-controls="board-actions" title="管理白板">管理</button>
         <div id="board-actions" role="group" aria-label="白板操作" hidden>
           <button id="board-create" class="tool-button" type="button" aria-haspopup="dialog">新建白板</button>
+          <button id="board-repository" class="tool-button" type="button" aria-haspopup="dialog" aria-controls="board-repository-dialog">项目目录</button>
           <button id="board-delete" class="tool-button" type="button" aria-haspopup="dialog">删除当前白板</button>
         </div>
       </div>
@@ -67,10 +68,28 @@
         <h2 id="board-create-heading">新建白板</h2>
         <label for="board-name">白板名称</label>
         <input id="board-name" type="text" maxlength="80" required autofocus>
+        <div class="board-repository-field">
+          <label for="board-create-repository-path">项目目录（可选）</label>
+          <input id="board-create-repository-path" type="text" maxlength="1024" placeholder="C:\Projects\my-repo" autocomplete="off" spellcheck="false" aria-describedby="board-create-repository-hint">
+          <p id="board-create-repository-hint" class="board-field-hint">填写本机绝对路径，留空使用白板项目目录。Codex 和 ZCode 可只读分析绑定目录。</p>
+        </div>
         <p id="board-create-error" class="board-dialog-error" role="alert" hidden></p>
         <div class="board-dialog-actions">
           <button id="board-create-cancel" class="tool-button" type="button">取消</button>
           <button id="board-create-submit" class="submit-button" type="submit">新建并打开</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="board-repository-dialog" class="board-dialog" aria-labelledby="board-repository-heading">
+      <form id="board-repository-form">
+        <h2 id="board-repository-heading">项目目录</h2>
+        <label for="board-repository-path">本地目录</label>
+        <input id="board-repository-path" type="text" maxlength="1024" placeholder="C:\Projects\my-repo" autocomplete="off" spellcheck="false" aria-describedby="board-repository-hint" autofocus>
+        <p id="board-repository-hint" class="board-field-hint">填写本机绝对路径，留空使用白板项目目录。Codex 和 ZCode 可只读分析绑定目录。API 直连使用发送的内容。</p>
+        <p id="board-repository-error" class="board-dialog-error" role="alert" hidden></p>
+        <div class="board-dialog-actions">
+          <button id="board-repository-cancel" class="tool-button" type="button">取消</button>
+          <button id="board-repository-submit" class="submit-button" type="submit">保存目录</button>
         </div>
       </form>
     </dialog>
@@ -96,6 +115,7 @@
           <div class="canvas-name">
             <p class="overline">项目画布 <span>/</span> 01</p>
             <h2 id="canvas-title">这块白板是怎么实现的？</h2>
+            <p id="board-repository-label" hidden></p>
           </div>
           <div class="toolbar" aria-label="画布操作">
             <div class="tool-group" role="group" aria-label="交互模式">
@@ -154,6 +174,10 @@
         </header>
 
         <div id="viewport" aria-label="拖动鼠标圈选文字、公式或图形">
+          <div id="repository-init" hidden>
+            <button id="initialize-repository" class="submit-button" type="button" aria-describedby="repository-init-hint">初始化工程介绍</button>
+            <p id="repository-init-hint"></p>
+          </div>
           <div id="board">
             <div class="board-caption" aria-hidden="true"><span>01</span> 圈选 · 定位 · 项目记忆</div>
 

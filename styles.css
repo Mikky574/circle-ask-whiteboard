@@ -161,6 +161,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   color: inherit;
 }
 
+.board-repository-field { margin-top: 14px; }
+.board-dialog .board-field-hint { margin-top: 6px; }
 .board-dialog .board-dialog-error { margin-top: 8px; color: #f3b4a7; }
 .board-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 17px; }
 .board-dialog-actions .tool-button { padding-inline: 10px; }
@@ -259,6 +261,17 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   font-size: clamp(15px, 1.6vw, 21px);
   font-weight: 680;
   letter-spacing: 0.015em;
+}
+.canvas-name:has(#board-repository-label:not([hidden])) { min-width: 0; }
+#board-repository-label {
+  max-width: 24ch;
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .toolbar, .tool-group { display: flex; align-items: center; }
@@ -388,6 +401,22 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 }
 
 #viewport[data-mode="pan"] { cursor: grab; }
+
+#repository-init:not([hidden]) {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  padding: 24px;
+  text-align: center;
+  pointer-events: none;
+}
+
+#initialize-repository { pointer-events: auto; }
+#repository-init-hint { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+
 #viewport[data-mode="pan"] [data-element-id]:not([aria-busy="true"]) { cursor: grab; }
 #viewport.is-panning { cursor: grabbing; }
 #viewport.is-moving-cards .is-dragging:not([aria-busy="true"]) { cursor: grabbing; z-index: 4; }

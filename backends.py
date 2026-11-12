@@ -4,6 +4,7 @@ Transport-specific implementations remain behind adapters. Availability means th
 adapter can be selected, not that credentials or upstream service were verified.
 """
 from dataclasses import dataclass, field
+from pathlib import Path
 import threading
 import uuid
 from typing import Any, Callable, Protocol, TypedDict
@@ -36,6 +37,7 @@ class BackendRequest:
     backendOptions: dict = field(default_factory=dict, repr=False)
     api: dict | None = field(default=None, repr=False)
     schema_path: Any = None
+    repository_path: Path | None = field(default=None, repr=False)
 
 
 class CancellationToken:
@@ -138,6 +140,7 @@ class BackendAdapter:
 class CliAdapter(BackendAdapter):
     def capabilities(self):
         return {"ask":True,"organize":True,"decompose":True,"sourceEdit":True,"boardToolCalls":False,
+                "repositoryAnalysis":True,
                 "boardOperations":"validated structured plan", "attachments":["images","text"],
                 "cancellation":"local subprocess termination; upstream billing not guaranteed"}
     def execute(self, request, runtime):
@@ -164,6 +167,7 @@ class ApiAdapter(BackendAdapter):
     label="API 直连"
     def capabilities(self):
         return {"ask":True,"organize":True,"decompose":True,"sourceEdit":False,"boardToolCalls":True,
+                "repositoryAnalysis":False,
                 "boardOperations":"bounded native function calls", "attachments":["images","utf8-text"],
                 "cancellation":"discard result on disconnect; active HTTP call bounded by timeout"}
     def status(self,runtime):

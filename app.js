@@ -62,6 +62,8 @@
   const draftAttachments = [];
   const memory = window.BoardMemory;
   const organizationEngine = window.BoardOrganization;
+  let repositoryPath = memory.activeBoardInfo?.repositoryPath || "";
+  let onRepositoryChange = () => {};
   const boardControls = initBoardControls();
   if (!memory.activeBoard) return;
   const customBoard = memory.activeBoardInfo.custom;
@@ -91,6 +93,7 @@
   let deletionToastHideTimer;
   const pinnedIds = new Set(saved.pinnedIds);
   const organize = $("organize-board");
+  const initializeRepository = $("initialize-repository");
   const organizeBranch = $("organize-branch");
   const fileOrphans = $("file-orphans");
   const integrateDraft = $("integrate-draft");
@@ -154,15 +157,20 @@
     const manage = $("board-manage");
     const actions = $("board-actions");
     const create = $("board-create");
+    const configureRepository = $("board-repository");
     const remove = $("board-delete");
     const createDialog = $("board-create-dialog");
+    const repositoryDialog = $("board-repository-dialog");
     const deleteDialog = $("board-delete-dialog");
     const name = $("board-name");
+    const createRepositoryInput = $("board-create-repository-path");
+    const repositoryInput = $("board-repository-path");
     const report = $("board-lifecycle-status");
     const active = memory.activeBoard;
     let busy = Boolean(active);
     let saving = false;
     let available = false;
+    let expectedRepository = "";
     let returnFocus = manage;
 
     function boardUrl(id) {
@@ -183,16 +191,24 @@
     function refreshControls() {
       switcher.disabled = busy || saving || !switcher.querySelector("option[value]:not([value=''])");
       manage.disabled = create.disabled = busy || saving;
-      remove.disabled = busy || saving || !available;
+      remove.disabled = configureRepository.disabled = busy || saving || !available;
       $("board-empty-create").disabled = busy || saving;
       $("board-create-submit").disabled = $("board-delete-confirm").disabled = saving;
       $("board-create-cancel").disabled = $("board-delete-cancel").disabled = saving;
+      $("board-repository-submit").disabled = $("board-repository-cancel").disabled = saving;
+      name.disabled = createRepositoryInput.disabled = repositoryInput.disabled = saving;
       if (busy || saving) setMenu(false);
     }
 
     function refreshOptions() {
       const boards = memory.listBoards();
-      available = boards.some(({ id }) => id === active);
+      const entry = boards.find(({ id }) => id === active);
+      available = Boolean(entry);
+      const currentPath = entry?.repositoryPath || "";
+      if (repositoryPath !== currentPath) {
+        repositoryPath = currentPath;
+        onRepositoryChange();
+      }
       const options = boards.map(({ id, title }) => new Option(title, id));
       if (!available) options.unshift(new Option(boards.length ? "选择白板" : "暂无白板", ""));
       if (!active) $("board-empty-heading").textContent = boards.length ? "请选择白板" : "还没有白板";
@@ -212,17 +228,26 @@
       returnFocus = trigger;
       setMenu(false);
       name.value = "";
+      createRepositoryInput.value = "";
       showError("board-create-error", "");
       createDialog.showModal();
     }
 
-    async function commit(dialog, errorId, change, replace = false) {
+    async function commit(dialog, errorId, change, { replace = false, stay = false } = {}) {
       if (busy || saving) return;
       saving = true;
       showError(errorId, "");
       refreshControls();
       try {
-        const url = boardUrl(await change());
+        const result = await change();
+        if (stay) {
+          saving = false;
+          refreshOptions();
+          dialog.close();
+          report.textContent = result ? "项目目录已更新。" : "已恢复默认项目目录。";
+          return;
+        }
+        const url = boardUrl(result);
         if (replace) location.replace(url.href);
         else location.assign(url.href);
       } catch (error) {
@@ -265,6 +290,15 @@
     });
     create.addEventListener("click", () => openCreate(manage));
     $("board-empty-create").addEventListener("click", (event) => openCreate(event.currentTarget));
+    configureRepository.addEventListener("click", () => {
+      if (!available || busy || saving) return;
+      returnFocus = manage;
+      setMenu(false);
+      expectedRepository = repositoryPath;
+      repositoryInput.value = expectedRepository;
+      showError("board-repository-error", "");
+      repositoryDialog.showModal();
+    });
     remove.addEventListener("click", () => {
       if (!available || busy || saving) return;
       returnFocus = manage;
@@ -275,11 +309,22 @@
     });
     $("board-create-form").addEventListener("submit", (event) => {
       event.preventDefault();
-      void commit(createDialog, "board-create-error", () => memory.createBoard(name.value));
+      const title = name.value;
+      const path = createRepositoryInput.value;
+      void commit(createDialog, "board-create-error", async () => memory.createBoard(title, await validateRepositoryPath(path)));
+    });
+    $("board-repository-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      const path = repositoryInput.value;
+      const expected = expectedRepository;
+      void commit(repositoryDialog, "board-repository-error", async () =>
+        memory.updateBoardRepository(active, await validateRepositoryPath(path), expected), { stay: true });
     });
     $("board-delete-confirm").addEventListener("click", () =>
-      void commit(deleteDialog, "board-delete-error", () => memory.deleteActiveBoard(), true));
-    for (const [dialog, cancelId] of [[createDialog, "board-create-cancel"], [deleteDialog, "board-delete-cancel"]]) {
+      void commit(deleteDialog, "board-delete-error", () => memory.deleteActiveBoard(), { replace: true }));
+    for (const [dialog, cancelId] of [
+      [createDialog, "board-create-cancel"], [repositoryDialog, "board-repository-cancel"], [deleteDialog, "board-delete-cancel"],
+    ]) {
       $(cancelId).addEventListener("click", () => dialog.close());
       dialog.addEventListener("cancel", (event) => { if (saving) event.preventDefault(); });
       dialog.addEventListener("close", () => returnFocus.focus());
@@ -298,6 +343,39 @@
       if (event.persisted) refreshCatalog();
     });
     return { setBusy(value) { busy = value; refreshControls(); } };
+  }
+
+  async function validateRepositoryPath(value) {
+    const path = value.trim().replace(/^"([^"]+)"$/u, "$1");
+    if (!path) return "";
+    let response;
+    try {
+      response = await fetch("/api/repository", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repositoryPath: path }),
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch {
+      throw new Error("无法连接本机白板服务验证项目目录。");
+    }
+    const result = await response.json().catch(() => null);
+    if (!response.ok || typeof result?.repositoryPath !== "string" || !result.repositoryPath || result.repositoryPath.length > 1024) {
+      throw new Error(result?.text || "本机服务未能验证项目目录。");
+    }
+    return result.repositoryPath;
+  }
+
+  function currentRepositoryPath() {
+    return memory.listBoards().find(({ id }) => id === memory.activeBoard)?.repositoryPath || "";
+  }
+
+  function repositoryMatches(target) {
+    return target.backend === "api" || (target.repositoryPath || "") === currentRepositoryPath();
+  }
+
+  function sourceEditAvailable() {
+    return connection.backend !== "api" && !repositoryPath;
   }
 
   function askFeedback(message = "", failed = false) {
@@ -328,6 +406,9 @@
     const target = { backend: connection.backend, model: connection.models[connection.backend].trim() };
     if (target.backend === "api") {
       target.api = { baseUrl: $("api-url").value.trim(), apiKey: $("api-key").value };
+    } else {
+      const path = currentRepositoryPath();
+      if (path) target.repositoryPath = path;
     }
     return target;
   }
@@ -536,7 +617,7 @@
       if (!attachmentIdentities.has(file)) attachmentIdentities.set(file, ++nextAttachmentIdentity);
       return attachmentIdentities.get(file);
     });
-    return JSON.stringify({ boardId, backend: connection.backend, model: connection.models[connection.backend].trim(),
+    return JSON.stringify({ boardId, repositoryPath, backend: connection.backend, model: connection.models[connection.backend].trim(),
       question: question.value.trim(), anchor, project: projectContext(),
       attachments: inheritedAttachments(selected.map((item) => item.id)), drafts });
   }
@@ -1104,7 +1185,7 @@
   async function requestRepoIndex(payload) {
     const scan = $("scan-repository");
     const lookup = $("query-repo-symbol");
-    if (scan.disabled) return;
+    if (scan.disabled || repositoryPath) return;
     scan.disabled = lookup.disabled = true;
     const statusLine = $("repo-index-status");
     const scanning = payload.action === "scan";
@@ -1116,6 +1197,7 @@
         body: JSON.stringify(payload),
       });
       const data = await response.json();
+      if (repositoryPath) return;
       if (!response.ok) throw new Error(data.text || "请确认本机白板服务正在运行。");
       if (scanning) {
         renderRepoIndex(data);
@@ -1140,7 +1222,7 @@
 
   function getPayload(text) {
     const box = unionRects(selected.map((item) => item.box));
-    const sourceFiles = [...new Set([...selectedSourceFiles(), ...selected.flatMap(({ id }) =>
+    const sourceFiles = repositoryPath ? [] : [...new Set([...selectedSourceFiles(), ...selected.flatMap(({ id }) =>
       replies.get(id)?.payload.anchor.sourceFiles || [])])];
     const formulaFragments = selected.flatMap((item) => item.formulaFragments.map((fragment) => ({
       elementId: item.id,
@@ -1214,7 +1296,13 @@
     stopAi.disabled = !activeRun || Boolean(activeRun.stopping);
     stopAi.textContent = activeRun?.stopping ? "正在停止…" : "停止";
     renderAttachmentDraft(inherited);
-    organize.disabled = unavailable || !organizationEngine;
+    organize.disabled = unavailable || !organizationEngine || !nodes.length;
+    $("repository-init").hidden = !customBoard || Boolean(nodes.length);
+    initializeRepository.disabled = unavailable || connection.backend === "api" || !organizationEngine;
+    initializeRepository.textContent = activeRun?.initialize ? "正在初始化…" : "初始化工程介绍";
+    $("repository-init-hint").textContent = connection.backend === "api"
+      ? "切换到 Codex 或 ZCode 后可读取本地源码。"
+      : repositoryPath ? "读取绑定目录，生成可逐级展开的工程手册。" : "未绑定目录，将读取白板项目的源码。";
     const selectedIds = selected.map(({ id }) => id);
     const drafts = draftMembership(nodes);
     const draftRoot = selectedDraftRoot(selectedIds, drafts);
@@ -1243,12 +1331,13 @@
     undoOrganization.disabled = storageStale || Boolean((activeRun || deleting) && !organization.quickUndo);
     undoOrganization.textContent = organization.quickUndo ? "撤销重排" : rawLinkUndo ? "撤销连线" : "撤销整理";
     $("adopt-selection").disabled = !selected.length;
-    $("allow-source-edit").disabled = Boolean(activeRun || storageStale || connection.backend === "api");
-    $("source-edit-consent").hidden = connection.backend === "api" || Boolean(selected[0]?.independent);
-    if (connection.backend === "api") clearSourceEditAuthorization();
+    const editableSource = sourceEditAvailable();
+    $("allow-source-edit").disabled = Boolean(activeRun || storageStale || !editableSource);
+    $("source-edit-consent").hidden = !editableSource || Boolean(selected[0]?.independent);
+    if (!editableSource) clearSourceEditAuthorization();
     question.placeholder = selected[0]?.independent ? "直接输入问题，回答先留在草稿中…" : selectedReply()
       ? "继续追问，或说「把这个回答拆成几张说明卡」"
-      : "提问、拆解模块或说明要改的代码…";
+      : repositoryPath ? "提问、拆解模块或讨论修改方案…" : "提问、拆解模块或说明要改的代码…";
     const payload = !text && lastPayload ? lastPayload : selected.length ? getPayload(text) : null;
     $("payload").textContent = payload ? JSON.stringify(payload, null, 2) : "等待圈选或点选";
     const branchLabel = $("branch-label");
@@ -2913,6 +3002,7 @@
       if (errorText || !completed || !nextAnswer) {
         throw new Error(errorText || `${label} 没有返回完整回答。`);
       }
+      if (!repositoryMatches(target)) throw new Error("项目目录已切换，请在当前目录下重试。");
       if (!memory.storageIsCurrent()) throw new Error("另一页面已更新白板，本轮回答未保存。请保留问题草稿后刷新。");
       reply.payload = splitting
         ? { ...previousAnswer.payload, ...(payload.attachments?.length ? { attachments: payload.attachments } : {}) }
@@ -3279,6 +3369,7 @@
       return {
         memory: localStorage.getItem(memory.storageKeys.memory),
         organization: localStorage.getItem(memory.storageKeys.organization),
+        repositoryPath: currentRepositoryPath(),
       };
     }
     catch { return null; }
@@ -3776,8 +3867,11 @@
     }
   }
 
-  async function organizeBoard(instruction = "", repair = false, submission = null) {
+  async function organizeBoard(instruction = "", repair = false, submission = null, { initialize = false } = {}) {
     if (activeRun || gesture?.drag || (!repair && (sourceChanged || deletionPreparing)) || !relayAvailable || !organizationEngine) return false;
+    const allNodes = boardForOrganization();
+    const target = submission?.target || connectionTarget();
+    if (initialize && (!customBoard || allNodes.length || target.backend === "api" || storageStale)) return false;
     if (!repair) deletionUndo = null;
     const result = repair ? document.createElement("p") : $("organization-status");
     let repairContext = null;
@@ -3790,11 +3884,10 @@
         return;
       }
     }
-    const allNodes = boardForOrganization();
     const drafts = draftMembership(allNodes);
     const nodes = allNodes.filter((node) => !drafts.has(node.id) && (!repair || repairContext.affected.includes(node.id)));
     if (repair && !nodes.length) { pendingRepair = ""; deletionMessage = "删除完成，无剩余直接关联需要整理。"; persist(); renderInspector(); return; }
-    if (!nodes.length) {
+    if (!nodes.length && !initialize) {
       result.textContent = "当前白板只有独立草稿。选中草稿可整理其分支。";
       return false;
     }
@@ -3808,29 +3901,30 @@
     }
     const controller = new AbortController();
     const requestId = newRequestId();
-    const target = submission?.target || connectionTarget();
     const label = backendLabels[target.backend];
     const main = submission?.action === "main";
     const attachments = submission?.payload.attachments || [];
     const selectedIds = new Set(submission?.payload.anchor.elementIds || []);
     const revisionSnapshot = captureBoardRevision();
-    const run = { controller, mode: "organize", repair, target, requestId, stopping: false, revisionSnapshot };
+    const run = { controller, mode: "organize", repair, initialize, target, requestId, stopping: false, revisionSnapshot };
     activeRun = run;
     if (repair) deletionMessage = `节点已删除，AI 正在处理 ${nodes.length} 个直接关联节点…`;
-    const opinion = instruction || organizationOpinion.value.trim();
+    const opinion = initialize ? "" : instruction || organizationOpinion.value.trim();
     const archiveAllowed = new Set(Array.isArray(repairContext?.archiveAllowed) ? repairContext.archiveAllowed : []);
     const newIds = repair ? [] : availableModuleIds(allNodes, Math.min(8, 64 - nodes.length));
     const request = {
       ...target, mode: "ask", scope: "organize", boardId,
       requestId, baseRevision: revisionToken(`${revisionSnapshot.organization}\n${JSON.stringify(revisionSnapshot.storage)}`),
-      ...(main ? { boardIntent: "main" } : {}),
+      ...(initialize ? { boardIntent: "repository_init" } : main ? { boardIntent: "main" } : {}),
       ...(submission ? { anchor: submission.payload.anchor } : {}),
       ...(attachments.length ? { attachments } : {}),
       // The API requires a closed graph. Keep external relationships in local nodes
       // for application, but omit them from the submitted repair graph.
       board: { nodes: memory.repairNodes(nodes), newIds, layout: organizationEngine.settings(organization.current?.layout) },
       project: projectContext(submission?.payload.anchor.elementIds || ["board"]),
-      question: (repair
+      question: (initialize
+        ? "阅读当前项目源码，为这张空白板生成可逐级展开的中文工程介绍，帮助新人理解项目、定位改动点并找到验证入口。"
+        : repair
         ? "这是删除后的局部关系修复。只判断所给直接相关节点应保留、重新挂接还是归档，并在 summary 说明理由。不递归处理后续节点，不整理整板，不修改内容、顺序、尺寸、位置或 layout。保持所有给定ID，仅 archiveAllowed 允许归档；parentId 仅可选择给定节点或 null，不确定则保留原关系。返回现有 map 格式。"
         : main
         ? "按本次请求在当前白板增加或提升一个有实质内容的主干模块。优先使用匹配的现有条目，需要新增时才使用 board.newIds，并把目标条目标为 main。参考当前选区、附件和项目记忆，保留其余条目的内容和关系。"
@@ -3842,7 +3936,8 @@
     lastPayload = { ...request };
     delete lastPayload.api;
     if (!submission) { askAt = null; showAsk(); }
-    const waiting = repair ? deletionMessage : main ? `${label} 正在更新主干…` : `${label} 正在梳理白板…`;
+    const waiting = initialize ? `${label} 正在阅读源码并生成工程介绍…` :
+      repair ? deletionMessage : main ? `${label} 正在更新主干…` : `${label} 正在梳理白板…`;
     if (submission) status(waiting);
     result.textContent = waiting;
     $("sent-context").textContent = "正在等待本轮上下文…";
@@ -3872,9 +3967,10 @@
       const candidateIds = new Set(candidate?.items.map((item) => item.id));
       const existingIds = new Set(nodes.map((node) => node.id));
       const additions = candidate?.items.filter((item) => !existingIds.has(item.id)) || [];
-      if (errorText || !completed || !candidate || nodes.some((item) => !candidateIds.has(item.id)) ||
+      if (errorText || !completed || !candidate || (initialize && candidate.items.length < 5) ||
+          nodes.some((item) => !candidateIds.has(item.id)) ||
           additions.some((item) => !newIds.includes(item.id) || item.category === "archive" ||
-            (target.backend !== "api" && !main && !attachments.length && !item.sources?.length))) {
+            (!initialize && target.backend !== "api" && !target.repositoryPath && !main && !attachments.length && !item.sources?.length))) {
         throw new Error(errorText || `${label} 没有返回完整有效的整理方案。`);
       }
       if (repair) {
@@ -3942,7 +4038,7 @@
         if (old?.draft) item.draft = true;
         if (old?.explicitParent || (!previous.current && Object.hasOwn(previous.rawLinks || {}, item.id))) item.explicitParent = true;
         if (old?.category === item.category && typeof old.folded === "boolean") item.folded = old.folded;
-        else if (item.category === "reference") item.folded = true;
+        else if (item.category === "reference") item.folded = !initialize;
       }
       const quickMode = run.quickModeAfter ?? previous.quickMode;
       const undoMode = previous.quickUndo?.quickMode;
@@ -3963,6 +4059,11 @@
       }
       if (quickMode) candidate.layout = { ...candidate.layout, density: "compact" };
       candidate.collapsedBranches = previous.current?.collapsedBranches ?? previous.rawCollapsedBranches ?? [];
+      if (initialize) {
+        const rootId = candidate.items.find((item) => item.parentId === null)?.id;
+        candidate.collapsedBranches = candidate.items.filter((item) => item.parentId === rootId &&
+          candidate.items.some((child) => child.parentId === item.id)).map((item) => item.id);
+      }
       const guide = previous.current?.projectGuide;
       if (guide && candidate.items.some((item) => item.id === guide.rootId && item.category !== "archive")) {
         candidate.projectGuide = guide;
@@ -3998,7 +4099,7 @@
         const old = previousItems.get(item.id);
         return item.title !== old?.title || item.summary !== old?.summary || item.category !== old?.category;
       }).length;
-      result.textContent = (moved ? "已重排白板。" : "整理完成，卡片位置与上次相同。") +
+      result.textContent = (initialize ? "工程介绍已生成。" : moved ? "已重排白板。" : "整理完成，卡片位置与上次相同。") +
         `${organizationEngine.quickLayouts[quickMode] || describeLayout(candidate.layout)}。` +
         (additions.length ? `新增 ${additions.length} 个模块。` : "") +
         (updated ? `更新 ${updated} 项内容。` : "") +
@@ -4931,8 +5032,24 @@
   });
   $("zoom-in").addEventListener("click", () => zoom(1.2));
   $("zoom-out").addEventListener("click", () => zoom(1 / 1.2));
+  function renderRepositoryScope() {
+    const label = $("board-repository-label");
+    label.hidden = !repositoryPath;
+    label.title = repositoryPath;
+    const folder = repositoryPath.replaceAll("\\", "/").split("/").filter(Boolean).at(-1);
+    label.textContent = folder ? `目录 · ${folder}` : "";
+    $("repo-index-panel").hidden = !sourceManual || Boolean(repositoryPath);
+  }
+  renderRepositoryScope();
+  onRepositoryChange = () => {
+    invalidateSourceEditAuthorization();
+    repoIndex = null;
+    $("repo-index-results").hidden = true;
+    $("repo-index-status").textContent = "";
+    renderRepositoryScope();
+    renderInspector();
+  };
   if (sourceManual) {
-    $("repo-index-panel").hidden = false;
     $("scan-repository").addEventListener("click", () => void requestRepoIndex({ action: "scan" }));
     $("repo-index-form").addEventListener("submit", (event) => {
       event.preventDefault();
@@ -5264,6 +5381,7 @@
   });
 
   organize.addEventListener("click", () => void organizeBoard());
+  initializeRepository.addEventListener("click", () => void organizeBoard("", false, null, { initialize: true }));
   organizeBranch.addEventListener("click", () => void organizeSelectedBranch());
   fileOrphans.addEventListener("click", () => void fileOrphanCards(selected.map(({ id }) => id)));
   integrateDraft.addEventListener("click", () => {
@@ -5574,7 +5692,7 @@
     if (!selected.length || activeRun || deletionPreparing || sourceChanged || !relayAvailable || !memory.storageIsCurrent()) return;
     const approvedContext = sourceEditContext();
     const approvedRevision = sourceEditRevision;
-    const allowSourceEdit = $("allow-source-edit").checked && sourceEditAuthorization === approvedContext && connection.backend !== "api";
+    const allowSourceEdit = $("allow-source-edit").checked && sourceEditAuthorization === approvedContext && sourceEditAvailable();
     clearSourceEditAuthorization();
     const entries = [...draftAttachments];
     if (!draft && !entries.length) return;
@@ -5594,6 +5712,10 @@
     const target = connectionTarget();
     const uploads = await uploadAttachments(entries, target);
     if (!uploads || !unchanged()) return;
+    if (!repositoryMatches(target)) {
+      askFeedback("项目目录已切换，请确认后再次发送。", true);
+      return;
+    }
     const attachments = memory.cleanAttachments([...uploads, ...inheritedAttachments(ids)]);
     let payload = { ...getPayload(text), ...(attachments.length ? { attachments } : {}) };
     if (independent) {
@@ -5632,7 +5754,9 @@
       return;
     }
     if (action === "edit" && (!allowSourceEdit || approvedRevision !== sourceEditRevision || approvedContext !== sourceEditContext())) {
-      const message = "本轮未允许修改代码或请求内容已变化，已保留问题。需要改码时，请勾选「允许本次修改代码」后再次发送。";
+      const message = target.repositoryPath
+        ? "绑定的项目目录用于只读分析，已保留本轮问题。可以让 AI 给出修改建议。"
+        : "本轮未允许修改代码或请求内容已变化，已保留问题。需要改码时，请勾选「允许本次修改代码」后再次发送。";
       status(message);
       askFeedback(message, true);
       return;

@@ -923,6 +923,286 @@ async function testLastBoardLifecycle() {
   finally { await closeSession(session); }
 }
 
+async function testBoardRepositoryBinding() {
+  const session = await openPage();
+  try {
+    const { page, jsErrors } = session;
+    const firstInput = "C:\\fixture\\项目 甲\\";
+    const firstPath = "C:\\fixture\\项目 甲";
+    const secondPath = "D:\\fixture\\project-b";
+    const replacementPath = "E:\\fixture\\project-c";
+    const requests = [];
+    const validations = [];
+    const switcher = page.locator("#board-switcher");
+    const repositoryDialog = page.locator("#board-repository-dialog");
+    const repositoryInput = page.locator("#board-repository-path");
+    const projectError = "测试路径必须是存在的本地绝对目录。";
+
+    await page.route("**/api/repository", async (route) => {
+      const request = route.request();
+      assert.equal(request.method(), "POST");
+      const { repositoryPath } = request.postDataJSON();
+      validations.push(repositoryPath);
+      if (repositoryPath === "relative-directory") {
+        await route.fulfill({ status: 400, json: { type: "error", text: projectError } });
+      } else {
+        assert.ok([firstInput, secondPath, replacementPath].includes(repositoryPath));
+        await route.fulfill({ json: { repositoryPath: repositoryPath === firstInput ? firstPath : repositoryPath } });
+      }
+    });
+    await page.route("**/api/codex", async (route) => {
+      const request = route.request().postDataJSON();
+      requests.push(request);
+      const text = request.scope === "plan" ? '{"action":"ask"}' : `项目目录验收回答 ${requests.length}`;
+      await route.fulfill({
+        contentType: "application/x-ndjson",
+        body: [{ type: "answer", text }, { type: "done" }].map((event) => JSON.stringify(event)).join("\n") + "\n",
+      });
+    });
+
+    const openAction = async (id) => {
+      await page.locator("#board-manage").click();
+      await page.locator(`#${id}`).click();
+    };
+    const create = async (name, repositoryPath) => {
+      const previous = await switcher.inputValue();
+      await openAction("board-create");
+      await page.locator("#board-name").fill(name);
+      await page.locator("#board-create-repository-path").fill(repositoryPath);
+      await Promise.all([
+        page.waitForURL((url) => {
+          const id = url.searchParams.get("board");
+          return id !== previous && /^board-[a-f0-9]+$/.test(id || "");
+        }),
+        page.locator("#board-create-submit").click(),
+      ]);
+      await page.getByRole("heading", { name, exact: true }).waitFor();
+      return switcher.inputValue();
+    };
+    const switchBoard = async (id) => {
+      await Promise.all([
+        page.waitForURL((url) => url.searchParams.get("board") === id),
+        switcher.selectOption(id),
+      ]);
+      assert.equal(await switcher.inputValue(), id);
+    };
+    const inspectPath = async (expected) => {
+      await openAction("board-repository");
+      await repositoryDialog.waitFor();
+      assert.equal(await repositoryInput.inputValue(), expected);
+    };
+    const cancelEdit = async () => {
+      await page.locator("#board-repository-cancel").click();
+      await repositoryDialog.waitFor({ state: "hidden" });
+    };
+    const savePath = async (value) => {
+      await repositoryInput.fill(value);
+      await page.locator("#board-repository-submit").click();
+      await repositoryDialog.waitFor({ state: "hidden" });
+    };
+    const addCard = async (title) => {
+      await page.locator("#new-card").click();
+      await page.locator("#workbench-card-title").fill(title);
+      await page.locator("#workbench-card-body").fill("分析项目模块之间的调用关系。");
+      await page.locator("#save-workbench-card").click();
+      const card = page.locator("#board [data-element-id]").filter({ has: page.getByText(title, { exact: true }) });
+      await card.waitFor();
+      return card.getAttribute("data-element-id");
+    };
+    const chooseBackend = async (backend) => {
+      await page.locator(".connection-settings > summary").click();
+      await page.locator("#backend-select").selectOption(backend);
+      await page.locator(".connection-settings > summary").click();
+    };
+    const ask = async (cardId, backend, repositoryPath) => {
+      const before = requests.length;
+      await page.locator(`#board [data-element-id="${cardId}"]`).press("Enter");
+      await page.locator("#ask-open").click();
+      assert.equal(await page.locator("#source-edit-consent").isVisible(), backend !== "api" && !repositoryPath);
+      await page.locator("#question").fill(`请分析项目目录和模块关系 ${before}`);
+      await page.locator("#submit-question").click();
+      await page.getByText(`项目目录验收回答 ${before + 2}`, { exact: true }).waitFor();
+      await page.locator("#stop-ai").waitFor({ state: "hidden" });
+      const turns = requests.slice(before);
+      assert.equal(turns.length, 2);
+      assert.equal(turns[0].scope, "plan");
+      for (const turn of turns) {
+        assert.equal(turn.backend, backend);
+        assert.equal(turn.mode, "ask");
+        if (repositoryPath) assert.equal(turn.repositoryPath, repositoryPath);
+        else assert.equal(Object.hasOwn(turn, "repositoryPath"), false);
+        if (backend === "api") assert.ok(!JSON.stringify(turn).includes(JSON.stringify(replacementPath)));
+      }
+    };
+
+    const initialBoard = await switcher.inputValue();
+    await openAction("board-create");
+    await page.locator("#board-name").fill("目录无效的白板");
+    await page.locator("#board-create-repository-path").fill("relative-directory");
+    await page.locator("#board-create-submit").click();
+    await page.locator("#board-create-error").waitFor();
+    assert.equal(await page.locator("#board-create-error").textContent(), projectError);
+    await page.locator("#board-create-cancel").click();
+    assert.equal(await switcher.inputValue(), initialBoard);
+    assert.equal(await switcher.getByRole("option", { name: "目录无效的白板" }).count(), 0);
+
+    const firstBoard = await create("项目甲", firstInput);
+    const firstCard = await addCard("项目甲模块");
+    await inspectPath(firstPath);
+    await cancelEdit();
+    await ask(firstCard, "codex", firstPath);
+
+    const secondBoard = await create("项目乙", secondPath);
+    const secondCard = await addCard("项目乙模块");
+    await page.reload({ waitUntil: "networkidle" });
+    await inspectPath(secondPath);
+    await cancelEdit();
+    await chooseBackend("zcode");
+    await ask(secondCard, "zcode", secondPath);
+
+    await switchBoard(firstBoard);
+    await inspectPath(firstPath);
+    await repositoryInput.fill("relative-directory");
+    await page.locator("#board-repository-submit").click();
+    await page.locator("#board-repository-error").waitFor();
+    assert.equal(await page.locator("#board-repository-error").textContent(), projectError);
+    await cancelEdit();
+    await inspectPath(firstPath);
+    await savePath(replacementPath);
+    await chooseBackend("codex");
+    await ask(firstCard, "codex", replacementPath);
+    await chooseApi(page);
+    await ask(firstCard, "api");
+
+    await switchBoard(secondBoard);
+    await inspectPath(secondPath);
+    await savePath("");
+    await page.reload({ waitUntil: "networkidle" });
+    await inspectPath("");
+    await cancelEdit();
+    await chooseBackend("codex");
+    await ask(secondCard, "codex");
+    await switchBoard(firstBoard);
+    await inspectPath(replacementPath);
+    await cancelEdit();
+    await switchBoard("original");
+    await inspectPath("");
+    await cancelEdit();
+    assert.deepEqual(validations, ["relative-directory", firstInput, secondPath, "relative-directory", replacementPath]);
+    const isValidationError = (entry) => /Failed to load resource:.*400/.test(entry);
+    assert.ok(jsErrors.filter(isValidationError).length <= 2);
+    assertNoJsErrors(jsErrors.filter((entry) => !isValidationError(entry)));
+    record("U55", "PASS", "A board-specific project directory is validated on create and edit, survives reload and switching, scopes Codex/ZCode analysis only, and can be cleared to restore default behavior.");
+  } catch (error) { record("U55", "FAIL", safeError(error)); await screenshot("U55-failure", session.page); }
+  finally { await closeSession(session); }
+}
+
+async function testRepositoryInitialization() {
+  const session = await openPage();
+  try {
+    const { page, jsErrors } = session;
+    const repositoryPath = "C:\\fixture\\项目介绍";
+    const requests = [];
+    const initialize = page.locator("#initialize-repository");
+    const boardCards = page.locator("#board [data-generated-module]");
+    const card = (id) => page.locator(`#board [data-element-id="${id}"]`);
+    const organization = () => page.evaluate(() => JSON.parse(localStorage.getItem(BoardMemory.storageKeys.organization)));
+    await page.route("**/api/repository", (route) => route.fulfill({ json: { repositoryPath } }));
+    await page.route("**/api/codex", async (route) => {
+      const request = route.request().postDataJSON();
+      requests.push(request);
+      const [root, purpose, flow, tests, detail] = request.board?.newIds || [];
+      const item = (id, parentId, title, summary) => ({
+        id, parentId, title, summary, category: parentId ? "reference" : "main", side: "auto", sources: [],
+      });
+      const map = {
+        title: "工程介绍",
+        summary: "从入口到验证的源码导览。",
+        layout: { flow: "horizontal", density: "compact" },
+        items: [
+          item(root, null, "样例工程", "`README.md` 描述工程面向谁。"),
+          item(purpose, root, "工程用途", "`README.md` 描述输入和输出。"),
+          item(flow, root, "运行链路", "`src/main.py` 负责入口调度。"),
+          item(tests, root, "验证方式", "`tests/test_main.py` 覆盖入口调用。"),
+          item(detail, flow, "入口怎样处理请求", "`src/main.py` 的 run 函数调用业务模块。"),
+        ],
+      };
+      const events = [{ type: "map", map }];
+      if (requests.length > 1) events.push({ type: "done" });
+      await route.fulfill({
+        contentType: "application/x-ndjson",
+        body: events.map((event) => JSON.stringify(event)).join("\n") + "\n",
+      });
+    });
+    assert.equal(await initialize.isVisible(), false, "The built-in board already has content");
+    await page.locator("#board-manage").click();
+    await page.locator("#board-create").click();
+    await page.locator("#board-name").fill("工程介绍验收");
+    await page.locator("#board-create-repository-path").fill(repositoryPath);
+    await Promise.all([
+      page.waitForURL((url) => /^board-[a-f0-9]+$/.test(url.searchParams.get("board") || "")),
+      page.locator("#board-create-submit").click(),
+    ]);
+    await initialize.waitFor();
+    const id = await page.locator("#board-switcher").inputValue();
+    await chooseApi(page);
+    assert.equal(await initialize.isDisabled(), true, "API direct must not offer local source analysis");
+    assert.deepEqual(requests, []);
+    await page.locator(".connection-settings > summary").click();
+    await page.locator("#backend-select").selectOption("codex");
+    await page.locator(".connection-settings > summary").click();
+
+    const run = async () => {
+      await Promise.all([
+        page.waitForResponse((response) => response.url().endsWith("/api/codex")),
+        initialize.click(),
+      ]);
+      await page.locator("#stop-ai").waitFor({ state: "hidden" });
+    };
+    await run();
+    assert.equal(await initialize.isEnabled(), true, "An incomplete stream should allow retry");
+    assert.equal(await boardCards.count(), 0, "An incomplete map must not appear on the canvas");
+    assert.deepEqual((await organization())?.current?.items ?? [], []);
+
+    await run();
+    await initialize.waitFor({ state: "hidden" });
+    assert.equal(requests.length, 2, "Initialization must go directly to the generation request");
+    for (const request of requests) {
+      assert.equal(request.backend, "codex");
+      assert.equal(request.mode, "ask");
+      assert.equal(request.scope, "organize");
+      assert.equal(request.boardIntent, "repository_init");
+      assert.equal(request.boardId, id);
+      assert.equal(request.repositoryPath, repositoryPath);
+      assert.deepEqual(request.board.nodes, []);
+      assert.equal(request.board.newIds.length, 8);
+      assert.equal(new Set(request.board.newIds).size, 8);
+      assert.equal(Object.hasOwn(request, "api"), false);
+    }
+    const [root, purpose, flow, tests, detail] = requests[1].board.newIds;
+    const parentRelations = [[root, null], [purpose, root], [flow, root], [tests, root], [detail, flow]];
+    assert.deepEqual((await organization()).current.items.map(({ id, parentId }) => [id, parentId]), parentRelations);
+    const branch = card(flow).locator(".branch-toggle");
+    assert.equal(await branch.getAttribute("aria-expanded"), "false");
+    assert.equal(await card(detail).isVisible(), false, "The initial overview should hide grandchildren");
+    await branch.press("Enter");
+    await card(detail).waitFor();
+    await page.reload({ waitUntil: "networkidle" });
+    await card(detail).waitFor();
+    assert.deepEqual((await organization()).current.items.map(({ id, parentId }) => [id, parentId]), parentRelations);
+    await page.locator("#undo-organization").click();
+    await initialize.waitFor();
+    assert.equal(await boardCards.count(), 0, "Undo should restore the empty canvas");
+    await page.reload({ waitUntil: "networkidle" });
+    await initialize.waitFor();
+    assert.equal(await boardCards.count(), 0, "Reload must preserve the restored empty canvas");
+    assert.equal(await page.locator("#board-repository-label").getAttribute("title"), repositoryPath);
+    assertNoJsErrors(jsErrors);
+    record("U56", "PASS", "A bound empty board initializes one source-backed hierarchy, rejects incomplete results, disables local analysis on API, and persists expansion and undo.");
+  } catch (error) { record("U56", "FAIL", safeError(error)); await screenshot("U56-failure", session.page); }
+  finally { await closeSession(session); }
+}
+
 async function testNestedGuideConnections() {
   const session = await openPage();
   try {
@@ -4833,7 +5113,7 @@ try {
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(0, "127.0.0.1", resolveListen); });
   port = server.address().port;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
-  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54").split(","));
+  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56").split(","));
   if (selected.has("U01")) { console.log("BROWSER_CASE=U01"); await testCapabilities(); }
   if (selected.has("U02")) { console.log("BROWSER_CASE=U02"); await testKeyEphemeral(); }
   if (selected.has("U05-A")) { console.log("BROWSER_CASE=U05-A"); await testStopLateEvents(); }
@@ -4890,6 +5170,8 @@ try {
   if (selected.has("U52")) { console.log("BROWSER_CASE=U52"); await testCompactSidebar(); }
   if (selected.has("U53")) { console.log("BROWSER_CASE=U53"); await testLassoSelectionMove(); }
   if (selected.has("U54")) { console.log("BROWSER_CASE=U54"); await testFoldedCardSearchAndContext(); }
+  if (selected.has("U55")) { console.log("BROWSER_CASE=U55"); await testBoardRepositoryBinding(); }
+  if (selected.has("U56")) { console.log("BROWSER_CASE=U56"); await testRepositoryInitialization(); }
 } catch (error) {
   record("HARNESS", String(error?.message || "").startsWith("BLOCKED:") ? "BLOCKED" : "FAIL", safeError(error));
 } finally {

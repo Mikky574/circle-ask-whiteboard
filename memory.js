@@ -66,6 +66,10 @@
     return id === "original" ? originalPrefix : `${originalPrefix}.${id}`;
   }
 
+  function savedRepositoryPath(value) {
+    return typeof value === "string" && value.length <= 1024 ? value.trim() : "";
+  }
+
   function listBoards() {
     try {
       const saved = window.localStorage.getItem(catalogKey);
@@ -77,7 +81,10 @@
           if (typeof id !== "string" || unique.has(id)) continue;
           const custom = !builtInBoards.has(id);
           const title = custom ? text(entry.title, 80).trim() : builtInBoards.get(id);
-          if (title && (!custom || /^board-[0-9a-f]{32}$/.test(id))) unique.set(id, { id, title, custom });
+          const repositoryPath = savedRepositoryPath(entry.repositoryPath);
+          if (title && (!custom || /^board-[0-9a-f]{32}$/.test(id))) {
+            unique.set(id, { id, title, custom, ...(repositoryPath ? { repositoryPath } : {}) });
+          }
         }
         return [...unique.values()];
       }
@@ -112,18 +119,36 @@
   }
 
   function saveBoardList(boards) {
-    window.localStorage.setItem(catalogKey, JSON.stringify(boards.map(({ id, title }) => ({ id, title }))));
+    window.localStorage.setItem(catalogKey, JSON.stringify(boards.map(({ id, title, repositoryPath }) =>
+      ({ id, title, ...(repositoryPath ? { repositoryPath } : {}) }))));
   }
 
-  function createBoard(title) {
+  function createBoard(title, repositoryPath = "") {
     return changeBoards(() => {
       const name = title.trim();
       if (!name || name.length > 80) throw new Error("请填写白板名称，最多 80 字。");
       const token = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
         byte.toString(16).padStart(2, "0")).join("");
       const id = `board-${token}`;
-      saveBoardList([...listBoards(), { id, title: name }]);
+      saveBoardList([...listBoards(), { id, title: name, repositoryPath: savedRepositoryPath(repositoryPath) }]);
       return id;
+    });
+  }
+
+  function updateBoardRepository(id, repositoryPath, expectedPath) {
+    return changeBoards(() => {
+      const boards = listBoards();
+      const board = boards.find((item) => item.id === id);
+      if (!board) throw new Error("这张白板已删除。");
+      if ((board.repositoryPath || "") !== expectedPath) {
+        throw new Error("项目目录已在另一页面修改，请重新打开设置。");
+      }
+      const path = savedRepositoryPath(repositoryPath);
+      if (path !== expectedPath) {
+        board.repositoryPath = path;
+        saveBoardList(boards);
+      }
+      return path;
     });
   }
 
@@ -467,7 +492,7 @@
   }
 
   window.BoardMemory = { load, save, branchFor, deletionPlan, repairNodes, cleanAttachments,
-    activeBoard, activeBoardInfo, catalogKey, listBoards, createBoard, deleteActiveBoard,
+    activeBoard, activeBoardInfo, catalogKey, listBoards, createBoard, updateBoardRepository, deleteActiveBoard,
     storageKeys, initializeProjectBoard, storageIsCurrent, writeStorage,
     templateBackup: () => boardBackup(templateBackupKey),
     installTemplate: (value, sampleIds) => installBoard(value, sampleIds, templateBackupKey),

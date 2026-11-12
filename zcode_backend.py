@@ -133,7 +133,7 @@ class ZCodeConnection:
                 return self.response(message)
 
 
-def run_zcode(process, prompt, model, mode, workspace, events, attachments=()):
+def run_zcode(process, prompt, model, mode, workspace, events, attachments=(), repository=None):
     tools = EDIT_TOOLS if mode == "edit" else READ_TOOLS
     connection = ZCodeConnection(process, tools)
     workspace = Path(workspace).resolve()
@@ -141,15 +141,18 @@ def run_zcode(process, prompt, model, mode, workspace, events, attachments=()):
         workspace_tool = Path(__file__).resolve().with_name("zcode_workspace.py")
         if not workspace_tool.is_file():
             raise ZCodeError("ZCode workspace tools unavailable")
+        workspace_args = ["-I", str(workspace_tool), str(workspace), mode]
+        if repository is not None:
+            workspace_args.append(str(repository))
         snapshot = connection.request("session/create", {
             "workspace": {"workspacePath": str(workspace), "workspaceKey": str(workspace)},
             "mode": "edit" if mode == "edit" else "plan",
             "persistence": "deferred",
             "titleGenerationEnabled": False,
             "mcpServers": [{"name": "whiteboard", "command": sys.executable,
-                            "args": ["-I", str(workspace_tool), str(workspace), mode], "env": [],
+                            "args": workspace_args, "env": [],
                             "isolation": "session", "protocolVersion": "legacy", "timeoutMs": 10000}],
-            # The bridge MCP confines every path to approved staged files.
+            # The bridge MCP scopes reads to the workspace and bound repository.
             "toolAllowlist": list(tools),
         })
         session_id = snapshot["session"]["sessionId"]
