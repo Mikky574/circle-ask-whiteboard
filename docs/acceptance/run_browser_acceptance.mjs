@@ -2533,6 +2533,181 @@ async function testSplitExistingAnswer() {
   finally { await closeSession(session); }
 }
 
+async function testGeneratedExplanationHierarchy() {
+  const session = await openPage("normal", "repo-manual");
+  try {
+    const { page, jsErrors } = session;
+    const card = (id) => page.locator(`#board [data-element-id="${id}"]`);
+    const toggle = (id) => card(id).locator(".branch-toggle");
+    const expectFold = async (id, expanded, count) => {
+      assert.equal(await toggle(id).getAttribute("aria-expanded"), String(expanded));
+      assert.equal(await toggle(id).getAttribute("aria-label"),
+        `${id} ${expanded ? "收起" : "展开"} ${count} 个下级节点`);
+    };
+    const question = "请一次生成多级说明卡，按请求链路拆到三级细节。";
+    const explanation = {
+      summary: "把请求链路和检查拆成两个分支，并逐级解释关键细节。",
+      sections: [
+        { title: "请求链路", text: "前端先准备当前选区的请求。", parentIndex: null },
+        { title: "上下文组装", text: "请求会附上选中的卡片。", parentIndex: 0 },
+        { title: "定位字段", text: "元素编号标明被选中的卡片。", parentIndex: 1 },
+        { title: "验证方法", text: "检查返回内容和保存后的卡片。", parentIndex: null },
+        { title: "回归入口", text: "刷新后核对生成的父子关系。", parentIndex: 3 },
+      ],
+    };
+    const requests = [];
+    let attempts = 0;
+    await page.locator(".connection-settings > summary").click();
+    await page.locator("#backend-select").selectOption("zcode");
+    await page.locator(".connection-settings > summary").click();
+    await page.route("**/api/codex", async (route) => {
+      const request = route.request().postDataJSON();
+      requests.push(request);
+      let event = { type: "answer", text: '{"action":"explain"}' };
+      if (request.scope === "explain") {
+        const first = attempts++ === 0;
+        event = { type: "explanation", explanation: first ? {
+          ...explanation,
+          sections: explanation.sections.map((section, index) => index === 3 ? { ...section, parentIndex: 4 } : section),
+        } : explanation };
+      }
+      await route.fulfill({
+        contentType: "application/x-ndjson",
+        body: [event, { type: "done" }].map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+      });
+    });
+
+    await askFromCard(page, "E05", question);
+    const bridge = card("A01");
+    await bridge.locator('.thread-status[data-state="failed"]').waitFor();
+    assert.equal(await page.locator("#threads [data-section-of]").count(), 0, "Invalid parent indices must not mount partial cards");
+    assert.equal((await readManualNotes(page)).length, 1, "Invalid parent indices must not save partial cards");
+    await page.locator("#fit").click();
+    await bridge.locator(".thread-retry").click();
+    await bridge.locator(".thread-answer").filter({ hasText: explanation.summary }).waitFor();
+    assert.deepEqual(requests.map(({ backend, mode, scope, question }) => [backend, mode, scope, scope === "explain" ? question : null]),
+      [["zcode", "ask", "plan", null], ["zcode", "ask", "explain", question], ["zcode", "ask", "explain", question]]);
+    assert.deepEqual(requests.filter(({ scope }) => scope === "explain").map(({ minimumDepth }) => minimumDepth), [2, 2],
+      "The question must ask for a hierarchy and retain that requirement on retry");
+
+    const edges = [["A01", "A02"], ["A02", "A03"], ["A03", "A04"], ["A01", "A05"], ["A05", "A06"]];
+    const checkParents = async () => {
+      const notes = await readManualNotes(page);
+      assert.equal(notes.length, 6, "One explanation result should create the whole tree exactly once");
+      for (const [parent, child] of edges) {
+        assert.equal(await card(child).getAttribute("data-section-of"), parent);
+        const saved = notes.find(({ id }) => id === child);
+        assert.equal(saved?.sectionOf, parent);
+        assert.deepEqual(saved.payload.anchor.elementIds, [parent]);
+      }
+    };
+    await checkParents();
+    await expectFold("A01", true, 5);
+    await expectFold("A02", false, 2);
+    await expectFold("A05", false, 1);
+    assert.equal(await card("A03").isVisible(), false);
+    assert.equal(await card("A04").isVisible(), false);
+    assert.equal(await card("A06").isVisible(), false);
+
+    await toggle("A02").press("Enter");
+    await card("A03").waitFor();
+    await expectFold("A03", false, 1);
+    assert.equal(await card("A04").isVisible(), false, "Opening one level must not unfold its child branch");
+    await toggle("A03").press("Enter");
+    await card("A04").waitFor();
+    for (const [parent, child] of edges.slice(0, 4)) {
+      await connectionPath(page, parent, child).waitFor({ state: "attached" });
+    }
+    await toggle("A01").press("Enter");
+    await card("A02").waitFor({ state: "hidden" });
+    await page.reload();
+    await expectFold("A01", false, 5);
+    await toggle("A01").press("Enter");
+    await card("A04").waitFor();
+    await expectFold("A02", true, 2);
+    await expectFold("A03", true, 1);
+    await expectFold("A05", false, 1);
+    assert.equal(await card("A06").isVisible(), false);
+    await checkParents();
+    assertNoJsErrors(jsErrors);
+    record("U59", "PASS", "A single validated ZCode explanation generates a three-level card tree, rejects invalid parent indices atomically, and persists independent folds and exact parents.");
+  } catch (error) { record("U59", "FAIL", safeError(error)); await screenshot("U59-failure", session.page); }
+  finally { await closeSession(session); }
+}
+
+async function testGeneratedTaskHierarchy() {
+  const session = await openPage();
+  try {
+    const { page, jsErrors } = session;
+    const taskDetails = { task: "准备请求链路的验收。", dependencies: [], acceptance: ["能从页面提交。"] };
+    const plan = candidate();
+    plan.collapsedBranches = [];
+    plan.items.push({ id: "E04", category: "reference", parentId: "E02", title: "验收请求链路",
+      summary: taskDetails.task, taskDetails });
+    await page.evaluate(([key, current]) => localStorage.setItem(key, JSON.stringify({ current })), [organizationKey, plan]);
+    await page.reload();
+    await page.locator(".connection-settings > summary").click();
+    await page.locator("#backend-select").selectOption("zcode");
+    await page.locator(".connection-settings > summary").click();
+    const card = (id) => page.locator(`#board [data-element-id="${id}"]`);
+    const toggle = (id) => card(id).locator(".branch-toggle");
+    const children = [
+      { title: "验证输入", task: "核对请求提交前的选区。", dependencies: [], acceptance: ["包含选中卡片 ID。"], parentIndex: null },
+      { title: "验证持久化", task: "核对刷新后恢复的卡片。", dependencies: ["已生成说明卡。"], acceptance: ["能恢复父子关系。"], parentIndex: 0 },
+      { title: "验证回归场景", task: "检查空选区不能提交。", dependencies: [], acceptance: ["空选区时提交按钮禁用。"], parentIndex: 1 },
+    ];
+    const requests = [];
+    await page.route("**/api/codex", async (route) => {
+      requests.push(route.request().postDataJSON());
+      const response = requests.length === 1 ? children.map(({ parentIndex, ...child }) => child) : children;
+      const events = [{ type: "children", children: response }, { type: "done" }];
+      await route.fulfill({
+        contentType: "application/x-ndjson",
+        body: events.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+      });
+    });
+
+    const before = await readOrganization(page);
+    await card("E04").press("Enter");
+    const split = page.locator("#split-module-tree");
+    await split.click();
+    await page.locator("#organization-status").filter({ hasText: /至少|层级|多级/ }).waitFor();
+    await page.locator("#stop-ai").waitFor({ state: "hidden" });
+    assert.deepEqual(await readOrganization(page), before, "Flat task results must be rejected without writing cards");
+    await split.click();
+    await page.getByText(children[0].title, { exact: true }).waitFor();
+    assert.equal(requests.length, 2, "Each button click should send only one task generation request");
+    for (const request of requests) {
+      assert.equal(request.backend, "zcode");
+      assert.equal(request.scope, "decompose");
+      assert.equal(request.minimumDepth, 2);
+      assert.equal(request.decomposition.targetId, "E04");
+    }
+    const current = await readOrganization(page);
+    const additions = children.map(({ title }) => current.items.find((item) => item.title === title));
+    assert.deepEqual(additions.map(({ parentId }) => parentId), ["E04", additions[0].id, additions[1].id]);
+    assert.deepEqual(additions.map(({ taskDetails }) => taskDetails), children.map(({ title, parentIndex, ...details }) => details));
+    const [first, second, third] = additions;
+    assert.equal(await toggle(first.id).getAttribute("aria-expanded"), "false");
+    assert.equal(await card(second.id).isVisible(), false);
+    assert.equal(await card(third.id).isVisible(), false);
+    await toggle(first.id).press("Enter");
+    await card(second.id).waitFor();
+    assert.equal(await toggle(second.id).getAttribute("aria-expanded"), "false");
+    await toggle(second.id).press("Enter");
+    await card(third.id).waitFor();
+    await page.reload();
+    await card(third.id).waitFor();
+    assert.equal((await readOrganization(page)).items.find(({ id }) => id === third.id).parentId, second.id);
+    await page.locator("#undo-organization").click();
+    await card(first.id).waitFor({ state: "detached" });
+    assert.deepEqual(await readOrganization(page), before, "Undo should remove the generated subtree together");
+    assertNoJsErrors(jsErrors);
+    record("U60", "PASS", "The explicit multilevel task action rejects a flat reply atomically, creates three levels in one response, and preserves folding, task details and undo.");
+  } catch (error) { record("U60", "FAIL", safeError(error)); await screenshot("U60-failure", session.page); }
+  finally { await closeSession(session); }
+}
+
 async function testOrganizeSelectedBranch() {
   const session = await openPage("normal", "repo-manual");
   try {
@@ -5484,7 +5659,7 @@ try {
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(0, "127.0.0.1", resolveListen); });
   port = server.address().port;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
-  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58").split(","));
+  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60").split(","));
   if (selected.has("U01")) { console.log("BROWSER_CASE=U01"); await testCapabilities(); }
   if (selected.has("U02")) { console.log("BROWSER_CASE=U02"); await testKeyEphemeral(); }
   if (selected.has("U05-A")) { console.log("BROWSER_CASE=U05-A"); await testStopLateEvents(); }
@@ -5545,6 +5720,8 @@ try {
   if (selected.has("U56")) { console.log("BROWSER_CASE=U56"); await testRepositoryInitialization(); }
   if (selected.has("U57")) { console.log("BROWSER_CASE=U57"); await testExecutionTrace(); }
   if (selected.has("U58")) { console.log("BROWSER_CASE=U58"); await testDeleteWithoutWaitingForAnswer(); }
+  if (selected.has("U59")) { console.log("BROWSER_CASE=U59"); await testGeneratedExplanationHierarchy(); }
+  if (selected.has("U60")) { console.log("BROWSER_CASE=U60"); await testGeneratedTaskHierarchy(); }
 } catch (error) {
   record("HARNESS", String(error?.message || "").startsWith("BLOCKED:") ? "BLOCKED" : "FAIL", safeError(error));
 } finally {

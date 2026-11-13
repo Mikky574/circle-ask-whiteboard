@@ -243,6 +243,53 @@ class DecompositionAcceptanceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     server.parse_request(json.dumps({**self.request_body(), **update}).encode())
 
+    def test_explicit_multilevel_tasks_emit_real_parent_indices(self):
+        request = self.request_body()
+        request["minimumDepth"] = 2
+        request["decomposition"]["limit"] = 3
+        root = self.children()[0]
+        children = [
+            {**root, "parentIndex": None},
+            {**root, "title": "盘点键名", "parentIndex": 0},
+            {**root, "title": "检查序列化结果", "parentIndex": 1},
+        ]
+        body = json.dumps(request).encode()
+        with isolated_server() as (port, host), patch.object(server, "run_api", return_value=json.dumps({"children": children})) as api:
+            status, _, raw = post(port, "/api/codex", body, good_headers(host, body))
+        events = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(status, 200)
+        self.assertEqual([event["type"] for event in events], ["status", "context", "children", "done"])
+        self.assertEqual(events[2]["children"], children)
+        self.assertIn("at least two and at most 3 new task levels", api.call_args.args[2])
+        self.assertIn("parentIndex", api.call_args.args[4]["properties"]["children"]["items"]["required"])
+        self.assertEqual(events[-1]["changedFiles"], [])
+
+    def test_multilevel_tasks_validate_before_emitting_candidates(self):
+        request = self.request_body()
+        request["minimumDepth"] = 2
+        request["decomposition"]["limit"] = 4
+        body = json.dumps(request).encode()
+        base = self.children()[0]
+        for parents, message in (
+                ([None, None], "多级拆分至少需要"),
+                ([None, 1], "parentIndex"),
+                ([None, True], "parentIndex"),
+                ([None, -1], "parentIndex"),
+                ([None, 0, 1, 2], "层级超出")):
+            with self.subTest(parents=parents):
+                candidate = {"children": [{**base, "title": f"任务 {index}", "parentIndex": parent}
+                                          for index, parent in enumerate(parents)]}
+                context = server.parse_request(body)[2]
+                with self.assertRaisesRegex(ValueError, message):
+                    server.structured_candidate(json.dumps(candidate), context)
+        candidate = {"children": [base, {**base, "title": "附带细节", "parentIndex": 0}]}
+        legacy_context = server.parse_request(json.dumps(self.request_body()).encode())[2]
+        with self.assertRaisesRegex(ValueError, "层级超出"):
+            server.structured_candidate(json.dumps(candidate), legacy_context)
+        request["decomposition"]["limit"] = 1
+        with self.assertRaisesRegex(ValueError, "预留两个"):
+            server.parse_request(json.dumps(request).encode())
+
     def test_api_discards_invalid_response_as_a_batch(self):
         valid = self.children()[0]
         for invalid in ({**valid, "parentId": "E04"}, {**valid, "title": " 盘点键名 "},
@@ -335,6 +382,54 @@ class ExplanationAcceptanceTests(unittest.TestCase):
         self.assertIn("标题", events[-1]["text"])
         self.assertIn("重复", events[-1]["text"])
 
+    def test_explicit_multi_level_explanation_retains_parent_indexes(self):
+        body = json.dumps({**self.request_body(), "minimumDepth": 2}).encode()
+        explanation = {
+            "summary": "启动过程",
+            "sections": [
+                {"title": "加载", "text": "从存储读取信息。", "parentIndex": None},
+                {"title": "恢复", "text": "恢复已保存的回复。", "parentIndex": 0},
+                {"title": "验证", "text": "检查旧回复是否显示。", "parentIndex": 1},
+                {"title": "绘制", "text": "呈现当前白板。", "parentIndex": None},
+            ],
+        }
+        with isolated_server() as (port, host), patch.object(server, "run_api", return_value=json.dumps(explanation)) as api:
+            status, _, raw = post(port, "/api/codex", body, good_headers(host, body))
+        events = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(status, 200)
+        self.assertEqual([event["type"] for event in events], ["status", "context", "explanation", "done"])
+        self.assertEqual(events[2]["explanation"], explanation)
+        self.assertIn("An entirely flat answer is invalid.", api.call_args.args[2])
+        schema = api.call_args.args[4]["properties"]["sections"]["items"]
+        self.assertIn("parentIndex", schema["required"])
+
+    def test_explicit_multi_level_explanation_rejects_flat_output(self):
+        body = json.dumps({**self.request_body(), "minimumDepth": 2}).encode()
+        with isolated_server() as (port, host), patch.object(server, "run_api", return_value=json.dumps(self.explanation())):
+            _, _, raw = post(port, "/api/codex", body, good_headers(host, body))
+        events = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual([event["type"] for event in events], ["status", "context", "error"])
+        self.assertIn("多级说明", events[-1]["text"])
+
+    def test_explanation_rejects_invalid_parents_and_excess_depth(self):
+        for parents, error in (
+            ((0, None), "parentIndex"),
+            ((None, 2, 1), "parentIndex"),
+            ((None, True), "parentIndex"),
+            ((None, -1), "parentIndex"),
+            ((None, 0, 1, 2), "层级"),
+        ):
+            with self.subTest(parents=parents):
+                explanation = {
+                    "summary": "启动过程",
+                    "sections": [
+                        {"title": f"步骤 {index}", "text": "加载相关内容。", "parentIndex": parent}
+                        for index, parent in enumerate(parents)
+                    ],
+                }
+                with self.assertRaisesRegex(ValueError, error):
+                    server.structured_candidate(json.dumps(explanation), {"scope": "explain"})
+
     def cli_explanation_events(self, backend, answer):
         parsed = server.parse_request(json.dumps(self.request_body()).encode())
         schema = server.write_explanation_schema()
@@ -358,8 +453,8 @@ class ExplanationAcceptanceTests(unittest.TestCase):
                                                schema, ROOT, {}, [])
         return runtime.events
 
-    def zcode_repair_run(self, first, second):
-        parsed = server.parse_request(json.dumps(self.request_body()).encode())
+    def zcode_repair_run(self, first, second, **request_options):
+        parsed = server.parse_request(json.dumps({**self.request_body(), **request_options}).encode())
         schema = server.write_explanation_schema()
         self.addCleanup(schema.unlink)
         runtime = RecordingRuntime()
@@ -411,6 +506,19 @@ class ExplanationAcceptanceTests(unittest.TestCase):
         self.assertEqual(len(sends), 1)
         self.assertEqual([event["type"] for event in events], ["status", "context", "explanation", "done"])
         self.assertEqual(events[-2]["explanation"], explanation)
+
+    def test_zcode_repairs_flat_output_when_explicit_depth_is_requested(self):
+        explanation = self.explanation()
+        nested = {**explanation, "sections": [
+            {**explanation["sections"][0], "parentIndex": None},
+            {**explanation["sections"][1], "parentIndex": 0},
+        ]}
+        events, sends = self.zcode_repair_run(json.dumps(explanation), json.dumps(nested), minimumDepth=2)
+        self.assertEqual(len(sends), 2)
+        self.assertIn("多级说明", sends[1]["content"])
+        self.assertEqual([event["type"] for event in events],
+                         ["status", "context", "status", "explanation", "done"])
+        self.assertEqual(events[-2]["explanation"], nested)
 
     def test_zcode_invalid_repair_keeps_diagnostic_without_partial_cards(self):
         explanation = self.explanation()

@@ -46,6 +46,7 @@ STATIC = {
 }
 SOURCE_ID = re.compile(r"[A-Z][0-9]{2,8}")
 DECOMPOSITION_ID = re.compile(r"[AE][0-9]{2,8}")
+DECOMPOSITION_MAX_DEPTH = 3
 BACKEND_LABELS = {"codex": "Codex", "zcode": "ZCode", "api": "API 直连"}
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/+\-]{0,159}")
 MAP_CATEGORIES = ("main", "done", "optimize", "reference", "archive")
@@ -57,6 +58,7 @@ EXPLANATION_SUMMARY_LIMIT = 280
 EXPLANATION_TITLE_LIMIT = 72
 EXPLANATION_TEXT_LIMIT = 700
 EXPLANATION_CARD_RANGE = (2, 6)
+EXPLANATION_MAX_DEPTH = 3
 ZCODE_JSON_OUTPUT_RULE = (
     "Final response format: emit exactly one JSON object for the whiteboard parser. "
     "The first non-whitespace character must be { and the last must be }. "
@@ -316,15 +318,20 @@ def write_map_schema(board, *, repository_scope=False, zcode=False):
     return write_result_schema(schema, "whiteboard-map-")
 
 
-def write_children_schema(*, zcode=False, limit=6):
+def write_children_schema(*, zcode=False, limit=6, minimum_depth=1):
     text = result_text_schema(180, zcode=zcode)
     properties = {"title": result_text_schema(100, zcode=zcode), "task": result_text_schema(500, zcode=zcode),
                   "dependencies": {"type": "array", "items": text}, "acceptance": {"type": "array", "items": text}}
     children = {"type": "array"}
+    if minimum_depth > 1:
+        properties["parentIndex"] = {
+            "anyOf": [{"type": "integer", "enum": list(range(limit - 1))}, {"type": "null"}],
+            "description": "Zero-based index of an earlier task, or null for a direct child of the selected card.",
+        }
     if zcode:
         properties["dependencies"].update(maxItems=5)
         properties["acceptance"].update(minItems=1, maxItems=5)
-        children.update(minItems=1, maxItems=limit)
+        children.update(minItems=minimum_depth, maxItems=limit)
     child = {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
     schema = {
         "type": "object",
@@ -342,16 +349,20 @@ def write_explanation_schema(*, zcode=False):
             schema.update(minLength=1, maxLength=limit)
         return schema
 
+    minimum, maximum = EXPLANATION_CARD_RANGE
     section = {
         "type": "object",
         "properties": {
             "title": text_schema("A distinct title", EXPLANATION_TITLE_LIMIT),
             "text": text_schema("An explanation", EXPLANATION_TEXT_LIMIT),
+            "parentIndex": {
+                "anyOf": [{"type": "integer", "enum": list(range(maximum - 1))}, {"type": "null"}],
+                "description": "Zero-based index of an earlier section that owns this detail, or null for the overview.",
+            },
         },
-        "required": ["title", "text"],
+        "required": ["title", "text", "parentIndex"],
         "additionalProperties": False,
     }
-    minimum, maximum = EXPLANATION_CARD_RANGE
     sections = {"type": "array", "items": section, "description": f"{minimum} to {maximum} explanations with distinct titles."}
     if zcode:
         sections.update(minItems=minimum, maxItems=maximum)
@@ -637,21 +648,35 @@ def parse_decomposition(value, anchor):
     return value
 
 
-def validate_children(value, decomposition):
+def structured_parent_index(item, depths, label, *, max_depth):
+    parent = item.get("parentIndex")
+    if parent is not None and (type(parent) is not int or not 0 <= parent < len(depths)):
+        raise ValueError(f"{label}的 parentIndex 必须是前面一张卡片的下标，或用 null 指向本轮根卡。")
+    depth = 1 if parent is None else depths[parent] + 1
+    if depth > max_depth:
+        raise ValueError(f"{label}的层级超出本轮允许的 {max_depth} 级。")
+    depths.append(depth)
+    return parent
+
+
+def validate_children(value, decomposition, *, minimum_depth=1):
     if not isinstance(value, dict) or set(value) != {"children"}:
         raise ValueError("任务拆分结果必须只包含 children 字段。")
     children = value["children"]
     if not isinstance(children, list) or not 1 <= len(children) <= decomposition["limit"]:
         raise ValueError(f"children 必须包含 1 至 {decomposition['limit']} 个子任务。")
-    titles = {child["title"].strip().casefold() for child in decomposition["existingChildren"]}
+    existing_titles = {child["title"].strip().casefold() for child in decomposition["existingChildren"]}
+    titles = set()
+    depths = []
     result = []
     for index, child in enumerate(children, start=1):
         label = f"第 {index} 个子任务"
-        if not isinstance(child, dict) or set(child) != {"title", "task", "dependencies", "acceptance"}:
+        if not isinstance(child, dict) or set(child) - {"parentIndex"} != {"title", "task", "dependencies", "acceptance"}:
             raise ValueError(f"{label}必须包含 title、task、dependencies 和 acceptance。")
+        parent = structured_parent_index(child, depths, label, max_depth=DECOMPOSITION_MAX_DEPTH if minimum_depth > 1 else 1)
         title = checked_result_text(child["title"], f"{label}的标题", 100)
         title_key = title.casefold()
-        if title_key in titles:
+        if title_key in titles or (parent is None and title_key in existing_titles):
             raise ValueError("拆分结果含重复的子节点标题，未添加子节点。")
         titles.add(title_key)
         clean = {"title": title, "task": checked_result_text(child["task"], f"{label}的任务正文", 500)}
@@ -660,7 +685,11 @@ def validate_children(value, decomposition):
             if not isinstance(items, list) or not minimum <= len(items) <= 5:
                 raise ValueError(f"{label}的 {field} 必须是包含 {minimum} 至 5 条的数组。")
             clean[field] = [checked_result_text(item, f"{label}的 {field} 条目", 180) for item in items]
+        if "parentIndex" in child:
+            clean["parentIndex"] = parent
         result.append(clean)
+    if max(depths) < minimum_depth:
+        raise ValueError("多级拆分至少需要一个任务挂在另一张新任务卡下，请使用 parentIndex 指定父卡。")
     return result
 
 
@@ -724,7 +753,7 @@ def checked_result_text(value, label, limit):
         raise ValueError(f"{label}包含无法显示的字符。") from None
 
 
-def validate_explanation(value):
+def validate_explanation(value, *, minimum_depth=1):
     if not isinstance(value, dict) or set(value) != {"summary", "sections"}:
         raise ValueError("顶层字段必须是 summary 和 sections。")
     summary = checked_result_text(value["summary"], "总览", EXPLANATION_SUMMARY_LIMIT)
@@ -736,16 +765,23 @@ def validate_explanation(value):
         raise ValueError(f"需要 {minimum} 至 {maximum} 张说明卡，本次收到 {len(sections)} 张。")
     result = []
     titles = set()
+    depths = []
     for index, section in enumerate(sections, start=1):
         label = f"第 {index} 张说明卡"
-        if not isinstance(section, dict) or set(section) != {"title", "text"}:
-            raise ValueError(f"{label}必须包含且仅包含 title 和 text。")
+        if not isinstance(section, dict) or set(section) - {"parentIndex"} != {"title", "text"}:
+            raise ValueError(f"{label}必须包含 title 和 text，父卡用 parentIndex 指定。")
+        parent = structured_parent_index(section, depths, label, max_depth=EXPLANATION_MAX_DEPTH)
         title = checked_result_text(section["title"], f"{label}的标题", EXPLANATION_TITLE_LIMIT)
         title_key = title.casefold()
         if title_key in titles:
             raise ValueError(f"{label}的标题与前面的卡片重复。")
         titles.add(title_key)
-        result.append({"title": title, "text": checked_result_text(section["text"], f"{label}的正文", EXPLANATION_TEXT_LIMIT)})
+        item = {"title": title, "text": checked_result_text(section["text"], f"{label}的正文", EXPLANATION_TEXT_LIMIT)}
+        if "parentIndex" in section:
+            item["parentIndex"] = parent
+        result.append(item)
+    if max(depths) < minimum_depth:
+        raise ValueError("多级说明至少需要一张说明卡挂在另一张说明卡下，请使用 parentIndex 指定父卡。")
     return {"summary": summary, "sections": result}
 
 
@@ -811,7 +847,7 @@ def structured_candidate(answer, context, *, attachments=False, repository_scope
     value = structured_object(answer)
     scope = context.get("scope")
     if scope == "explain":
-        return "explanation", {"explanation": validate_explanation(value)}
+        return "explanation", {"explanation": validate_explanation(value, minimum_depth=context.get("minimumDepth", 1))}
     if scope == "plan":
         if not isinstance(value, dict) or set(value) != {"action"} or value["action"] not in PLAN_ACTIONS:
             raise ValueError("操作判断必须只返回 action，并使用允许的操作类型。")
@@ -821,7 +857,8 @@ def structured_candidate(answer, context, *, attachments=False, repository_scope
         validate_filing_result(value, filing)
         return "answer", {"text": json.dumps(value, separators=(",", ":"))}
     if scope == "decompose":
-        return "children", {"children": validate_children(value, context["decomposition"])}
+        return "children", {"children": validate_children(value, context["decomposition"],
+                                                          minimum_depth=context.get("minimumDepth", 1))}
     if scope == "organizeBranch":
         branch = validate_branch_result(value, context["board"], context["branchRootId"],
                                         regenerate=context.get("branchIntent") == "regenerate")
@@ -928,6 +965,11 @@ def parse_request(body):
         if isinstance(value, str) and len(value) <= 80:
             value.encode("utf-8")
             context[key] = value
+    if "minimumDepth" in request:
+        depth = request["minimumDepth"]
+        if context.get("scope") not in ("explain", "decompose") or type(depth) is not int or depth != 2:
+            raise ValueError("多级生成仅支持解释或拆分请求，minimumDepth 必须为 2。")
+        context["minimumDepth"] = depth
     if "branchIntent" in request:
         if context.get("scope") != "organizeBranch" or request["branchIntent"] != "regenerate":
             raise ValueError("分支重写选项仅用于重新生成选中的分支。")
@@ -957,6 +999,8 @@ def parse_request(body):
         if mode != "ask" or request.get("board") is not None:
             raise ValueError("拆分只接收单个节点的上下文，并以只读方式生成子节点。")
         context["decomposition"] = parse_decomposition(request.get("decomposition"), context.get("anchor"))
+        if context.get("minimumDepth", 1) > context["decomposition"]["limit"]:
+            raise ValueError("多级拆分至少需要预留两个任务卡位置。")
     if context.get("scope") == "explain":
         if mode != "ask" or request.get("board") is not None or request.get("decomposition") is not None:
             raise ValueError("解释分支只支持只读问答，不能同时修改白板或拆分任务。")
@@ -1146,10 +1190,22 @@ def build_prompt(mode, question, context, *, source_access=True, repository_scop
         )
     elif context.get("scope") == "decompose":
         limit = context["decomposition"]["limit"]
+        multi_level = context.get("minimumDepth") == 2
+        hierarchy = (
+            f"Propose up to {limit} total new tasks below decomposition.targetId only. Create a hierarchy with "
+            f"at least two and at most {DECOMPOSITION_MAX_DEPTH} new task levels. Include parentIndex on every task. "
+            "Use null for a direct child of the selected card, or the zero-based index of an earlier new task as its parent. "
+            "For example, parentIndex values [null, 0, 1] form three task levels. "
+            "Keep the first level focused on deliverables and put concrete implementation or verification below the relevant task. "
+            "Do not repeat existing direct children. "
+            if multi_level else
+            f"Propose 1 to {limit} new immediate child tasks for decomposition.targetId only. "
+            "Do not repeat existing children or propose grandchildren. "
+        )
         format_hint = (
-            f"Propose 1 to {limit} new immediate child tasks for decomposition.targetId only, based on "
+            hierarchy + "Base the tasks on "
             "the project's current evidence, the ancestor path, the existing direct children and the user's request. "
-            "Do not repeat existing children or propose grandchildren. Each child must have a unique action-oriented "
+            "Each child must have a unique action-oriented "
             "title (at most 100 characters), a concrete task (at most 500 characters), a dependencies array with "
             "0 to 5 explicit prerequisites and an acceptance array with 1 to 5 observable checks. Keep each array "
             "entry within 180 characters. Use an empty dependency list when there are no known prerequisites. "
@@ -1172,14 +1228,24 @@ def build_prompt(mode, question, context, *, source_access=True, repository_scop
                             "and point to the files and functions that explain it.")
     elif context.get("scope") == "explain":
         format_hint = (
-            'Return one JSON object with exactly this shape: {"summary":"...","sections":[{"title":"...","text":"..."}]}. '
-            "Use no Markdown wrapper, introduction or extra keys. Write a short nonempty summary, at most "
-            "280 characters, that can stand alone on the parent card. Add 2 to 6 distinct explanatory "
-            "sections. Each section has a short, unique title of at most 72 characters and text of at most "
-            "700 characters focused on one idea. Make the sections useful independently, avoid repeating "
-            "the summary, and preserve relevant evidence and source references. Keep every section explanatory. "
-            "Omit task assignments and acceptance criteria. Leave card IDs and relationships for the board to assign. "
+            'Return only one JSON object: {"summary":"...","sections":[{"title":"...","text":"...","parentIndex":null}]}. '
+            f"Write a nonempty overview of up to {EXPLANATION_SUMMARY_LIMIT} characters and "
+            f"{EXPLANATION_CARD_RANGE[0]} to {EXPLANATION_CARD_RANGE[1]} sections total. Each section has a distinct "
+            f"title of up to {EXPLANATION_TITLE_LIMIT} characters and nonempty text of up to {EXPLANATION_TEXT_LIMIT} "
+            "characters. Include parentIndex on every section. Use null for a direct child of the overview. "
+            "For a detail owned by another section, use the earlier section's zero-based array index, with parents "
+            "before children. For example, parentIndex values [null, 0, 1, null] give a three-level branch and "
+            f"another top-level section. Use no more than {EXPLANATION_MAX_DEPTH} section levels below the overview. "
+            "When the user asks for multiple levels, or when a subtopic has meaningful details, attach those "
+            "details to their own subtopic rather than putting every section under the overview. Keep simple "
+            "answers flat. Put a clear overview at each parent and supporting details in its children. Preserve "
+            "relevant evidence and source references. Do not add card IDs, task assignments or acceptance criteria. "
         )
+        if context.get("minimumDepth") == 2:
+            format_hint += (
+                "This request explicitly requires a multi-level explanation. Use at least one non-null "
+                "parentIndex to attach a detail to an earlier section. An entirely flat answer is invalid. "
+            )
         if "sourceAnswer" in context:
             format_hint += (
                 "Reorganize the supplied sourceAnswer, treating it as reference material. Preserve its "
@@ -1622,7 +1688,8 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                 elif context.get("scope") == "organizeBranch":
                     schema_path = write_branch_schema(context["board"], zcode=backend == "zcode")
                 elif context.get("scope") == "decompose":
-                    schema_path = write_children_schema(zcode=backend == "zcode", limit=context["decomposition"]["limit"])
+                    schema_path = write_children_schema(zcode=backend == "zcode", limit=context["decomposition"]["limit"],
+                                                        minimum_depth=context.get("minimumDepth", 1))
                 elif context.get("scope") == "explain":
                     schema_path = write_explanation_schema(zcode=backend == "zcode")
                 elif context.get("scope") == "plan":

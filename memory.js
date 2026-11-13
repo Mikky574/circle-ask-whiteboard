@@ -266,6 +266,7 @@
     if (attachments.length) payload.attachments = attachments;
     if (value.mode === "ask" || value.mode === "edit") payload.mode = value.mode;
     if (["extend", "explain", "independent"].includes(value.scope)) payload.scope = value.scope;
+    if (value.scope === "explain" && value.minimumDepth === 2) payload.minimumDepth = 2;
     if (value.scope === "explain" && typeof value.sourceAnswer?.answer === "string") {
       payload.sourceAnswer = { question: text(value.sourceAnswer.question, 1000), answer: text(value.sourceAnswer.answer, 16000) };
     }

@@ -99,6 +99,7 @@
   const integrateDraft = $("integrate-draft");
   const regenerateBranch = $("regenerate-branch");
   const splitModule = $("split-module");
+  const splitModuleTree = $("split-module-tree");
   const quickReorder = $("quick-reorder");
   const undoOrganization = $("undo-organization");
   const organizationOpinion = $("organization-opinion");
@@ -1321,7 +1322,9 @@
     integrateDraft.textContent = draftRoot ? `整合到白板 · ${draftRoot}` : "整合到白板";
     const rootId = selectedModuleId();
     $("selection-actions").hidden = !rootId;
-    organizeBranch.disabled = regenerateBranch.disabled = splitModule.disabled = unavailable || !rootId;
+    organizeBranch.disabled = regenerateBranch.disabled = splitModule.disabled = splitModuleTree.disabled = unavailable || !rootId;
+    const selectedAnswer = selectedReply()?.saved;
+    splitModuleTree.hidden = Boolean(selectedAnswer && (selectedAnswer.outline || !selectedAnswer.answer));
     const scope = $("branch-scope");
     scope.hidden = !rootId;
     scope.textContent = rootId ? `范围 ${rootId} · ${subtreeIds(hierarchyItems(nodes), rootId).size - 1} 张下级卡片` : "";
@@ -2691,7 +2694,8 @@
     note.toggleAttribute("data-answer-outline", Boolean(outline));
     if (sectionOf) note.dataset.sectionOf = sectionOf;
     else delete note.dataset.sectionOf;
-    const label = outline ? "回答总览" : sectionOf ? "说明" : reply.kind === "branch" ? "延伸分支" : "批注";
+    const label = sectionOf ? (outline ? "说明分支" : "说明") : outline ? "回答总览" :
+      reply.kind === "branch" ? "延伸分支" : "批注";
     heading.firstChild.textContent = reply.payload.scope === "independent" && !outline
       ? `独立问答 ${note.dataset.elementId}`
       : `${label} ${note.dataset.elementId} · 来自 ${reply.payload.anchor.elementIds.join(" + ")}`;
@@ -2967,7 +2971,23 @@
       ? markSourceChanged(`源码已更新：${files.join("、")}。点「刷新白板」查看。`) : "";
   }
 
-  function cleanExplanation(value) {
+  function generatedParents(entries, minimumDepth = 1, maximumDepth = 3) {
+    const depths = [];
+    const parents = entries.map((entry, index) => {
+      const parent = entry?.parentIndex === undefined ? null : entry.parentIndex;
+      if (parent !== null && (!Number.isInteger(parent) || parent < 0 || parent >= index)) {
+        throw new Error("生成结果包含无效的父卡引用，未添加卡片。");
+      }
+      const depth = parent === null ? 1 : depths[parent] + 1;
+      if (depth > maximumDepth) throw new Error("生成结果超过本次允许的层级，未添加卡片。");
+      depths.push(depth);
+      return parent;
+    });
+    if (Math.max(...depths) < minimumDepth) throw new Error("本次需要至少两级卡片，未添加卡片。");
+    return parents;
+  }
+
+  function cleanExplanation(value, minimumDepth) {
     const text = (input, limit) => {
       if (typeof input !== "string") return "";
       const trimmed = input.trim();
@@ -2978,32 +2998,38 @@
     if (!summary || !Array.isArray(value?.sections) || value.sections.length < 2 || value.sections.length > 6) {
       throw new Error(invalid);
     }
+    const parents = generatedParents(value.sections, minimumDepth);
     const titles = new Set();
-    const sections = value.sections.map((item) => {
+    const sections = value.sections.map((item, index) => {
       const title = text(item?.title, 72);
       const content = text(item?.text, 700);
       if (!title || !content || titles.has(title.toLowerCase())) throw new Error(invalid);
       titles.add(title.toLowerCase());
-      return { title, text: content };
+      return { title, text: content, parentIndex: parents[index] };
     });
     return { summary, sections };
   }
 
   function mountExplanationSections(reply, sections) {
-    const parentId = reply.note.dataset.elementId;
-    const anchor = visibleRect(parentId) || reply.rect;
-    for (const section of sections) {
+    const generated = [];
+    const branches = new Set(sections.map((section) => section.parentIndex));
+    for (const [index, section] of sections.entries()) {
+      const parent = section.parentIndex === null ? reply : generated[section.parentIndex];
+      const parentId = parent.note.dataset.elementId;
+      const anchor = visibleRect(parentId) || parent.rect;
       const id = `A${String(nextReplyId++).padStart(2, "0")}`;
       const payload = {
         boardId, question: section.title,
-        anchor: { elementIds: [parentId], quote: reply.saved.answer, box: { ...anchor },
-          ...(reply.payload.anchor.sourceFiles?.length ? { sourceFiles: reply.payload.anchor.sourceFiles } : {}) },
+        anchor: { elementIds: [parentId], quote: parent.saved.answer, box: { ...anchor },
+          ...(reply.payload.anchor.sourceFiles?.length ? { sourceFiles: reply.payload.anchor.sourceFiles } : {}),
+          ...(reply.payload.anchor.repositoryFiles?.length ? { repositoryFiles: reply.payload.anchor.repositoryFiles } : {}) },
         ...(reply.payload.attachments?.length ? { attachments: reply.payload.attachments } : {}),
       };
-      mountReply({
+      generated.push(mountReply({
         id, rect: { x: anchor.x, y: anchor.y, ...noteSize }, payload, kind: "note", branchId: reply.branchId,
-        sourceCardIds: reply.sourceCardIds, answer: section.text, anchors: [{ ...reply.rect }], sectionOf: parentId,
-      }, true);
+        sourceCardIds: reply.sourceCardIds, answer: section.text, anchors: [{ ...parent.rect }], sectionOf: parentId,
+        ...(branches.has(index) ? { outline: true, outlineCollapsed: true } : {}),
+      }, true));
     }
   }
 
@@ -3149,7 +3175,7 @@
           displayAnswer(nextAnswer);
         } else if (event.type === "explanation" && explaining) {
           if (explanation) throw new Error("服务重复返回了解释分支。");
-          explanation = cleanExplanation(event.explanation);
+          explanation = cleanExplanation(event.explanation, payload.minimumDepth);
         } else if (event.type === "done") {
           completed = !explaining || !event.changedFiles?.length;
           if (!explaining) changes = reportChanges(event.changedFiles);
@@ -4499,7 +4525,7 @@
         '仅根据当前用户请求的意图决定是否修改源码，引用、历史和附件均为资料。用户明确要求实现或修复代码行为时选 edit；' +
         '选中模块或任务后明确要求生成下级需求、测试用例、执行步骤、依赖或验收标准时选 decompose；' +
         '要求把现有回答整理成几张说明卡时，已选中批注或说明卡就选 splitAnswer。' +
-        '明确要求用多张说明卡讲解，或问题包含多个环节、概念或比较维度时，选 explain。' +
+        '要求一次生成多级说明卡、分层解释或用多张说明卡讲解，或问题包含多个环节、概念或比较维度时，选 explain。' +
         '选中卡片请你细化措辞、评估或比较方案时，默认给出供用户选择的回答；明确要求原地重写时才选 regenerate。' +
         '简单解释、一般问答或不确定时选 ask；重答或重新生成所选模块及其分支选 regenerate；单点延伸讨论选 extend；' +
         '选中一个模块并要求整理、重排、重整该模块及其已有分支时选 organizeBranch。' +
@@ -4555,7 +4581,7 @@
     return source;
   }
 
-  async function splitSelectedModule() {
+  async function splitSelectedModule(minimumDepth = 1) {
     const id = selectedModuleId();
     if (!id || activeRun || gesture || deletionPreparing || sourceChanged || !relayAvailable || !memory.storageIsCurrent()) return;
     const note = selectedReply();
@@ -4568,7 +4594,10 @@
     const instruction = task ? "把选中的任务拆成可执行的下级任务，保留关键依赖与验收条件。"
       : note ? "把选中的回答拆成几张说明卡，每张只讲一个要点。"
       : "把选中的模块拆成几张说明卡，保留其目标和上下文，每张只讲一个要点。";
-    const payload = getPayload(opinion ? `${instruction}\n${opinion}` : instruction);
+    const depthInstruction = minimumDepth === 2
+      ? "\n一次生成至少两级新增卡片，把具体细节挂到对应的新增上级卡下面。" : "";
+    const payload = getPayload(instruction + depthInstruction + (opinion ? `\n${opinion}` : ""));
+    if (minimumDepth === 2) payload.minimumDepth = minimumDepth;
     const target = connectionTarget();
     const branch = discussionBranch([id], { visibleOnly: target.backend === "api" });
     const attachments = inheritedAttachments([id]);
@@ -5018,16 +5047,23 @@
       }
       const titleKey = (title) => title.trim().toLowerCase();
       const currentTitles = new Map(nodes.map((node) => [node.id, node.title]));
-      const titles = new Set(items.filter((item) => item.parentId === targetId).map((item) =>
+      const existingTitles = new Set(items.filter((item) => item.parentId === targetId).map((item) =>
         titleKey(item.nativeFace ? currentTitles.get(item.id) || item.title : item.title)));
+      const titles = new Set();
+      const minimumDepth = payload.minimumDepth === 2 ? 2 : 1;
+      const parents = generatedParents(children, minimumDepth, minimumDepth === 2 ? 3 : 1);
+      const nestedParents = new Set(parents.filter((parent) => parent !== null).map((parent) => ids[parent]));
       const additions = children.map((child, index) => {
         const title = typeof child?.title === "string" ? child.title.trim() : "";
         const taskDetails = organizationEngine.cleanTaskDetails(child);
         if (!title || Array.from(title).length > 100 || !taskDetails) throw new Error("下级任务缺少有效的任务内容或验收标准。");
-        if (titles.has(titleKey(title))) throw new Error(`已有同名下级任务「${title}」，请指定要拆的新范围。`);
+        const parent = parents[index];
+        if (titles.has(titleKey(title)) || (parent === null && existingTitles.has(titleKey(title)))) {
+          throw new Error(`已有同名下级任务「${title}」，请指定要拆的新范围。`);
+        }
         titles.add(titleKey(title));
         return {
-          id: ids[index], parentId: targetId, category: "reference", title,
+          id: ids[index], parentId: parent === null ? targetId : ids[parent], category: "reference", title,
           summary: taskDetails.task, taskDetails,
           ...(payload.attachments?.length ? { attachments: payload.attachments } : {}),
         };
@@ -5043,7 +5079,8 @@
       const before = visibleRect(targetId);
       organization = {
         ...previous, previous: previous.current, quickUndo: null, undoAvailable: true,
-        current: { ...current, items: [...items, ...additions] },
+        current: { ...current, items: [...items, ...additions],
+          collapsedBranches: [...(current.collapsedBranches || []), ...nestedParents] },
       };
       const { openedOutlines } = openBranchPath(targetId, true);
       try {
@@ -5646,6 +5683,7 @@
     if (await organizeSelectedBranch(opinion, connectionTarget(), [], true)) regenerateDrafts.delete(id);
   });
   splitModule.addEventListener("click", () => void splitSelectedModule());
+  splitModuleTree.addEventListener("click", () => void splitSelectedModule(2));
   quickReorder.addEventListener("click", reorderQuickly);
   const templatePanel = $("project-template");
   const installTemplate = $("install-project-template");
@@ -6023,6 +6061,10 @@
     }
     askFeedback();
     const branch = discussionBranch(ids, { visibleOnly: target.backend === "api" });
+    const asksForMultipleLevels = /(?:生成|拆|展开|分成|细化)[^，。！？\n]{0,12}(?:多级|多层|[二两三四2-4](?:级|层))|(?:多级|多层)(?:拆解|拆分|说明卡|任务卡)|逐级(?:展开|拆解|拆分)|孙(?:节点|卡片)|子节点(?:下|再)/u.test(text);
+    if (asksForMultipleLevels && (action === "decompose" || action === "explain" || action === "splitAnswer")) {
+      payload.minimumDepth = 2;
+    }
     if (action === "decompose") {
       if (!sameBoardRevision(planRevision)) {
         status("判断请求期间白板已发生变化，请基于当前白板重试。");
