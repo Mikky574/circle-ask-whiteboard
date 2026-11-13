@@ -7,6 +7,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from agent_trace import zcode_trace
+
 
 MAX_FRAME = 16 * 1024 * 1024
 NATIVE_ATTACHMENTS = {"image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"}
@@ -184,6 +186,7 @@ def run_zcode(process, prompt, model, mode, workspace, events, attachments=(), r
 
 def read_turn(connection, send_id, session_id, mode, events):
     reported_tool = False
+    pending = {}
     while True:
         message = connection.receive()
         if message.get("id") == send_id:
@@ -200,10 +203,16 @@ def read_turn(connection, send_id, session_id, mode, events):
         payload = params.get("payload", {})
         if kind == "turn.started":
             events.put(("status", "ZCode 正在处理当前白板上下文…"))
-        elif kind == "tool.updated" and not reported_tool:
-            reported_tool = True
-            status = "ZCode 正在检查或编辑源码…" if mode == "edit" else "ZCode 正在读取相关文件…"
-            events.put(("status", status))
+        elif kind == "tool.updated":
+            if not reported_tool:
+                reported_tool = True
+                status = "ZCode 正在检查或编辑源码…" if mode == "edit" else "ZCode 正在读取相关文件…"
+                events.put(("status", status))
+            if trace := zcode_trace(payload, pending):
+                events.put(("trace", trace))
+        elif kind == "permission.resolved" and isinstance(payload, dict) and payload.get("decision") == "deny":
+            if trace := zcode_trace({"kind": "error", "toolCallId": payload.get("toolCallId")}, pending):
+                events.put(("trace", trace))
         elif kind == "turn.failed":
             diagnostic = "login required" if connection.account_headers_requested else safe_diagnostic(payload)
             raise ZCodeError(diagnostic)

@@ -475,9 +475,9 @@
     const known = new Set(nodes.map((node) => node.id));
     const removed = new Set(selectedIds.filter((id) => known.has(id)));
     // Relationships describe context/order, not ownership. Only explicit selections are deleted.
-    const parents = new Set(nodes.filter((node) => removed.has(node.id)).flatMap((node) => node.parentIds || []));
+    // The retained parent needs only a child-count update, which is local.
     const affected = nodes.filter((node) => !removed.has(node.id) &&
-      (parents.has(node.id) || (node.parentIds || []).some((id) => removed.has(id)))).map((node) => node.id);
+      removed.has(Object.hasOwn(node, "layoutParentId") ? node.layoutParentId : node.parentIds?.[0])).map((node) => node.id);
     return { removed: [...removed], affected };
   }
 

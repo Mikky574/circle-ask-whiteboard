@@ -151,7 +151,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .board-dialog label, .board-dialog p { color: var(--muted); font-size: 13px; line-height: 1.5; }
 .board-dialog p { margin: 0; overflow-wrap: anywhere; }
 .board-dialog label { display: block; margin-bottom: 6px; }
-.board-dialog input {
+.board-dialog input, .board-dialog textarea {
   width: 100%;
   min-height: 36px;
   padding: 6px 8px;
@@ -160,6 +160,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   background: #141c19;
   color: inherit;
 }
+
+#regenerate-branch-scope { margin-bottom: 14px; }
+#regenerate-branch-opinion { resize: vertical; font: inherit; }
 
 .board-repository-field { margin-top: 14px; }
 .board-dialog .board-field-hint { margin-top: 6px; }
@@ -416,6 +419,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 #initialize-repository { pointer-events: auto; }
 #repository-init-hint { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+#repository-init-status { max-width: 40ch; margin: 7px 0 0; color: var(--mint); font-size: 13px; }
+#repository-init-status:empty { display: none; }
 
 #viewport[data-mode="pan"] [data-element-id]:not([aria-busy="true"]) { cursor: grab; }
 #viewport.is-panning { cursor: grabbing; }
@@ -937,6 +942,18 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .organized-face > h3 { padding-right: 23px; }
 .organized-face :is(p, .element-content, .thread-answer) { margin: 0; color: #3d5044; font-size: 14px; line-height: 1.55; }
 .organized-summary { white-space: pre-line; }
+.organized-code-path { overflow-wrap: anywhere; }
+.organized-code-preview {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid #a8b7ac;
+  border-radius: 5px;
+  background: #eef2ea;
+  color: #233c2f;
+  font: 12px/1.5 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 [data-draft-root] :is(.organized-meta, .thread-heading)::after {
   content: "草稿";
   margin-inline-start: 6px;
@@ -1237,6 +1254,47 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 }
 .sidebar-disclosure[open] > summary::after { margin-top: 3px; transform: rotate(225deg); }
 .sidebar-disclosure > summary:hover { color: #eef4ee; }
+#execution-trace { margin-top: 9px; }
+#execution-trace-status { margin-left: auto; color: var(--muted); font-size: 11px; }
+#execution-trace > summary::after { margin-left: 3px; }
+#execution-trace-empty { margin: 0; padding: 0 10px 10px; color: var(--muted); font-size: 12px; }
+#execution-trace-list {
+  max-height: min(250px, 34dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  margin: 0;
+  padding: 0 10px 8px;
+  list-style: none;
+}
+.execution-trace-row { padding: 8px 0; border-top: 1px solid var(--panel-border); font-size: 12px; }
+.execution-trace-step { display: flex; align-items: baseline; gap: 8px; }
+.execution-trace-step strong { color: #dce6de; font-weight: 650; }
+.execution-trace-step span { margin-left: auto; color: var(--muted); font-size: 11px; }
+.execution-trace-row[data-state="running"] .execution-trace-step span { color: var(--mint); }
+.execution-trace-row[data-state="error"] .execution-trace-step span { color: #f2b0a3; }
+.execution-trace-path {
+  display: block;
+  margin-top: 4px;
+  color: var(--mint);
+  font: 11px var(--mono);
+  overflow-wrap: anywhere;
+}
+.execution-trace-row p { margin: 4px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+.execution-trace-row details { margin-top: 5px; }
+.execution-trace-row details summary { cursor: pointer; color: #c0d0c6; }
+.execution-trace-row pre {
+  margin: 5px 0 0;
+  padding: 7px 8px;
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  color: #dce6de;
+  font: 11px/1.55 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.execution-trace-added { color: #a8dcc1; }
+.execution-trace-removed { color: #f2b0a3; }
 .sidebar-tool-list { padding: 0 7px 7px; }
 .sidebar-tool-list > details { border: 0; background: transparent; }
 .sidebar-tool-list > details[open] { background: #1b2620; }

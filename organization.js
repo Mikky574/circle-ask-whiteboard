@@ -90,6 +90,14 @@
     return { kind, id, status, ...(runner ? { runner } : {}) };
   }
 
+  function cleanCodePreview(value) {
+    const path = text(value?.path, 300);
+    if (!path || !/^[\p{L}\p{N}\p{M}_ .()\[\]@+/-]+$/u.test(path) ||
+        path.split("/").some((part) => !part || part === "." || part === "..")) return null;
+    const code = typeof value?.text === "string" ? value.text.slice(0, 1400) : "";
+    return code.trim() ? { path, text: code } : null;
+  }
+
   function clean(value) {
     if (!Array.isArray(value?.items)) return null;
     const byId = new Map();
@@ -101,6 +109,7 @@
       const attachments = window.BoardMemory?.cleanAttachments(item.attachments) || [];
       const taskDetails = cleanTaskDetails(item.taskDetails);
       const spec = cleanSpec(item.spec);
+      const codePreview = cleanCodePreview(item.codePreview);
       byId.set(id, {
         id,
         category: categories.has(item.category) ? item.category : "reference",
@@ -111,6 +120,7 @@
         ...(attachments.length ? { attachments } : {}),
         ...(taskDetails ? { taskDetails } : {}),
         ...(spec ? { spec } : {}),
+        ...(codePreview ? { codePreview } : {}),
         ...(item.draft === true ? { draft: true } : {}),
         ...(item.explicitParent === true ? { explicitParent: true } : {}),
         ...(item.nativeFace === true ? { nativeFace: true } : {}),

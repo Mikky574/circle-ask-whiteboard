@@ -167,7 +167,7 @@ def call_tool(root, mode, name, args, *, repository=None):
         except UnicodeError:
             raise ValueError("File is not UTF-8 text. Use the supplied native attachment if supported.") from None
         end = offset + limit
-        return {"text": contents[offset:end], "nextOffset": end if end < len(contents) else None}
+        return {"path": name_or_path, "text": contents[offset:end], "nextOffset": end if end < len(contents) else None}
     if name != "replace_text" or mode != "edit" or repository is not None:
         raise ValueError("Tool is unavailable for this request.")
     path = file_path(root, args.get("path"), write=True)

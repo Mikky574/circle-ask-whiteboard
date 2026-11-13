@@ -250,6 +250,55 @@ class RepositoryBindingTests(unittest.TestCase):
         self.assertIn("tests or documented validation command", prompt)
         self.assertNotIn("E01 maps", prompt)
 
+    def test_initialization_adds_actual_source_cards_outside_the_model_ids(self):
+        test_file = self.repository / "src" / "test_main.py"
+        test_file.write_text("def test_entry():\n    assert 61 > 60\n", encoding="utf-8")
+        self.repository.joinpath("README.md").write_text("# Local project\n", encoding="utf-8")
+        self.repository.joinpath("src", "main.py").write_text(
+            "def main():\n    api_key = 'example-only-private-token'\n    return 61\n", encoding="utf-8")
+        reserved = [f"E{number:02}" for number in range(4, 14)]
+        request = self.repository_init_request(repositoryPath=str(self.repository),
+                                               board={"nodes": [], "newIds": reserved})
+        self.assertEqual(request.context["board"]["newIds"], reserved[:8])
+        self.assertEqual(request.context["board"]["codeIds"], reserved[8:])
+        prompt = server.build_prompt("ask", request.question, request.context, repository_scope=True)
+        self.assertIn('"E11"', prompt)
+        self.assertNotIn('"E12"', prompt)
+        self.assertNotIn("codeIds", prompt)
+        plan = {
+            "title": "Project", "summary": "Architecture and verification",
+            "layout": {"flow": "horizontal", "density": "compact"},
+            "items": [
+                {"id": identifier, "parentId": parent, "category": "main" if parent is None else "reference",
+                 "title": identifier, "summary": f"Evidence: `{file}`", "sources": []}
+                for identifier, parent, file in (
+                    ("E04", None, "src/main.py"),
+                    ("E05", "E04", "src/main.py#main"),
+                    ("E06", "E04", "src/test_main.py"),
+                    ("E07", "E04", "README.md"),
+                    ("E08", "E05", "src/main.py"),
+                )
+            ],
+        }
+
+        def candidate():
+            return server.structured_candidate(json.dumps(plan), request.context,
+                                               repository_scope=True, repository=request.repository_path)[1]["map"]
+
+        generated = candidate()["items"]
+        self.assertEqual(generated[:5], plan["items"])
+        self.assertEqual([(item["id"], item["parentId"], item["codePreview"]["path"]) for item in generated[5:]], [
+            ("E12", "E05", "src/main.py"), ("E13", "E06", "src/test_main.py"),
+        ])
+        self.assertIn("    return 61", generated[5]["codePreview"]["text"])
+        self.assertNotIn("example-only-private-token", generated[5]["codePreview"]["text"])
+        self.assertIn("assert 61 > 60", generated[6]["codePreview"]["text"])
+        plan["items"][2]["summary"] = "Evidence: `README.md`"
+        self.assertEqual(candidate()["items"][-1]["codePreview"]["path"], "src/test_main.py")
+        plan["items"][-1]["id"] = "E12"
+        with self.assertRaisesRegex(ValueError, "Unknown or duplicate"):
+            candidate()
+
     def test_repository_links_do_not_escape_scope(self):
         link = self.repository / "linked.py"
         try:

@@ -24,6 +24,7 @@ const cleanup = { browserClosed: false, contextsClosed: 0, serverClosed: false, 
 let server;
 let port;
 let browser;
+let executionTraceFixture;
 
 function redact(value) {
   return String(value ?? "").replaceAll(TEST_KEY, "[TEST-ONLY-REDACTED]");
@@ -74,6 +75,10 @@ async function relay(req, res) {
     const flavor = referer.searchParams.get("flow") || "normal";
     res.writeHead(200, { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store", "Connection": "keep-alive" });
     stream(res, { type: "status", text: "fixture stream started" });
+    if (flavor === "execution-trace" && executionTraceFixture) {
+      await executionTraceFixture(payload, res);
+      return;
+    }
     if (flavor.startsWith("decompose") && payload.scope === "plan") {
       stream(res, { type: "answer", text: JSON.stringify({ action: "decompose" }) });
       stream(res, { type: "done" });
@@ -1112,6 +1117,7 @@ async function testRepositoryInitialization() {
       const request = route.request().postDataJSON();
       requests.push(request);
       const [root, purpose, flow, tests, detail] = request.board?.newIds || [];
+      const [source, testSource] = request.board?.newIds?.slice(8) || [];
       const item = (id, parentId, title, summary) => ({
         id, parentId, title, summary, category: parentId ? "reference" : "main", side: "auto", sources: [],
       });
@@ -1125,6 +1131,10 @@ async function testRepositoryInitialization() {
           item(flow, root, "运行链路", "`src/main.py` 负责入口调度。"),
           item(tests, root, "验证方式", "`tests/test_main.py` 覆盖入口调用。"),
           item(detail, flow, "入口怎样处理请求", "`src/main.py` 的 run 函数调用业务模块。"),
+          { ...item(source, flow, "源码｜main.py", "初始化时读取的源码片段。"),
+            codePreview: { path: "src/main.py", text: "def run():\n    return 61" } },
+          { ...item(testSource, tests, "源码｜test_main.py", "初始化时读取的源码片段。"),
+            codePreview: { path: "tests/test_main.py", text: "def test_run():\n    assert run() == 61" } },
         ],
       };
       const events = [{ type: "map", map }];
@@ -1149,7 +1159,7 @@ async function testRepositoryInitialization() {
     assert.equal(await initialize.isDisabled(), true, "API direct must not offer local source analysis");
     assert.deepEqual(requests, []);
     await page.locator(".connection-settings > summary").click();
-    await page.locator("#backend-select").selectOption("codex");
+    await page.locator("#backend-select").selectOption("zcode");
     await page.locator(".connection-settings > summary").click();
 
     const run = async () => {
@@ -1168,27 +1178,37 @@ async function testRepositoryInitialization() {
     await initialize.waitFor({ state: "hidden" });
     assert.equal(requests.length, 2, "Initialization must go directly to the generation request");
     for (const request of requests) {
-      assert.equal(request.backend, "codex");
+      assert.equal(request.backend, "zcode");
       assert.equal(request.mode, "ask");
       assert.equal(request.scope, "organize");
       assert.equal(request.boardIntent, "repository_init");
       assert.equal(request.boardId, id);
       assert.equal(request.repositoryPath, repositoryPath);
       assert.deepEqual(request.board.nodes, []);
-      assert.equal(request.board.newIds.length, 8);
-      assert.equal(new Set(request.board.newIds).size, 8);
+      assert.equal(request.board.newIds.length, 10);
+      assert.equal(new Set(request.board.newIds).size, 10);
       assert.equal(Object.hasOwn(request, "api"), false);
     }
     const [root, purpose, flow, tests, detail] = requests[1].board.newIds;
-    const parentRelations = [[root, null], [purpose, root], [flow, root], [tests, root], [detail, flow]];
+    const [source, testSource] = requests[1].board.newIds.slice(8);
+    const parentRelations = [[root, null], [purpose, root], [flow, root], [tests, root], [detail, flow],
+      [source, flow], [testSource, tests]];
     assert.deepEqual((await organization()).current.items.map(({ id, parentId }) => [id, parentId]), parentRelations);
     const branch = card(flow).locator(".branch-toggle");
-    assert.equal(await branch.getAttribute("aria-expanded"), "false");
-    assert.equal(await card(detail).isVisible(), false, "The initial overview should hide grandchildren");
+    assert.equal(await branch.getAttribute("aria-expanded"), "true");
+    await card(source).waitFor();
+    await card(testSource).waitFor();
+    const code = card(source).locator(".organized-code-preview");
+    assert.equal(await code.isVisible(), false, "Keep source bodies folded at first");
+    await card(source).locator(".module-fold").press("Enter");
+    assert.equal(await code.innerText(), "def run():\n    return 61");
+    await branch.press("Enter");
+    assert.equal(await card(source).isVisible(), false);
     await branch.press("Enter");
     await card(detail).waitFor();
     await page.reload({ waitUntil: "networkidle" });
     await card(detail).waitFor();
+    assert.equal(await code.innerText(), "def run():\n    return 61");
     assert.deepEqual((await organization()).current.items.map(({ id, parentId }) => [id, parentId]), parentRelations);
     await page.locator("#undo-organization").click();
     await initialize.waitFor();
@@ -1198,9 +1218,145 @@ async function testRepositoryInitialization() {
     assert.equal(await boardCards.count(), 0, "Reload must preserve the restored empty canvas");
     assert.equal(await page.locator("#board-repository-label").getAttribute("title"), repositoryPath);
     assertNoJsErrors(jsErrors);
-    record("U56", "PASS", "A bound empty board initializes one source-backed hierarchy, rejects incomplete results, disables local analysis on API, and persists expansion and undo.");
+    record("U56", "PASS", "A ZCode-bound empty board initializes chapters and folded source cards, rejects incomplete results, disables local analysis on API, and persists expansion and undo.");
   } catch (error) { record("U56", "FAIL", safeError(error)); await screenshot("U56-failure", session.page); }
   finally { await closeSession(session); }
+}
+
+async function testExecutionTrace() {
+  const session = await openPage("execution-trace", "repo-atlas");
+  const pendingReleases = [];
+  const hold = () => new Promise((release) => pendingReleases.push(release));
+  try {
+    const { page, jsErrors } = session;
+    const answer = "合成回答：入口函数会读取项目配置。";
+    const failure = "合成工具执行失败";
+    const code = "def load_settings():\n    return '<fixture-tag>'";
+    const readPath = "repository/src/settings.py";
+    const readLabel = "正在读取项目配置入口";
+    const failedLabel = "项目工具调用失败";
+    const cancelledLabel = "正在搜索项目用例";
+    const staleLabel = "来自旧请求的事件";
+    const privateMarker = "假造的内部推理内容";
+    const executions = [];
+    const showCode = hold();
+    const finishAnswer = hold();
+    const finishError = hold();
+    const finishCancellation = hold();
+
+    executionTraceFixture = async (request, response) => {
+      const meta = { requestId: request.requestId, baseRevision: request.baseRevision };
+      const send = (event) => {
+        if (!response.destroyed && !response.writableEnded) stream(response, { ...meta, ...event });
+      };
+      if (request.scope === "plan") {
+        send({ type: "answer", text: '{"action":"ask"}' });
+        send({ type: "done" });
+      } else {
+        executions.push(request);
+        if (executions.length === 1) {
+          send({ type: "trace", step: "read-settings", kind: "read", state: "running", path: readPath, text: readLabel });
+          await showCode;
+          send({ type: "trace", step: "read-settings", kind: "read", state: "done", path: readPath,
+            text: "已读取项目配置入口", detail: code, detailKind: "code" });
+          send({ type: "reasoning", text: privateMarker });
+          await finishAnswer;
+          send({ type: "answer", text: answer });
+          send({ type: "done" });
+        } else if (executions.length === 2) {
+          send({ type: "trace", step: "late-read", kind: "read", state: "done",
+            requestId: executions[0].requestId, text: staleLabel });
+          send({ type: "trace", step: "failed-tool", kind: "tool", state: "error", text: failedLabel });
+          await finishError;
+          send({ type: "error", text: failure });
+        } else {
+          send({ type: "trace", step: "pending-search", kind: "search", state: "running", text: cancelledLabel });
+          await finishCancellation;
+          send({ type: "trace", step: "after-stop", kind: "search", state: "done", text: "停止后的过期搜索" });
+          send({ type: "answer", text: "停止后的过期回答" });
+          send({ type: "done" });
+        }
+      }
+      if (!response.destroyed && !response.writableEnded) response.end();
+    };
+
+    const panel = page.locator("#execution-trace");
+    const rows = page.locator("#execution-trace-list [data-trace-step]");
+    const traceStatus = page.locator("#execution-trace-status");
+    const stop = page.locator("#stop-ai");
+    const ask = async (question) => {
+      await page.locator("#ask-board").click();
+      await page.locator("#question").fill(question);
+      await page.locator("#submit-question").click();
+    };
+    const answerCard = page.locator("#threads .thread-answer").filter({ hasText: answer });
+    await ask("配置入口是怎么实现的？");
+    const readRow = rows.filter({ hasText: readLabel });
+    await readRow.waitFor();
+    assert.equal(await panel.evaluate((element) => element.open), true, "The first live trace opened no disclosure");
+    assert.match(await panel.locator(":scope > summary").innerText(), /执行过程/);
+    assert.equal(await answerCard.count(), 0, "The reply completed before the staged live trace");
+    assert.equal(await stop.isVisible(), true);
+
+    pendingReleases.shift()();
+    const completedRead = rows.filter({ hasText: "已读取项目配置入口" });
+    await completedRead.waitFor();
+    assert.equal(await rows.count(), 1, "A result duplicated its running tool row");
+    assert.ok((await completedRead.innerText()).includes(readPath));
+    const source = completedRead.locator("pre");
+    assert.equal(await source.isVisible(), false, "The code preview should start folded");
+    await completedRead.locator("details > summary").click();
+    assert.equal(await source.isVisible(), true);
+    assert.equal(await source.textContent(), code, "Code previews must retain indentation and treat tags as literal text");
+    assert.equal(await source.locator("fixture-tag").count(), 0);
+
+    pendingReleases.shift()();
+    await answerCard.waitFor();
+    await stop.waitFor({ state: "hidden" });
+    assert.equal(await completedRead.isVisible(), true, "The trace disappeared after the final answer");
+    assert.doesNotMatch(await panel.innerText(), new RegExp(privateMarker));
+    assert.doesNotMatch(await answerCard.innerText(), /读取项目配置入口|fixture-tag/);
+
+    await page.locator(".connection-settings > summary").click();
+    await page.locator("#backend-select").selectOption("zcode");
+    await page.locator(".connection-settings > summary").click();
+    await ask("下一轮检查调用错误。");
+    const failedTool = rows.filter({ hasText: failedLabel });
+    await failedTool.waitFor();
+    assert.equal(await rows.count(), 1, "Earlier execution steps leaked into a later request");
+    assert.doesNotMatch(await panel.innerText(), new RegExp(staleLabel));
+    assert.equal(executions[0].backend, "codex");
+    assert.equal(executions[1].backend, "zcode");
+    pendingReleases.shift()();
+    await stop.waitFor({ state: "hidden" });
+    assert.equal(await failedTool.isVisible(), true, "The trace disappeared after a model error");
+    assert.match(await traceStatus.innerText(), /失败|错误/);
+
+    await ask("检查停止时的执行轨迹。");
+    const cancelledTool = rows.filter({ hasText: cancelledLabel });
+    await cancelledTool.waitFor();
+    await stop.click();
+    await stop.waitFor({ state: "hidden" });
+    pendingReleases.shift()();
+    assert.equal(await cancelledTool.isVisible(), true, "The trace disappeared after Stop");
+    assert.match(await traceStatus.innerText(), /停止|取消/);
+    assert.equal(await rows.count(), 1);
+    assert.ok(telemetry.cancelRequests.some(({ requestId }) => requestId === executions[2].requestId));
+    assert.equal(await page.locator("#threads .thread-answer").filter({ hasText: "停止后的过期回答" }).count(), 0);
+
+    const stored = await page.evaluate(() => JSON.stringify(Object.entries(localStorage)));
+    assert.doesNotMatch(stored, /fixture-tag|项目工具调用失败|正在搜索项目用例/, "Trace rows were saved to board storage");
+    await page.reload();
+    await answerCard.waitFor();
+    assert.equal(await rows.count(), 0, "A trace reappeared after reload");
+    assertNoJsErrors(jsErrors, true);
+    record("U57", "PASS", "CLI tool steps update live, expand literal code previews, retain the latest trace through failure and cancellation, and keep saved answers separate.");
+  } catch (error) { record("U57", "FAIL", safeError(error)); await screenshot("U57-failure", session.page); }
+  finally {
+    pendingReleases.forEach((release) => release());
+    await closeSession(session);
+    executionTraceFixture = undefined;
+  }
 }
 
 async function testNestedGuideConnections() {
@@ -3486,8 +3642,6 @@ async function testRegenerateSelectedBranch() {
     await page.reload();
     await card("E90").waitFor({ state: "hidden" });
     const beforeNotes = await readManualNotes(page);
-    await openDetails(page, "organization-options");
-    await page.locator("#organization-opinion").fill(opinion);
     await card("A01").press("Enter");
     const before = await read();
     const beforeRects = await visibleCardRects(page);
@@ -3497,6 +3651,10 @@ async function testRegenerateSelectedBranch() {
       const response = page.waitForResponse((candidate) =>
         new URL(candidate.url()).pathname === "/api/codex" && candidate.request().method() === "POST");
       await regenerate.click();
+      await page.locator("#regenerate-branch-dialog[open]").waitFor();
+      assert.match(await page.locator("#regenerate-branch-scope").innerText(), /A01.*4 张下级/);
+      await page.locator("#regenerate-branch-opinion").fill(opinion);
+      await page.locator("#confirm-regenerate-branch").click();
       await response;
       await page.locator("#stop-ai").waitFor({ state: "hidden" });
     };
@@ -3510,6 +3668,7 @@ async function testRegenerateSelectedBranch() {
     await card("A01").locator(".thread-answer").filter({ hasText: correctedSummary("A01") }).waitFor();
     for (const request of requests) {
       assert.equal(request.scope, "organizeBranch");
+      assert.equal(request.branchIntent, "regenerate");
       assert.equal(request.mode, "ask");
       assert.equal(request.branchRootId, "A01");
       assert.ok(request.question.includes(opinion), "The correction should be sent with the branch");
@@ -3543,6 +3702,7 @@ async function testRegenerateSelectedBranch() {
     await page.reload();
     assert.deepEqual(await read(), after);
     await card("A01").locator(".thread-answer").filter({ hasText: correctedSummary("A01") }).waitFor();
+    assert.equal(await card("A01").locator(".thread-question").textContent(), correctedTitle("A01"));
     const typed = "请再重新生成整个模块和下级，引用能够核对的源码。";
     responseKind = "incomplete";
     const typedResponse = page.waitForResponse((candidate) => new URL(candidate.url()).pathname === "/api/codex" &&
@@ -4430,6 +4590,102 @@ async function testCanvasContextModesAndDeletion() {
   finally { await closeSession(session); }
 }
 
+async function testDeleteWithoutWaitingForAnswer() {
+  const session = await openPage("normal", "repo-manual");
+  let finishAnswer;
+  const holdAnswer = new Promise((resolve) => { finishAnswer = resolve; });
+  try {
+    const { page, jsErrors } = session;
+    const cards = [["E90", null], ["E91", "E90"], ["E92", null], ["E93", "E92"], ["E94", "E93"], ["E95", "E92"]];
+    await page.evaluate((fixture) => {
+      const key = "whiteboard.codex.repo-manual.organization.v1";
+      const plan = JSON.parse(localStorage.getItem(key));
+      for (const [index, [id, parentId]] of fixture.entries()) {
+        plan.current.items.push({ id, parentId, title: `删除测试 ${id}`, summary: "", category: "reference" });
+        plan.current.positions[id] = { x: 90 + 315 * (index % 3), y: 550 + 180 * Math.floor(index / 3), width: 250 };
+      }
+      localStorage.setItem(key, JSON.stringify(plan));
+      const noteKey = "whiteboard.codex.repo-manual.v1";
+      const state = JSON.parse(localStorage.getItem(noteKey)) || {};
+      const rect = { x: 910, y: 700, width: 270, height: 180 };
+      state.notes = [...(state.notes || []), { id: "A90", rect, kind: "note", sourceCardIds: ["E91", "E95"], anchors: [],
+        payload: { anchor: { elementIds: ["E91", "E95"], quote: "引用", box: rect }, question: "跨分支引用" },
+        answer: "主挂接到 E91，补充引用 E95。" }];
+      localStorage.setItem(noteKey, JSON.stringify(state));
+    }, cards);
+    await page.reload();
+    await page.locator(".connection-settings > summary").click();
+    await page.locator("#backend-select").selectOption("zcode");
+    await page.locator(".connection-settings > summary").click();
+    const requests = [];
+    const answer = "保留这次 ZCode 回答。";
+    await page.route("**/api/codex", async (route) => {
+      const request = route.request().postDataJSON();
+      requests.push(request);
+      const meta = { requestId: request.requestId, baseRevision: request.baseRevision };
+      if (request.scope === "plan") {
+        await route.fulfill({ contentType: "application/x-ndjson", body: [
+          JSON.stringify({ ...meta, type: "answer", text: '{"action":"ask"}' }),
+          JSON.stringify({ ...meta, type: "done" }),
+        ].join("\n") });
+        return;
+      }
+      if (request.scope !== "organize") await holdAnswer;
+      await route.fulfill({ contentType: "application/x-ndjson", body: [
+        JSON.stringify({ ...meta, type: "answer", text: answer }),
+        JSON.stringify({ ...meta, type: "done", changedFiles: [] }),
+      ].join("\n") });
+    });
+    const card = (id) => page.locator(`#board [data-element-id="${id}"]`);
+    const remove = page.locator("#delete-selection");
+    const undo = page.locator("#undo-delete");
+    const stop = page.locator("#stop-ai");
+    await page.locator("#fit").click();
+
+    await card("E95").press("Enter");
+    await remove.click();
+    await card("E95").waitFor({ state: "hidden" });
+    assert.equal(await page.locator("#repair-delete").isVisible(), false, "A secondary reference must not trigger repair");
+    assert.deepEqual((await readManualNotes(page)).find(({ id }) => id === "A90").payload.anchor.elementIds, ["E91"]);
+    await undo.click();
+    await card("E95").waitFor();
+
+    await card("E92").locator(".organized-title").click();
+    for (const id of ["E93", "E94", "E95"]) await card(id).locator(".organized-title").click({ modifiers: ["Shift"] });
+    await remove.click();
+    for (const id of ["E92", "E93", "E94", "E95"]) await card(id).waitFor({ state: "hidden" });
+    assert.equal(await page.locator("#repair-delete").isVisible(), false, "Deleting the full selection needs no repair");
+    assert.equal(requests.length, 0);
+    await undo.click();
+    await card("E95").waitFor();
+
+    await askFromCard(page, "E91", "正在处理的另一条分支");
+    await page.waitForFunction(() => document.querySelector('#threads [data-anchor="E91"][aria-busy="true"]'));
+    await stop.waitFor();
+    await card("E90").press("Enter");
+    assert.equal(await remove.isDisabled(), true, "The active question's ancestor must be protected");
+    await page.locator("#fit").click();
+    await card("E95").press("Shift+F10");
+    await page.locator("#canvas-menu-delete").click();
+    await card("E95").waitFor({ state: "hidden" });
+    assert.equal(await stop.isVisible(), true, "Unrelated deletion should not wait for the answer or cancel it");
+    assert.equal(await undo.isDisabled(), true);
+    assert.deepEqual(requests.map(({ backend, scope }) => [backend, scope]), [["zcode", "plan"], ["zcode", undefined]]);
+    finishAnswer();
+    await page.locator("#threads .thread-answer").filter({ hasText: answer }).waitFor();
+    await stop.waitFor({ state: "hidden" });
+    await undo.click();
+    await card("E95").waitFor();
+    assert.ok((await readManualNotes(page)).some((note) => note.answer === answer), "Undo must not rewind the unrelated answer");
+    await page.reload();
+    await card("E95").waitFor();
+    assert.ok((await readManualNotes(page)).some((note) => note.answer === answer));
+    assertNoJsErrors(jsErrors);
+    record("U58", "PASS", "Leaf and complete subtree deletion make zero model calls. While ZCode answers another branch, local deletion completes, active ancestors are protected, and undo retains the answer.");
+  } catch (error) { record("U58", "FAIL", safeError(error)); await screenshot("U58-failure", session.page); }
+  finally { finishAnswer(); await closeSession(session); }
+}
+
 async function testIndependentQuestionAndOrphanFiling() {
   const session = await openPage("normal", "repo-manual");
   try {
@@ -5113,7 +5369,7 @@ try {
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(0, "127.0.0.1", resolveListen); });
   port = server.address().port;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
-  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56").split(","));
+  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58").split(","));
   if (selected.has("U01")) { console.log("BROWSER_CASE=U01"); await testCapabilities(); }
   if (selected.has("U02")) { console.log("BROWSER_CASE=U02"); await testKeyEphemeral(); }
   if (selected.has("U05-A")) { console.log("BROWSER_CASE=U05-A"); await testStopLateEvents(); }
@@ -5172,6 +5428,8 @@ try {
   if (selected.has("U54")) { console.log("BROWSER_CASE=U54"); await testFoldedCardSearchAndContext(); }
   if (selected.has("U55")) { console.log("BROWSER_CASE=U55"); await testBoardRepositoryBinding(); }
   if (selected.has("U56")) { console.log("BROWSER_CASE=U56"); await testRepositoryInitialization(); }
+  if (selected.has("U57")) { console.log("BROWSER_CASE=U57"); await testExecutionTrace(); }
+  if (selected.has("U58")) { console.log("BROWSER_CASE=U58"); await testDeleteWithoutWaitingForAnswer(); }
 } catch (error) {
   record("HARNESS", String(error?.message || "").startsWith("BLOCKED:") ? "BLOCKED" : "FAIL", safeError(error));
 } finally {

@@ -1224,6 +1224,9 @@
     const box = unionRects(selected.map((item) => item.box));
     const sourceFiles = repositoryPath ? [] : [...new Set([...selectedSourceFiles(), ...selected.flatMap(({ id }) =>
       replies.get(id)?.payload.anchor.sourceFiles || [])])];
+    const selectedIds = new Set(selected.map(({ id }) => id));
+    const repositoryFiles = connection.backend === "api" ? [] : [...new Set((organization.current?.items || [])
+      .filter((item) => item.codePreview && selectedIds.has(item.id)).map((item) => item.codePreview.path))].slice(0, 12);
     const formulaFragments = selected.flatMap((item) => item.formulaFragments.map((fragment) => ({
       elementId: item.id,
       ...fragment,
@@ -1246,6 +1249,7 @@
         box: Object.fromEntries(Object.entries(box).map(([key, value]) => [key, Math.round(value)])),
         ...(wholeCardIds.length ? { wholeCardIds } : {}),
         ...(sourceFiles.length ? { sourceFiles } : {}),
+        ...(repositoryFiles.length ? { repositoryFiles } : {}),
         ...(formulaFragments.length ? { formulaFragments } : {}),
         ...(noteContexts.length ? { noteContexts } : {}),
       },
@@ -1271,14 +1275,17 @@
     const nodes = boardForOrganization();
     const deletePlan = memory.deletionPlan(nodes, selected.map((item) => item.id));
     const deleting = deletionPreparing || Boolean(activeRun?.repair);
+    const deleteBlock = deletionBlock(deletePlan);
     renderWorkbenchEditor(Boolean(activeRun || deleting || storageStale));
-    $("delete-selection").disabled = !deletePlan.removed.length || Boolean(activeRun || gesture || pendingRepair || deleting || storageStale);
+    $("delete-selection").disabled = !deletePlan.removed.length || Boolean(deleteBlock);
+    $("delete-selection").title = deleteBlock;
     $("delete-selection").textContent = deleting ? "删除处理中…" : deletePlan.removed.length ? "删除选中（" + deletePlan.removed.length + " 项）" : "删除选中";
     $("delete-selection").setAttribute("aria-busy", String(deleting));
     renderDeletionStatus(deleting);
     $("undo-delete").hidden = !deletionUndo;
     $("undo-delete").disabled = Boolean(activeRun || deleting);
-    $("undo-delete").textContent = deleting ? "处理中，暂不可撤销" : pendingRepair ? "撤销删除（含待处理任务）" : "撤销本次删除及整理";
+    $("undo-delete").textContent = deleting ? "处理中，暂不可撤销" : activeRun ? "回答结束后可撤销删除" :
+      pendingRepair ? "撤销删除（含待处理任务）" : "撤销本次删除";
     $("undo-delete").title = "恢复本次删除前的节点和关联，包含 AI 的归档与重新挂接";
     $("repair-delete").hidden = !pendingRepair;
     $("repair-delete").disabled = Boolean(activeRun || deleting);
@@ -2433,9 +2440,9 @@
     for (const element of boardElements()) {
       const item = plan.get(element.dataset.elementId);
       const reply = replies.get(element.dataset.elementId);
+      if (reply && activeRun?.reply === reply) continue;
       if (reply?.saved) {
-        reply.questionLine.textContent = item?.localContent && reply.saved.sectionOf && !reply.saved.outline
-          ? item.title : reply.payload.question;
+        reply.questionLine.textContent = item?.localContent ? item.title : reply.payload.question;
         reply.answer.textContent = item?.localContent ? item.summary : reply.saved.answer;
       }
       element.querySelector(":scope > .organized-face")?.remove();
@@ -2452,7 +2459,7 @@
       const level = guideLevels.get(item.id);
       const guideCategory = level === undefined ? null : guideLabels[Math.min(level, 2)];
       const category = item.spec ? { requirement: "需求", case: "用例", constraint: "约束" }[item.spec.kind] :
-        item.taskDetails ? "任务" : guideCategory || { main: "主干", done: "已完成", optimize: "待优化",
+        item.codePreview ? "源码" : item.taskDetails ? "任务" : guideCategory || { main: "主干", done: "已完成", optimize: "待优化",
         reference: element.dataset.generatedModule ? "模块" : "批注" }[item.category];
       const heading = appendText(face, "div", "organized-head", "");
       const labelId = item.spec?.kind === "constraint" ? item.id : item.spec?.id || item.id;
@@ -2477,6 +2484,10 @@
       const formula = element.querySelector(":scope > .element-content [data-select-part='formula']");
       if (formula) appendText(body, "div", "element-content organized-formula", "").append(formula.cloneNode(true));
       if (item.sources?.length) appendText(body, "p", "organized-evidence", `代码依据 · ${item.sources.join("、")}`).dataset.selectPart = "text";
+      if (item.codePreview) {
+        appendText(body, "code", "organized-evidence organized-code-path", item.codePreview.path).dataset.selectPart = "text";
+        appendText(body, "pre", "organized-code-preview", item.codePreview.text).dataset.selectPart = "text";
+      }
       renderAttachedNames(body, inheritedAttachments([item.id]));
       if (body.children.length) {
         const fold = appendText(heading, "button", "module-fold", "");
@@ -2801,6 +2812,106 @@
     }
   }
 
+  const traceKinds = { read: "读取文件", list: "查看目录", command: "运行命令", edit: "修改文件", tool: "调用工具", search: "搜索源码" };
+  const traceStates = { running: "进行中", done: "完成", error: "失败", incomplete: "未返回结果", stopped: "已停止" };
+
+  function showTraceStep(trace, event) {
+    if (typeof event.step !== "string" || !/^[\w.:-]{1,100}$/.test(event.step) ||
+        !Object.hasOwn(traceKinds, event.kind) || !["running", "done", "error"].includes(event.state)) return;
+    const follow = trace.list.scrollHeight - trace.list.clientHeight - trace.list.scrollTop < 24;
+    let entry = trace.steps.get(event.step);
+    if (!entry) {
+      if (trace.steps.size >= 120) return;
+      const row = appendText(trace.list, "li", "execution-trace-row", "");
+      row.dataset.traceStep = event.step;
+      const header = appendText(row, "div", "execution-trace-step", "");
+      const title = appendText(header, "strong", "", "");
+      const state = appendText(header, "span", "", "");
+      const path = appendText(row, "code", "execution-trace-path", "");
+      const description = appendText(row, "p", "", "");
+      const detail = appendText(row, "details", "", "");
+      const detailTitle = appendText(detail, "summary", "", "");
+      const preview = appendText(detail, "pre", "", "");
+      entry = { row, title, state, path, description, detail, detailTitle, preview };
+      trace.steps.set(event.step, entry);
+    } else if (entry.row.dataset.state !== "running" && event.state === "running") {
+      return;
+    }
+    entry.title.textContent = traceKinds[event.kind];
+    entry.row.dataset.state = event.state;
+    entry.state.textContent = traceStates[event.state];
+    if (typeof event.path === "string") entry.path.textContent = event.path.slice(0, 320);
+    if (typeof event.text === "string") entry.description.textContent = event.text.slice(0, 280);
+    entry.path.hidden = !entry.path.textContent;
+    entry.description.hidden = !entry.description.textContent;
+    if (typeof event.detail === "string" && event.detail) {
+      const value = event.detail.slice(0, 1800);
+      entry.detailTitle.textContent = event.detailKind === "code" ? "源码片段" : event.detailKind === "diff" ? "改动片段" : "工具结果";
+      if (event.detailKind === "diff") {
+        entry.preview.replaceChildren();
+        for (const line of value.split(/(?<=\n)/)) {
+          const style = line.startsWith("+") ? "execution-trace-added" : line.startsWith("-") ? "execution-trace-removed" : "";
+          appendText(entry.preview, "span", style, line);
+        }
+      } else {
+        entry.preview.textContent = value;
+      }
+    }
+    entry.detail.hidden = !entry.preview.textContent;
+    if (trace.list.hidden) {
+      trace.list.hidden = false;
+      trace.empty.hidden = true;
+      trace.panel.open = true;
+    }
+    if (follow && trace.panel.open) trace.list.scrollTop = trace.list.scrollHeight;
+  }
+
+  async function readExecution(run, request, receive) {
+    const panel = $("execution-trace");
+    const label = backendLabels[request.backend];
+    const show = request.backend === "codex" || request.backend === "zcode";
+    const trace = { panel, list: $("execution-trace-list"), empty: $("execution-trace-empty"), steps: new Map() };
+    const statusLine = $("execution-trace-status");
+    panel.hidden = !show;
+    panel.open = false;
+    trace.list.replaceChildren();
+    trace.list.hidden = true;
+    trace.empty.hidden = false;
+    trace.empty.textContent = "等待工具操作…";
+    statusLine.textContent = `${label} · 运行中`;
+    let terminal = "";
+    try {
+      const response = await fetch("/api/codex", {
+        method: "POST", headers: { "Content-Type": "application/json" }, signal: run.controller.signal,
+        body: JSON.stringify(request),
+      });
+      await readEvents(response, (event) => {
+        const matches = (event.requestId == null || event.requestId === request.requestId) &&
+          (event.baseRevision == null || event.baseRevision === request.baseRevision);
+        if (event.type === "trace") {
+          if (show && event.requestId === request.requestId && matches && acceptsRunEvent(run)) showTraceStep(trace, event);
+          return;
+        }
+        if (matches && (event.type === "done" || event.type === "error")) terminal = event.type;
+        receive(event);
+      });
+    } catch (error) {
+      terminal = "error";
+      throw error;
+    } finally {
+      if (show && activeRun === run) {
+        statusLine.textContent = `${label} · ${run.stopping ? "已停止" : terminal === "done" ? "执行结束" : "执行失败"}`;
+        trace.empty.textContent = "本轮没有收到工具操作。";
+        for (const entry of trace.steps.values()) {
+          if (entry.row.dataset.state === "running") {
+            entry.row.dataset.state = run.stopping ? "stopped" : "incomplete";
+            entry.state.textContent = traceStates[entry.row.dataset.state];
+          }
+        }
+      }
+    }
+  }
+
   function markSourceChanged(message) {
     sourceChanged = true;
     $("reload-board").hidden = false;
@@ -2912,9 +3023,21 @@
     }
     const controller = new AbortController();
     const requestId = newRequestId();
-    const run = { controller, mode, target, requestId, stopping: false };
+    const run = { controller, mode, target, requestId, stopping: false, reply };
     activeRun = run;
-    const parent = boardForOrganization().find(({ id }) => id === note.dataset.elementId)?.layoutParentId;
+    const nodes = boardForOrganization();
+    const parent = nodes.find(({ id }) => id === note.dataset.elementId)?.layoutParentId;
+    if (mode === "ask" && !explaining) {
+      const parents = new Map(nodes.map(({ id, parentIds }) => [id, parentIds]));
+      run.protectedCards = new Set([note.dataset.elementId, ...payload.anchor.elementIds,
+        ...reply.payload.anchor.elementIds, ...reply.sourceCardIds, reply.branchId, previous?.sectionOf,
+        payload.revisionContext?.elementId, reply.payload.revisionContext?.elementId,
+        ...(payload.anchor.noteContexts || []).flatMap(({ elementId, sourceCardIds }) => [elementId, ...sourceCardIds]),
+      ].filter(Boolean));
+      for (const id of run.protectedCards) {
+        for (const parentId of parents.get(id) || []) run.protectedCards.add(parentId);
+      }
+    }
     if (reply.kind === "branch" && !explaining) {
       if (openBranchPath(note.dataset.elementId).layoutChanged) saveOrganization();
     }
@@ -2961,13 +3084,7 @@
     }
 
     try {
-      const response = await fetch("/api/codex", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request),
-        signal: controller.signal,
-      });
-      await readEvents(response, (event) => {
+      await readExecution(run, request, (event) => {
         if ((event.requestId != null && event.requestId !== requestId) ||
             (event.baseRevision != null && event.baseRevision !== request.baseRevision)) return;
         if (!acceptsRunEvent(run)) {
@@ -3053,6 +3170,14 @@
       }
       note.classList.remove("is-waiting", "is-streaming");
       note.setAttribute("aria-busy", "false");
+      if (deletionUndo?.activeRequest === requestId) {
+        const index = deletionUndo.notes.findIndex(({ id }) => id === note.dataset.elementId);
+        if (index >= 0 && reply.saved) deletionUndo.notes[index] = structuredClone(reply.saved);
+        const items = deletionUndo.organization.current?.items;
+        const itemIndex = items?.findIndex(({ id }) => id === note.dataset.elementId);
+        if (itemIndex >= 0 && organizedItem) items[itemIndex] = structuredClone(organizedItem);
+        delete deletionUndo.activeRequest;
+      }
       if (activeRun === run) activeRun = null;
       refreshViewLayout(false);
       if (explanationSaved) focusExplanation(reply, visibleRect(parent));
@@ -3102,8 +3227,9 @@
         ...(current?.side ? { side: current.side } : {}),
         ...(current?.sources?.length ? { sources: current.sources } : {}),
         title: excerpt((!current?.nativeFace && current?.title) || item.title, 96),
-        text: excerpt(current && !current.nativeFace ? `上次整理角色：${current.category}。 ${summary}` +
-          (item.text ? `\n原内容：${item.text}` : "") : item.text, excerptLength),
+        text: excerpt(current && !current.nativeFace ?
+          (current.codePreview ? `源码文件：${current.codePreview.path}。\n` : "") +
+          `上次整理角色：${current.category}。 ${summary}` + (item.text ? `\n原内容：${item.text}` : "") : item.text, excerptLength),
         parentIds: [...new Set(parentIds)].filter((id) => id !== item.id && ids.has(id)),
         box: Object.fromEntries(Object.entries(box).map(([key, value]) => [key, Math.round(value)])),
       };
@@ -3625,11 +3751,7 @@
       let answer = "";
       let completed = false;
       let errorText = "";
-      const response = await fetch("/api/codex", {
-        method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
-        body: JSON.stringify(request),
-      });
-      await readEvents(response, (event) => {
+      await readExecution(run, request, (event) => {
         if (!acceptsRunEvent(run) || (event.requestId != null && event.requestId !== requestId) ||
             (event.baseRevision != null && event.baseRevision !== baseRevision)) return;
         if (event.type === "context") $("sent-context").textContent = event.text;
@@ -3767,9 +3889,9 @@
     const allNodes = boardForOrganization();
     const items = hierarchyItems(allNodes);
     const ids = subtreeIds(items, rootId);
-    const parentById = new Map(items.map((item) => [item.id, item.parentId]));
+    const itemById = new Map(items.map((item) => [item.id, item]));
     const nodes = allNodes.filter(({ id }) => ids.has(id)).map((node) => {
-      const parent = node.id === rootId ? null : parentById.get(node.id);
+      const parent = node.id === rootId ? null : itemById.get(node.id).parentId;
       const scoped = { ...node, parentIds: parent ? [parent] : [], layoutParentId: parent };
       const payload = regenerate ? replies.get(node.id)?.payload : null;
       if (payload) {
@@ -3809,13 +3931,14 @@
     const requestId = newRequestId();
     const revisionSnapshot = captureBoardRevision();
     const run = { controller, mode: "organize", target, requestId, stopping: false, revisionSnapshot };
-    const opinion = instruction || organizationOpinion.value.trim();
+    const opinion = regenerate ? instruction.trim() : instruction || organizationOpinion.value.trim();
     const branchQuestion = regenerate
       ? "重新生成选中模块及其所有下级，包括收起的卡片。逐张重写标题和正文，结合原问题、项目上下文和可核实的证据纠正偏差。旧回答仅供参考，无法确认的实现细节请注明待核实。父子关系保持不变，每张卡的 parentId 必须与 layoutParentId 一致。" +
         (opinion ? `\n本轮用户意见：${opinion}` : "")
       : opinion || "整理这个分支。压缩重复说明，按清晰顺序排列相关卡片。";
     const request = {
       ...target, mode: "ask", scope: "organizeBranch", boardId, branchRootId: rootId, requestId,
+      ...(regenerate ? { branchIntent: "regenerate" } : {}),
       baseRevision: revisionToken(`${revisionSnapshot.organization}\n${JSON.stringify(revisionSnapshot.storage)}`),
       board: { nodes, layout: organizationEngine.settings(organization.current?.layout) },
       project: projectContext([rootId]),
@@ -3830,11 +3953,7 @@
     let completed = false;
     let errorText = "";
     try {
-      const response = await fetch("/api/codex", {
-        method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
-        body: JSON.stringify(request),
-      });
-      await readEvents(response, (event) => {
+      await readExecution(run, request, (event) => {
         if (!acceptsRunEvent(run) || (event.requestId != null && event.requestId !== requestId) ||
             (event.baseRevision != null && event.baseRevision !== request.baseRevision)) return;
         if (event.type === "context") $("sent-context").textContent = event.text;
@@ -3848,11 +3967,20 @@
       if (!acceptsRunEvent(run)) return false;
       if (errorText || !completed || !updates) throw new Error(errorText || `服务没有返回完整的分支${operation}结果。`);
       if (!sameBoardRevision(run.revisionSnapshot)) throw new Error(`${operation}期间白板已变化，请刷新后重试。`);
+      const rewritten = regenerate ? nodes.filter((node) => {
+        const item = updates.get(node.id);
+        const old = itemById.get(node.id);
+        const reply = replies.get(node.id);
+        const title = old.nativeFace && reply ? reply.questionLine.textContent : old.title;
+        const summary = old.nativeFace && reply ? reply.answer.textContent : old.taskDetails?.task || old.summary;
+        return item.title !== title || item.summary !== summary;
+      }).length : 0;
       applyBranchPlan(rootId, ids, updates, boardForOrganization(), attachments, regenerate);
       deletionUndo = null;
       lastPayload = { ...request };
       delete lastPayload.api;
-      report(`已${operation} ${rootId} 分支的 ${nodes.length} 张卡片，可以撤销整理。`);
+      report(regenerate ? `已重新生成 ${rootId} 分支（含根卡，共 ${nodes.length} 张），更新 ${rewritten} 张。可以撤销整理。`
+        : `已整理 ${rootId} 分支的 ${nodes.length} 张卡片，可以撤销整理。`);
       return true;
     } catch (error) {
       if (acceptsRunEvent(run)) report(error.message);
@@ -3873,7 +4001,8 @@
     const target = submission?.target || connectionTarget();
     if (initialize && (!customBoard || allNodes.length || target.backend === "api" || storageStale)) return false;
     if (!repair) deletionUndo = null;
-    const result = repair ? document.createElement("p") : $("organization-status");
+    const result = repair ? document.createElement("p") :
+      $(initialize ? "repository-init-status" : "organization-status");
     let repairContext = null;
     if (repair) {
       try { repairContext = JSON.parse(instruction); } catch { /* Invalid pending repair stays pending. */ }
@@ -3911,7 +4040,7 @@
     if (repair) deletionMessage = `节点已删除，AI 正在处理 ${nodes.length} 个直接关联节点…`;
     const opinion = initialize ? "" : instruction || organizationOpinion.value.trim();
     const archiveAllowed = new Set(Array.isArray(repairContext?.archiveAllowed) ? repairContext.archiveAllowed : []);
-    const newIds = repair ? [] : availableModuleIds(allNodes, Math.min(8, 64 - nodes.length));
+    const newIds = repair ? [] : availableModuleIds(allNodes, initialize ? 10 : Math.min(8, 64 - nodes.length));
     const request = {
       ...target, mode: "ask", scope: "organize", boardId,
       requestId, baseRevision: revisionToken(`${revisionSnapshot.organization}\n${JSON.stringify(revisionSnapshot.storage)}`),
@@ -3946,13 +4075,7 @@
     let completed = false;
     let errorText = "";
     try {
-      const response = await fetch("/api/codex", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(request),
-        signal: controller.signal,
-      });
-      await readEvents(response, (event) => {
+      await readExecution(run, request, (event) => {
         if (!acceptsRunEvent(run)) return;
         if (event.type === "context") $("sent-context").textContent = event.text;
         else if (event.type === "status") result.textContent = `${waiting} ${event.text}`;
@@ -4035,10 +4158,11 @@
         else delete item.attachments;
         if (old?.taskDetails) item.taskDetails = old.taskDetails;
         if (old?.spec) item.spec = specAfterContentChange(old, item);
+        if (old?.codePreview) item.codePreview = old.codePreview;
         if (old?.draft) item.draft = true;
         if (old?.explicitParent || (!previous.current && Object.hasOwn(previous.rawLinks || {}, item.id))) item.explicitParent = true;
         if (old?.category === item.category && typeof old.folded === "boolean") item.folded = old.folded;
-        else if (item.category === "reference") item.folded = !initialize;
+        else if (item.category === "reference") item.folded = !initialize || Boolean(item.codePreview);
       }
       const quickMode = run.quickModeAfter ?? previous.quickMode;
       const undoMode = previous.quickUndo?.quickMode;
@@ -4062,7 +4186,8 @@
       if (initialize) {
         const rootId = candidate.items.find((item) => item.parentId === null)?.id;
         candidate.collapsedBranches = candidate.items.filter((item) => item.parentId === rootId &&
-          candidate.items.some((child) => child.parentId === item.id)).map((item) => item.id);
+          candidate.items.some((child) => child.parentId === item.id) &&
+          !candidate.items.some((child) => child.parentId === item.id && child.codePreview)).map((item) => item.id);
       }
       const guide = previous.current?.projectGuide;
       if (guide && candidate.items.some((item) => item.id === guide.rootId && item.category !== "archive")) {
@@ -4099,12 +4224,15 @@
         const old = previousItems.get(item.id);
         return item.title !== old?.title || item.summary !== old?.summary || item.category !== old?.category;
       }).length;
-      result.textContent = (initialize ? "工程介绍已生成。" : moved ? "已重排白板。" : "整理完成，卡片位置与上次相同。") +
+      const sourceCount = initialize ? additions.filter((item) => item.codePreview).length : 0;
+      result.textContent = (initialize ? (sourceCount ? `工程介绍已生成，包含 ${sourceCount} 张源码卡。` :
+        "工程介绍已生成，未找到可预览的源码。") : moved ? "已重排白板。" : "整理完成，卡片位置与上次相同。") +
         `${organizationEngine.quickLayouts[quickMode] || describeLayout(candidate.layout)}。` +
         (additions.length ? `新增 ${additions.length} 个模块。` : "") +
         (updated ? `更新 ${updated} 项内容。` : "") +
         (folded ? `已收起 ${folded} 项。` : "") +
         (stored ? "" : " 浏览器存储不可用，本次整理保留在当前页面。");
+      if (initialize) $("organization-status").textContent = result.textContent;
       if (submission) status(result.textContent);
       return true;
     } catch (error) {
@@ -4116,30 +4244,32 @@
       }
       return false;
     } finally {
+      if (initialize && run.stopping) result.textContent = "已停止初始化，可以重试。";
       if (activeRun === run) activeRun = null;
       renderInspector();
     }
   }
 
-  function deleteSelection(ids = selected.map((item) => item.id)) {
-    if (activeRun || gesture || pendingRepair || deletionPreparing || !memory.storageIsCurrent()) return;
-    const nodes = boardForOrganization().map((node) => {
-      const reply = replies.get(node.id);
-      return { ...node, parentIds: [...new Set([...node.parentIds,
-        ...(reply?.sourceCardIds || []), ...(reply?.branchId ? [reply.branchId] : []),
-      ])].filter((id) => id !== node.id && id !== "board" && !deletedIds.has(id)) };
-    });
-    const plan = memory.deletionPlan(nodes, ids);
-    for (const reply of replies.values()) {
-      if (!plan.removed.includes(reply.note.dataset.elementId) &&
-          [...reply.sourceCardIds, reply.branchId].some((id) => plan.removed.includes(id))) {
-        if (!plan.affected.includes(reply.note.dataset.elementId)) plan.affected.push(reply.note.dataset.elementId);
-      }
+  function deletionBlock(plan) {
+    if (storageStale) return "白板已在另一页面变更，请刷新后重试。";
+    if (gesture || connectionDrag) return "结束当前拖动后可删除。";
+    if (deletionPreparing || activeRun?.repair) return "AI 正在整理关系，可先停止。";
+    if (activeRun && !activeRun.protectedCards) return "当前操作结束或停止后可删除。";
+    if (activeRun && plan.removed.some((id) => activeRun.protectedCards.has(id))) {
+      return "正在回答这张卡或其下级，结束或停止后可删除。";
     }
-    if (!plan.removed.length) return;
+    if (pendingRepair && plan.affected.length) return "请先处理上次删除的待整理关系。";
+    return "";
+  }
+
+  function deleteSelection(ids = selected.map((item) => item.id)) {
+    const nodes = boardForOrganization();
+    const plan = memory.deletionPlan(nodes, ids);
+    if (!plan.removed.length || deletionBlock(plan) || !memory.storageIsCurrent()) return;
     deletionUndo = structuredClone({
       notes: savedNotes(), organization, deletedIds: [...deletedIds],
       pinnedIds: [...pinnedIds], decisions: project.decisions, pendingRepair,
+      activeRequest: activeRun?.requestId,
     });
     // Persist existing coordinates so deletion and later reloads cannot compact the board.
     const positions = organization.current ? organization.current.positions : organization.rawPositions;
@@ -4175,6 +4305,7 @@
         }
       }
       if (!anchor.elementIds.length) { anchor.elementIds = ["board"]; reply.anchors = []; }
+      if (anchor.wholeCardIds) anchor.wholeCardIds = keep(anchor.wholeCardIds);
       anchor.noteContexts = (anchor.noteContexts || []).filter((item) => !removed.has(item.elementId))
         .map((item) => ({ ...item, sourceCardIds: keep(item.sourceCardIds) }));
       anchor.formulaFragments = (anchor.formulaFragments || []).filter((item) => !removed.has(item.elementId));
@@ -4227,16 +4358,27 @@
         archiveAllowed: nodes.filter((node) => plan.affected.includes(node.id) && node.kind !== "card" &&
           !node.pinned && !["main", "done"].includes(oldItems.get(node.id)?.category)).map((node) => node.id),
       });
+    } else if (pendingRepair) {
+      // A local leaf deletion can remove one of the pending repair's targets.
+      try {
+        const repair = JSON.parse(pendingRepair);
+        repair.affected = keep(repair.affected);
+        repair.archiveAllowed = keep(repair.archiveAllowed);
+        repair.previousRelations = repair.previousRelations.filter(({ id }) => !removed.has(id));
+        pendingRepair = repair.affected.length ? JSON.stringify(repair) : "";
+      } catch { /* Preserve older repair data until the user retries or undoes it. */ }
     }
     if (!nodes.some((node) => !removed.has(node.id))) pendingRepair = "";
     const stored = persist();
     const organized = saveOrganization();
     applyOrganization(true);
     renderProject();
-    deletionMessage = `已删除 ${plan.removed.join("、")}。` + (pendingRepair ? "正在准备 AI 局部整理…" : "孤立节点，删除完成，无需 AI 整理。") +
+    const repairDeferred = pendingRepair && (activeRun || !plan.affected.length);
+    deletionMessage = `已删除 ${plan.removed.join("、")}。` + (repairDeferred ? "其余关系可在空闲时手动整理。"
+      : pendingRepair ? "正在准备 AI 局部整理…" : "关联已在本地更新。") +
       (stored && organized ? "" : " 浏览器存储不可用，刷新可能丢失更改。");
     renderInspector();
-    if (pendingRepair) void repairDeletion();
+    if (pendingRepair && !repairDeferred) void repairDeletion();
   }
 
   async function repairDeletion() {
@@ -4812,11 +4954,7 @@
     let completed = false;
     let errorText = "";
     try {
-      const response = await fetch("/api/codex", {
-        method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal,
-        body: JSON.stringify(request),
-      });
-      await readEvents(response, (event) => {
+      await readExecution(run, request, (event) => {
         if (!acceptsRunEvent(run) || (event.requestId != null && event.requestId !== requestId) ||
             (event.baseRevision != null && event.baseRevision !== request.baseRevision)) return;
         if (event.type === "context") $("sent-context").textContent = event.text;
@@ -5043,6 +5181,7 @@
   renderRepositoryScope();
   onRepositoryChange = () => {
     invalidateSourceEditAuthorization();
+    $("repository-init-status").textContent = "";
     repoIndex = null;
     $("repo-index-results").hidden = true;
     $("repo-index-status").textContent = "";
@@ -5157,7 +5296,8 @@
   }
 
   function canUseCanvasMenu() {
-    return !gesture && !connectionDrag && !activeRun && !deletionPreparing && !storageStale && workbenchCardForm.hidden;
+    return !gesture && !connectionDrag && !deletionPreparing && !storageStale && workbenchCardForm.hidden &&
+      (!activeRun || activeRun.protectedCards);
   }
 
   function showCanvasMenu(target, coordinates) {
@@ -5168,20 +5308,25 @@
     if (element && (!visibleRect(id) || element.getAttribute("aria-busy") === "true")) return false;
     const selectedIds = selected.map((item) => item.id).filter((cardId) => visibleRect(cardId));
     const deleteIds = edge ? [] : element && !selectedIds.includes(id) ? [id] : selectedIds;
+    if (activeRun && !deleteIds.length) return false;
     canvasMenuContext = { element, edge, deleteIds, point: toScene(coordinates), focus: element || edge || document.activeElement };
     for (const button of canvasMenu.querySelectorAll("[data-canvas-mode]")) {
       button.setAttribute("aria-pressed", String(button.dataset.canvasMode === mode));
     }
-    $("canvas-menu-new").hidden = Boolean(element || edge);
-    $("canvas-menu-ask-independent").hidden = Boolean(element || edge);
-    $("canvas-menu-edit").hidden = !editableCard(id);
-    $("canvas-menu-pin").hidden = !element;
+    canvasMenu.querySelector(".canvas-menu-modes").hidden = Boolean(activeRun);
+    $("canvas-menu-new").hidden = Boolean(activeRun || element || edge);
+    $("canvas-menu-ask-independent").hidden = Boolean(activeRun || element || edge);
+    $("canvas-menu-edit").hidden = Boolean(activeRun) || !editableCard(id);
+    $("canvas-menu-pin").hidden = Boolean(activeRun) || !element;
     $("canvas-menu-pin").textContent = pinnedIds.has(id) ? "取消固定" : "固定卡片";
     const remove = $("canvas-menu-delete");
     remove.hidden = !deleteIds.length;
-    remove.disabled = Boolean(pendingRepair);
+    const blocked = deletionBlock(memory.deletionPlan(boardForOrganization(), deleteIds));
+    remove.disabled = Boolean(blocked);
+    remove.title = blocked;
     remove.textContent = !element || deleteIds.length > 1 ? `删除选中（${deleteIds.length} 项）` : "删除此卡片";
     $("canvas-menu-delete-edge").hidden = !edge;
+    if (activeRun && blocked) return false;
     canvasMenu.hidden = false;
     const viewportRect = viewport.getBoundingClientRect();
     const gap = 4;
@@ -5227,7 +5372,7 @@
     if (!button || !context || button.disabled) return;
     const nextMode = button.dataset.canvasMode;
     closeCanvasMenu(Boolean(nextMode));
-    if (!canUseCanvasMenu() || !memory.storageIsCurrent()) return;
+    if (!canUseCanvasMenu() || (activeRun && button.id !== "canvas-menu-delete") || !memory.storageIsCurrent()) return;
     const { element, edge, deleteIds, point } = context;
     const action = button.id;
     if (nextMode) {
@@ -5388,7 +5533,37 @@
     const root = selectedDraftRoot(selected.map(({ id }) => id), draftMembership(boardForOrganization()));
     if (root) void fileOrphanCards([root], { integrate: true });
   });
-  regenerateBranch.addEventListener("click", () => void organizeSelectedBranch("", connectionTarget(), [], true));
+  const regenerateDialog = $("regenerate-branch-dialog");
+  const regenerateOpinion = $("regenerate-branch-opinion");
+  let regenerateTarget = null;
+  const regenerateDrafts = new Map();
+  regenerateBranch.addEventListener("click", () => {
+    const id = selectedModuleId();
+    if (!id || regenerateBranch.disabled) return;
+    const nodes = boardForOrganization();
+    const count = subtreeIds(hierarchyItems(nodes), id).size;
+    const title = nodes.find((node) => node.id === id)?.title || id;
+    $("regenerate-branch-scope").textContent = count > 1
+      ? `${id} · ${title}。重写当前卡片和全部 ${count - 1} 张下级（含收起的卡片），保留父子关系。`
+      : `${id} · ${title}。重写当前卡片的标题和正文。`;
+    regenerateTarget = id;
+    regenerateOpinion.value = regenerateDrafts.get(id) || "";
+    regenerateDialog.showModal();
+  });
+  $("cancel-regenerate-branch").addEventListener("click", () => regenerateDialog.close());
+  $("regenerate-branch-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const id = regenerateTarget;
+    if (!id || selectedModuleId() !== id || regenerateBranch.disabled) {
+      regenerateDialog.close();
+      status("当前选区已变化，请重新选中要重写的卡片。");
+      return;
+    }
+    const opinion = regenerateOpinion.value.trim();
+    regenerateDrafts.set(id, opinion);
+    regenerateDialog.close();
+    if (await organizeSelectedBranch(opinion, connectionTarget(), [], true)) regenerateDrafts.delete(id);
+  });
   splitModule.addEventListener("click", () => void splitSelectedModule());
   quickReorder.addEventListener("click", reorderQuickly);
   const templatePanel = $("project-template");

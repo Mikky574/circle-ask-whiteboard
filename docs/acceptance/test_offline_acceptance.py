@@ -437,6 +437,41 @@ class BranchOrganizationAcceptanceTests(unittest.TestCase):
                 update(candidate["items"])
                 server.structured_candidate(json.dumps(candidate), context)
 
+    def test_regeneration_sends_the_correction_and_rewrites_the_complete_branch(self):
+        request = self.request_body()
+        request.update(branchIntent="regenerate", question="补充入口、边界和验证用例。")
+        original = request["board"]["nodes"]
+        expected = {"items": [
+            {"id": node["id"], "parentId": node["layoutParentId"], "title": f"{node['id']} 入口与边界",
+             "summary": f"{node['id']} 的证据与验证方法。"}
+            for node in original
+        ]}
+        body = json.dumps(request).encode()
+        with isolated_server() as (port, host), patch.object(server, "run_api", return_value=json.dumps(expected)) as api:
+            status, _, raw = post(port, "/api/codex", body, good_headers(host, body))
+        events = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(status, 200)
+        self.assertEqual([event["type"] for event in events], ["status", "context", "branch", "done"])
+        self.assertEqual(events[2]["branch"], expected)
+        prompt = api.call_args.args[2]
+        self.assertIn("selected root and every descendant", prompt)
+        self.assertIn("Every item's parentId must equal its supplied layoutParentId", prompt)
+        self.assertIn(request["question"], prompt)
+        self.assertNotIn("Reparent other cards", prompt)
+        self.assertNotIn("Verify implementation details against", prompt)
+
+    def test_regeneration_rejects_reparenting_and_other_operations(self):
+        request = self.request_body()
+        request["branchIntent"] = "regenerate"
+        context = server.parse_request(json.dumps(request).encode())[2]
+        with self.assertRaisesRegex(ValueError, "原有的父节点"):
+            server.structured_candidate(json.dumps(self.candidate()), context)
+        with self.assertRaises(ValueError):
+            server.structured_candidate(json.dumps({"items": self.candidate()["items"][:2]}), context)
+        for update in ({"scope": "plan"}, {"branchIntent": "rearrange"}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                server.parse_request(json.dumps({**request, **update}).encode())
+
 
 class BoardToolAcceptanceTests(unittest.TestCase):
     def new_tools(self, writable=True):
