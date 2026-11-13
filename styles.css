@@ -1272,6 +1272,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 #execution-trace-status { margin-left: auto; color: var(--muted); font-size: 11px; }
 #execution-trace > summary::after { margin-left: 3px; }
 #execution-trace-empty { margin: 0; padding: 0 10px 10px; color: var(--muted); font-size: 12px; }
+#execution-trace-repair, #execution-trace-failure { margin: 0; padding: 0 10px 10px; font-size: 12px; overflow-wrap: anywhere; }
+#execution-trace-repair { color: var(--muted); }
+#execution-trace-error { margin: 0; color: #f2b0a3; }
+#execution-trace-preview { min-height: 28px; margin-top: 6px; padding: 3px 9px; font-size: 12px; }
 #execution-trace-list {
   max-height: min(250px, 34dvh);
   overflow: auto;

@@ -3664,6 +3664,10 @@ async function testRegenerateSelectedBranch() {
     const opinion = "旧回答把选区坐标和屏幕坐标混用了，请逐张核对后重写。";
     const correctedTitle = (id) => `核对后的 ${id} 标题`;
     const correctedSummary = (id) => `核对后的 ${id} 正文，已区分屏幕坐标和画布坐标。`;
+    const repairStatus = "ZCode 正在自动修正输出格式（1 次）…";
+    const invalidBranch = "重新生成结果中 E90 的父卡与原来不同。";
+    const invalidPlan = "模型没有返回有效的操作类型。";
+    const responsePreview = "这里是返回片段 <literal-preview>";
     const read = () => page.evaluate(() =>
       JSON.parse(localStorage.getItem("whiteboard.codex.repo-manual.organization.v1")));
     const requests = [];
@@ -3674,16 +3678,29 @@ async function testRegenerateSelectedBranch() {
       if (request.scope === "explain") {
         events.push({ type: "explanation", explanation: explanationFixture }, { type: "done" });
       } else if (request.scope === "plan") {
-        events.push({ type: "answer", text: '{"action":"regenerate"}' }, { type: "done" });
+        if (responseKind === "invalid-plan") {
+          events.push({ type: "status", phase: "repair", text: repairStatus },
+            { type: "error", text: invalidPlan, responsePreview });
+        } else {
+          events.push({ type: "answer", text: '{"action":"regenerate"}' }, { type: "done" });
+        }
       } else {
         requests.push(request);
         const items = request.board.nodes.map((node) => ({
           id: node.id, parentId: responseKind === "wrong-parent" && node.id === "E90" ? "A01" : node.layoutParentId,
           title: correctedTitle(node.id), summary: correctedSummary(node.id),
         }));
-        events.push({ type: "branch", branch: { items } });
-        if (responseKind !== "incomplete") {
-          events.push({ type: "done", baseRevision: responseKind === "wrong-revision" ? "stale" : request.baseRevision });
+        if (responseKind === "invalid-structure") {
+          events.push({ type: "status", phase: "repair", text: repairStatus },
+            { type: "error", text: invalidBranch, responsePreview });
+        } else {
+          events.push({ type: "branch", branch: { items } });
+          if (responseKind === "complete") {
+            events.push({ type: "error", requestId: "previous-request", text: "迟到的错误", responsePreview },
+              { type: "done", baseRevision: request.baseRevision });
+          } else if (responseKind !== "incomplete") {
+            events.push({ type: "done", baseRevision: responseKind === "wrong-revision" ? "stale" : request.baseRevision });
+          }
         }
       }
       await route.fulfill({
@@ -3713,6 +3730,9 @@ async function testRegenerateSelectedBranch() {
       localStorage.setItem(key, JSON.stringify(stored));
     });
     await page.reload();
+    await page.locator(".connection-settings > summary").click();
+    await page.locator("#backend-select").selectOption("zcode");
+    await page.locator(".connection-settings > summary").click();
     await card("E90").waitFor({ state: "hidden" });
     const beforeNotes = await readManualNotes(page);
     await card("A01").press("Enter");
@@ -3732,13 +3752,26 @@ async function testRegenerateSelectedBranch() {
       await page.locator("#stop-ai").waitFor({ state: "hidden" });
     };
 
-    for (const rejected of ["incomplete", "wrong-parent", "wrong-revision"]) {
+    const checkFailure = async (message) => {
+      await page.locator("#execution-trace-error").filter({ hasText: message }).waitFor();
+      assert.match(await page.locator("#execution-trace-repair").innerText(), /修正输出格式/);
+      const preview = page.locator("#execution-trace-preview");
+      await preview.click();
+      await page.locator("#response-preview-dialog").waitFor();
+      assert.equal(await page.locator("#response-preview-reason").textContent(), message);
+      assert.equal(await page.locator("#response-preview-text").textContent(), responsePreview);
+      assert.equal(await page.locator("#response-preview-text literal-preview").count(), 0);
+      await page.getByRole("button", { name: "关闭", exact: true }).click();
+    };
+    for (const rejected of ["incomplete", "wrong-parent", "wrong-revision", "invalid-structure"]) {
       await send(rejected);
       assert.deepEqual(await read(), before, `${rejected} must leave the previous branch and undo untouched`);
       assert.deepEqual(await readManualNotes(page), beforeNotes, `${rejected} must leave native source notes untouched`);
     }
+    await checkFailure(invalidBranch);
     await send("complete");
     await card("A01").locator(".thread-answer").filter({ hasText: correctedSummary("A01") }).waitFor();
+    assert.equal(await page.locator("#execution-trace-preview").isVisible(), false);
     for (const request of requests) {
       assert.equal(request.scope, "organizeBranch");
       assert.equal(request.branchIntent, "regenerate");
@@ -3776,6 +3809,11 @@ async function testRegenerateSelectedBranch() {
     assert.deepEqual(await read(), after);
     await card("A01").locator(".thread-answer").filter({ hasText: correctedSummary("A01") }).waitFor();
     assert.equal(await card("A01").locator(".thread-question").textContent(), correctedTitle("A01"));
+    responseKind = "invalid-plan";
+    const requestCount = requests.length;
+    await askFromCard(page, "A01", "本轮操作判断失败");
+    await checkFailure(invalidPlan);
+    assert.equal(requests.length, requestCount, "Failed action planning must not start branch regeneration");
     const typed = "请再重新生成整个模块和下级，引用能够核对的源码。";
     responseKind = "incomplete";
     const typedResponse = page.waitForResponse((candidate) => new URL(candidate.url()).pathname === "/api/codex" &&

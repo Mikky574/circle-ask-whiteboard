@@ -168,6 +168,7 @@ class RepositoryBindingTests(unittest.TestCase):
         context = {"scope": "organize", "board": {"nodes": [{"id": "E01"}], "newIds": ["E02"]}}
         plan = {
             "title": "Repository", "summary": "Current source",
+            "layout": {"flow": "horizontal", "density": "normal"},
             "items": [
                 {"id": "E01", "category": "main", "parentId": None, "title": "Project",
                  "summary": "Project overview", "sources": []},
@@ -178,10 +179,10 @@ class RepositoryBindingTests(unittest.TestCase):
         kind, fields = server.structured_candidate(json.dumps(plan), context, repository_scope=True)
         self.assertEqual(kind, "map")
         self.assertEqual(fields["map"]["items"], plan["items"])
-        with self.assertRaisesRegex(ValueError, "no source evidence"):
+        with self.assertRaisesRegex(ValueError, "缺少源码依据"):
             server.structured_candidate(json.dumps(plan), context)
         plan["items"][1]["sources"] = ["app.js"]
-        with self.assertRaisesRegex(ValueError, "belongs in the item summary"):
+        with self.assertRaisesRegex(ValueError, "源码依据请写在正文"):
             server.structured_candidate(json.dumps(plan), context, repository_scope=True)
 
     def repository_init_request(self, **fields):
@@ -296,7 +297,7 @@ class RepositoryBindingTests(unittest.TestCase):
         plan["items"][2]["summary"] = "Evidence: `README.md`"
         self.assertEqual(candidate()["items"][-1]["codePreview"]["path"], "src/test_main.py")
         plan["items"][-1]["id"] = "E12"
-        with self.assertRaisesRegex(ValueError, "Unknown or duplicate"):
+        with self.assertRaisesRegex(ValueError, "未知或重复"):
             candidate()
 
     def test_repository_links_do_not_escape_scope(self):

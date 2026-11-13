@@ -265,7 +265,7 @@ class DecompositionAcceptanceTests(unittest.TestCase):
             events.put(("answer", answer))
             events.put(("eof", ""))
 
-        def emit_zcode(process, prompt, model, mode, workspace, events, files):
+        def emit_zcode(process, prompt, model, mode, workspace, events, files, **kwargs):
             emit(process, events)
 
         with tempfile.TemporaryDirectory() as directory:
@@ -598,6 +598,175 @@ class BranchOrganizationAcceptanceTests(unittest.TestCase):
         for update in ({"scope": "plan"}, {"branchIntent": "rearrange"}):
             with self.subTest(update=update), self.assertRaises(ValueError):
                 server.parse_request(json.dumps({**request, **update}).encode())
+
+
+class StructuredZCodeAcceptanceTests(unittest.TestCase):
+    def exchange(self, fields, *answers):
+        body = json.dumps({
+            "backend": "zcode", "model": "", "mode": "ask", "question": "结构化操作测试",
+            "requestId": "structured-fixture", "baseRevision": "fixture-revision", **fields,
+        }).encode()
+        connection = Mock()
+        connection.request.return_value = {
+            "session": {"sessionId": "fixture-session"},
+            "settings": {"model": {"available": [], "current": {"modelId": "fixture"}}},
+        }
+        connection.begin_request.side_effect = [11, 12]
+        process = Mock(returncode=0, stdin=io.BytesIO())
+        with isolated_server() as (port, host), \
+             patch.object(server, "ZCODE_COMMAND", ["fake-zcode"]), \
+             patch.object(server.subprocess, "Popen", return_value=process) as start_process, \
+             patch.object(server, "terminate"), \
+             patch.object(zcode_backend, "ZCodeConnection", return_value=connection), \
+             patch.object(zcode_backend, "read_turn", side_effect=answers) as read_turn:
+            status, _, raw = post(port, "/api/codex", body, good_headers(host, body))
+        self.assertEqual(status, 200, raw.decode())
+        start_process.assert_called_once()
+        self.assertEqual([call.args[0] for call in connection.request.call_args_list].count("session/create"), 1)
+        sends = connection.begin_request.call_args_list
+        self.assertEqual(len(sends), read_turn.call_count)
+        for call in sends:
+            method, params = call.args
+            self.assertEqual(method, "session/send")
+            self.assertEqual(params["sessionId"], "fixture-session")
+        events = [json.loads(line) for line in raw.splitlines()]
+        for event in events:
+            self.assertEqual(event["requestId"], "structured-fixture")
+            self.assertEqual(event["baseRevision"], "fixture-revision")
+        return events, [call.args[1] for call in sends]
+
+    @staticmethod
+    def cases(repository):
+        node_fields = BranchOrganizationAcceptanceTests.request_body()
+        branch = BranchOrganizationAcceptanceTests.candidate()
+        invalid_branch = copy.deepcopy(branch)
+        invalid_branch["items"][3]["parentId"] = "E02"
+        unchanged_branch = {"items": [
+            {**item, "parentId": next(node["layoutParentId"] for node in node_fields["board"]["nodes"]
+                                     if node["id"] == item["id"])}
+            for item in branch["items"]
+        ]}
+        map_value = {
+            "title": "Project", "summary": "Organized project",
+            "layout": {"flow": "columns", "density": "normal"},
+            "items": [
+                {"id": "E01", "parentId": None, "category": "main", "title": "Project", "summary": "Root"},
+                {"id": "A01", "parentId": "E01", "category": "reference", "title": "Note", "summary": "Context"},
+            ],
+        }
+        main_value = {**map_value, "items": [*map_value["items"],
+            {"id": "E04", "parentId": "E01", "category": "main", "title": "Core", "summary": "New chapter"},
+        ]}
+        intro = {
+            "title": "Repository", "summary": "Source-supported introduction",
+            "layout": {"flow": "horizontal", "density": "compact"},
+            "items": [
+                {"id": identifier, "parentId": parent, "category": "main" if parent is None else "reference",
+                 "title": identifier, "summary": "Evidence: `src/main.py`", "sources": []}
+                for identifier, parent in (
+                    ("E04", None), ("E05", "E04"), ("E06", "E04"), ("E07", "E04"), ("E08", "E05"),
+                )
+            ],
+        }
+        invalid_intro = copy.deepcopy(intro)
+        invalid_intro["items"][-1]["summary"] = "Evidence: `src/missing.py`"
+        child_fields = DecompositionAcceptanceTests.request_body()
+        children = DecompositionAcceptanceTests.children()
+        filing = {
+            "orphans": [{"id": "E04", "title": "Unfiled", "summary": "Detached"}],
+            "parents": [{"id": "E01", "parentId": None, "title": "Root", "summary": "Overview"}],
+        }
+        return (
+            ("plan", {"scope": "plan"}, "answer",
+             {"action": "ask"}, {"action": "write"}),
+            ("decompose", {key: child_fields[key] for key in ("scope", "anchor", "decomposition")}, "children",
+             {"children": children}, {"children": [{**children[0], "title": "盘点键名"}]}),
+            ("organizeBranch", {key: node_fields[key] for key in ("scope", "board", "branchRootId")}, "branch",
+             branch, invalid_branch),
+            ("regenerate", {key: node_fields[key] for key in ("scope", "board", "branchRootId")} | {"branchIntent": "regenerate"},
+             "branch", unchanged_branch, branch),
+            ("organize", {"scope": "organize", "board": board_snapshot()}, "map",
+             map_value, {key: value for key, value in map_value.items() if key != "layout"}),
+            ("main", {"scope": "organize", "board": board_snapshot(), "boardIntent": "main"}, "map",
+             main_value, {**main_value, "items": [item for item in main_value["items"] if item["id"] != "A01"]}),
+            ("repository_init", {
+                "scope": "organize", "boardIntent": "repository_init", "repositoryPath": str(repository),
+                "board": {"nodes": [], "newIds": [f"E{number:02}" for number in range(4, 12)]},
+            }, "map", intro, invalid_intro),
+            ("fileOrphans", {"scope": "fileOrphans", "project": {"filing": filing}}, "answer",
+             {"links": [{"childId": "E04", "parentId": "E01"}]}, {"links": [{"childId": "E04", "parentId": "E99"}]}),
+        )
+
+    def assert_result(self, events, kind, expected):
+        result = events[-2]
+        self.assertEqual(result["type"], kind)
+        if kind == "answer":
+            self.assertEqual(json.loads(result["text"]), expected)
+        elif kind == "children":
+            self.assertEqual(result["children"], expected["children"])
+        else:
+            self.assertEqual(result[kind], expected)
+        self.assertEqual(events[-1]["type"], "done")
+        self.assertEqual(events[-1]["changedFiles"], [])
+
+    def test_wrapped_json_and_scoped_repair_share_the_same_validation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory).resolve()
+            (repository / "src").mkdir()
+            (repository / "src" / "main.py").write_text("def main():\n    return 61\n", encoding="utf-8")
+            for name, fields, kind, expected, invalid in self.cases(repository):
+                with self.subTest(operation=name):
+                    wrapped = "以下是整理结果：\n" + json.dumps(expected) + "\n以上是结果。"
+                    events, sends = self.exchange(fields, wrapped)
+                    self.assertEqual(len(sends), 1)
+                    self.assert_result(events, kind, expected)
+                    events, sends = self.exchange(fields, json.dumps(invalid), wrapped)
+                    self.assertEqual(len(sends), 2)
+                    self.assertEqual(sends[1]["attachments"], [])
+                    self.assertIn("JSON", sends[1]["content"])
+                    self.assertEqual([event["type"] for event in events],
+                                     ["status", "context", "status", kind, "done"])
+                    self.assertEqual(events[2].get("phase"), "repair")
+                    self.assertIn("自动修正", events[2]["text"])
+                    self.assert_result(events, kind, expected)
+
+    def test_branch_repair_rejects_a_second_invalid_result_without_partial_events(self):
+        branch = BranchOrganizationAcceptanceTests.request_body()
+        fields = {key: branch[key] for key in ("scope", "board", "branchRootId")} | {"branchIntent": "regenerate"}
+        invalid = json.dumps(BranchOrganizationAcceptanceTests.candidate(), ensure_ascii=False)
+        for second, expected_preview in (
+            (invalid, "整理后的说明"),
+            (zcode_backend.ZCodeError("fixture turn failed"), "首轮只有说明文字"),
+        ):
+            with self.subTest(second=second):
+                events, sends = self.exchange(fields, "首轮只有说明文字", second)
+                self.assertEqual(len(sends), 2)
+                self.assertEqual([event["type"] for event in events], ["status", "context", "status", "error"])
+                self.assertIn(expected_preview, events[-1]["responsePreview"])
+                if isinstance(second, str):
+                    self.assertIn("原有的父节点", events[-1]["text"])
+                self.assertEqual(events[-1]["changedFiles"], [])
+
+    def test_ambiguous_fenced_and_unfenced_candidates_are_rejected(self):
+        fence = chr(96) * 3
+        payload = '{"action":"ask"}'
+        first = f"说明\n{fence}json\n{payload}\n{fence}\n另一个候选：\n{payload}"
+        with self.assertRaisesRegex(ValueError, "多个"):
+            server.structured_candidate(first, {"scope": "plan"})
+
+    def test_duplicate_json_keys_are_rejected_instead_of_overwriting_action(self):
+        duplicate = '{"action":"ask","action":"edit"}'
+        fence = chr(96) * 3
+        for answer in (duplicate, f"说明\n{duplicate}\n结束", f"说明\n{fence}json\n{duplicate}\n{fence}"):
+            with self.subTest(answer=answer), self.assertRaisesRegex(ValueError, "重复"):
+                server.structured_candidate(answer, {"scope": "plan"})
+
+    def test_plain_zcode_answer_remains_plain_and_does_not_trigger_repair(self):
+        answer = "这是一段普通回答，用户没有要求生成卡片。"
+        events, sends = self.exchange({}, answer)
+        self.assertEqual(len(sends), 1)
+        self.assertEqual([event["type"] for event in events], ["status", "context", "answer", "done"])
+        self.assertEqual(events[-2]["text"], answer)
 
 
 class BoardToolAcceptanceTests(unittest.TestCase):

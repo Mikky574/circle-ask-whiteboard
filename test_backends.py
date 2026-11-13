@@ -33,9 +33,11 @@ class FactoryTests(unittest.TestCase):
         self.assertIn("organizeBranch", actions)
         self.assertEqual(structured_candidate('```json\n{"action":"ask"}\n```', {"scope": "plan"}),
                          ("answer", {"text": '{"action":"ask"}'}))
-        for value in ('"ask"', '{"action":"unknown"}', '{"action":"ask","extra":true}', "I can explain that."):
+        for value in ('"ask"', '{"action":"unknown"}', '{"action":"ask","extra":true}'):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "操作类型"):
                 structured_candidate(value, {"scope": "plan"})
+        with self.assertRaisesRegex(ValueError, "找不到可解析的 JSON"):
+            structured_candidate("I can explain that.", {"scope": "plan"})
 
     def test_unknown(self):
         for name in ("other",None,[]):
