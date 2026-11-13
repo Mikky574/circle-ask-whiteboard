@@ -103,10 +103,35 @@
       </div>
     </dialog>
 
+    <dialog id="response-preview-dialog" class="board-dialog" aria-labelledby="response-preview-heading" aria-describedby="response-preview-reason">
+      <form method="dialog">
+        <h2 id="response-preview-heading">模型返回片段</h2>
+        <p id="response-preview-reason"></p>
+        <pre id="response-preview-text" tabindex="0"></pre>
+        <div class="board-dialog-actions">
+          <button class="tool-button" type="submit" autofocus>关闭</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="organize-board-dialog" class="board-dialog" aria-labelledby="organize-board-heading" aria-describedby="organize-board-scope">
+      <form id="organize-board-form">
+        <h2 id="organize-board-heading">整理白板</h2>
+        <p id="organize-board-scope" class="board-dialog-scope"></p>
+        <label for="organize-board-opinion">本次整理意见（可选）</label>
+        <textarea id="organize-board-opinion" rows="4" maxlength="1200" placeholder="例如：保留主干，把已完成的内容归到实现模块，待验证的细节留在各自分支。" autofocus></textarea>
+        <p id="organize-board-error" class="board-dialog-error" role="alert" hidden></p>
+        <div class="board-dialog-actions">
+          <button id="cancel-organize-board" class="tool-button" type="button">取消</button>
+          <button id="confirm-organize-board" class="submit-button" type="submit">开始整理</button>
+        </div>
+      </form>
+    </dialog>
+
     <dialog id="regenerate-branch-dialog" class="board-dialog" aria-labelledby="regenerate-branch-heading" aria-describedby="regenerate-branch-scope">
       <form id="regenerate-branch-form">
         <h2 id="regenerate-branch-heading">重新生成分支</h2>
-        <p id="regenerate-branch-scope"></p>
+        <p id="regenerate-branch-scope" class="board-dialog-scope"></p>
         <label for="regenerate-branch-opinion">重写意见（可选）</label>
         <textarea id="regenerate-branch-opinion" rows="4" maxlength="1200" placeholder="例如：逐张核对调用顺序，补上入口文件和测试方法" autofocus></textarea>
         <div class="board-dialog-actions">
@@ -308,7 +333,7 @@
           <div class="context-primary-actions">
             <button id="ask-board" type="button" class="tool-button context-action">问整个白板 <span aria-hidden="true">↗</span></button>
             <button id="ask-independent" type="button" class="tool-button context-action" title="把问题和回答先留在独立草稿里">独立提问</button>
-            <button id="organize-board" type="button" class="tool-button context-action organize-action">整理白板</button>
+            <button id="organize-board" type="button" class="tool-button context-action organize-action" aria-haspopup="dialog" aria-controls="organize-board-dialog">整理白板</button>
             <button id="quick-reorder" type="button" class="tool-button context-action" title="快速重排整张白板。每次点击切换紧凑树形、横向展开、双侧展开">快速重排整个白板</button>
           </div>
           <div class="context-actions context-run-actions">
@@ -375,7 +400,7 @@
           <details id="organization-options" class="sidebar-disclosure">
             <summary>整理选项 <span id="organization-opinion-state" hidden>已有意见</span></summary>
             <div class="sidebar-tool-content organization-opinion-field">
-              <label for="organization-opinion">整理意见 <span>可选</span></label>
+              <label for="organization-opinion">默认整理意见 <span>可选</span></label>
               <textarea id="organization-opinion" rows="2" maxlength="1200" placeholder="例如：保留主干，把实现细节放在对应模块下。"></textarea>
               <button id="file-orphans" type="button" class="tool-button context-action" title="选中时只处理选区内的孤立卡，空选区时查找整板的孤立卡" hidden disabled>归位孤立卡片</button>
             </div>

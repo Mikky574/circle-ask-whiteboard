@@ -171,6 +171,7 @@ try {
   assert.equal(run.checks.browserKeyEmpty, true, "browser API key field was not empty");
   run.actualSessionStarted = true;
   await page.locator("#organize-board").click();
+  await page.locator("#confirm-organize-board").click({ timeout: timeRemaining() });
   run.layers.uiToController = "PASS";
   await page.locator("#stop-ai").waitFor({ state: "visible", timeout: timeRemaining() });
   await page.locator("#undo-organization").waitFor({ state: "visible", timeout: timeRemaining() });

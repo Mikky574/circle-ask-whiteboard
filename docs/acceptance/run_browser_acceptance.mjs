@@ -149,8 +149,12 @@ async function chooseApi(page) {
   assert.equal(await page.locator("#api-fields").evaluate((element) => element.hidden), false, "API fields did not become visible");
   await page.locator(".connection-settings > summary").click();
 }
-async function organize(page) {
+async function submitOrganization(page) {
   await page.locator("#organize-board").click();
+  await page.locator("#confirm-organize-board").click();
+}
+async function organize(page) {
+  await submitOrganization(page);
   await page.locator("#stop-ai").waitFor({ state: "visible" });
 }
 async function waitOrganizationSettled(page, expected = /(?:已重排白板|整理完成)/) {
@@ -272,15 +276,54 @@ async function testUndo() {
   const session = await openPage();
   try {
     const { page, jsErrors } = session;
-    await chooseApi(page); await organize(page);
+    await chooseApi(page);
+    const button = page.locator("#organize-board");
+    const dialog = page.locator("#organize-board-dialog");
+    const opinion = page.locator("#organize-board-opinion");
+    const confirm = page.locator("#confirm-organize-board");
+    const savedOpinion = "此前保存的整理意见。";
+    const newOpinion = "把实现细节放在对应模块下，保留图钉。";
+    const requests = [];
+    page.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === "/api/codex") {
+        requests.push(request.postDataJSON());
+      }
+    });
+    await openDetails(page, "organization-options");
+    await page.locator("#organization-opinion").fill(savedOpinion);
+    await button.click();
+    await dialog.waitFor();
+    assert.equal(await opinion.inputValue(), savedOpinion, "Existing board opinion did not appear in the dialog");
+    assert.match(await page.locator("#organize-board-scope").innerText(), /3\s*张/);
+    await opinion.fill(newOpinion);
+    await page.locator("#cancel-organize-board").click();
+    await dialog.waitFor({ state: "hidden" });
+    assert.equal(requests.length, 0, "Opening and cancelling the dialog must not start a model request");
+    assert.equal(await page.locator("#undo-organization").isVisible(), false);
+
+    await button.click();
+    assert.equal(await opinion.inputValue(), newOpinion, "Cancelled draft was not available after reopening");
+    await confirm.click();
     await waitOrganizationSettled(page);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].scope, "organize");
+    assert.ok(requests[0].question.endsWith(newOpinion), "The confirmed opinion did not reach the organizer");
+    assert.ok(!requests[0].question.includes(savedOpinion), "The old opinion replaced the confirmed draft");
     assert.equal(await page.locator("#undo-organization").isVisible(), true, "successful organization exposed no undo");
     await page.locator("#undo-organization").click();
     await page.waitForFunction(() => document.querySelector("#organization-status")?.textContent?.includes("已撤销整理"));
     assert.equal(await page.locator("#undo-organization").isVisible(), false, "undo action did not restore pre-organization state");
     const shot = await screenshot("U03-success-undo", page);
+
+    await button.click();
+    await opinion.fill("");
+    await confirm.click();
+    await waitOrganizationSettled(page);
+    assert.equal(requests.length, 2, "A blank opinion should still allow organization");
+    assert.ok(!requests[1].question.includes(newOpinion) && !requests[1].question.includes(savedOpinion),
+      "Clearing the opinion should not send an older draft");
     assertNoJsErrors(jsErrors);
-    record("U03", "PASS", "Synthetic successful organization was undone through the visible UI.", { screenshot: shot });
+    record("U03", "PASS", "The whole-board dialog shows the scope, restores the saved opinion and keeps a cancelled draft. Only confirmation sends an opinion or an explicit blank. The result can be undone.", { screenshot: shot });
   } catch (error) { record("U03", "FAIL", safeError(error)); await screenshot("U03-failure", session.page); }
   finally { await closeSession(session); }
 }
@@ -2395,6 +2438,9 @@ async function testSplitExistingAnswer() {
       "最后说明服务怎样校验请求并保存结果。".repeat(18),
     ].join("\n\n");
     const question = "把这个长回答拆成一张总览和几个独立内容卡。";
+    const error = "ZCode 的解释分支未生成：第 2 张说明卡的标题与前面的卡片重复。";
+    const markup = "<img src=x onerror=alert(1)>";
+    const responsePreview = JSON.stringify({ summary: markup, sections: [{ title: "重复" }, { title: "重复" }] });
     await page.evaluate(({ originalQuestion, originalAnswer }) => {
       const key = "whiteboard.codex.repo-manual.v1";
       const state = JSON.parse(localStorage.getItem(key));
@@ -2407,6 +2453,9 @@ async function testSplitExistingAnswer() {
       localStorage.setItem(key, JSON.stringify(state));
     }, { originalQuestion, originalAnswer });
     await page.reload();
+    await page.locator(".connection-settings > summary").click();
+    await page.locator("#backend-select").selectOption("zcode");
+    await page.locator(".connection-settings > summary").click();
     const executions = [];
     await page.route("**/api/codex", async (route) => {
       const request = route.request().postDataJSON();
@@ -2414,7 +2463,9 @@ async function testSplitExistingAnswer() {
       if (!planning) executions.push(request);
       const event = planning ? { type: "answer", text: '{"action":"splitAnswer"}' } :
         { type: "explanation", explanation: explanationFixture };
-      const events = planning || executions.length > 1 ? [event, { type: "done" }] : [event];
+      const events = !planning && executions.length === 2
+        ? [{ type: "error", text: error, responsePreview }]
+        : planning || executions.length > 2 ? [event, { type: "done" }] : [event];
       await route.fulfill({
         contentType: "application/x-ndjson",
         body: events.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
@@ -2432,12 +2483,34 @@ async function testSplitExistingAnswer() {
     assert.equal(await page.locator('#threads [data-section-of="A01"]').count(), 0);
 
     await askFromCard(page, "A01", question);
+    await page.locator("#stop-ai").waitFor({ state: "hidden" });
+    await bridge.locator(".thread-status").filter({ hasText: error }).waitFor();
+    assert.equal(await bridge.locator(".thread-answer").innerText(), originalAnswer,
+      "A rejected ZCode candidate must preserve the original answer");
+    assert.equal(await page.locator('#threads [data-section-of="A01"]').count(), 0);
+    const failedNotes = await readManualNotes(page);
+    assert.equal(failedNotes.length, 1, "A rejected ZCode candidate must save no new cards");
+    assert.equal(failedNotes[0].answer, originalAnswer);
+    assert.ok(!JSON.stringify(failedNotes).includes(markup), "Rejected response previews must stay in the current page");
+
+    await page.locator("#fit").click();
+    const previewButton = bridge.locator(".thread-response-preview");
+    await previewButton.click();
+    const dialog = page.locator("#response-preview-dialog");
+    await dialog.waitFor();
+    assert.equal(await page.locator("#response-preview-reason").textContent(), error);
+    const preview = page.locator("#response-preview-text");
+    assert.equal(await preview.textContent(), responsePreview);
+    assert.equal(await preview.locator("img").count(), 0, "Model preview was interpreted as HTML");
+    await dialog.getByRole("button", { name: "关闭" }).click();
+    await bridge.locator(".thread-retry").click();
     await bridge.locator(".thread-answer").filter({ hasText: explanationFixture.summary }).waitFor();
+    assert.equal(await previewButton.isVisible(), false, "A successful retry must hide the previous failure preview");
     assert.equal(await bridge.getAttribute("data-anchor"), "E05");
     assert.equal(await bridge.locator(".thread-question").innerText(), originalQuestion);
-    assert.deepEqual(executions.map(({ mode, scope, anchor, sourceAnswer }) =>
-      [mode, scope, anchor.elementIds, sourceAnswer]), Array.from({ length: 2 }, () => [
-      "ask", "explain", ["A01"], { question: originalQuestion, answer: originalAnswer },
+    assert.deepEqual(executions.map(({ backend, mode, scope, anchor, sourceAnswer }) =>
+      [backend, mode, scope, anchor.elementIds, sourceAnswer]), Array.from({ length: 3 }, () => [
+      "zcode", "ask", "explain", ["A01"], { question: originalQuestion, answer: originalAnswer },
     ]));
     const sections = page.locator('#threads [data-section-of="A01"]');
     assert.equal(await sections.count(), 3);
@@ -2455,7 +2528,7 @@ async function testSplitExistingAnswer() {
     assert.equal(await archive.evaluate((element) => element.open), true);
     await archive.getByText("原回答保留标记", { exact: false }).waitFor();
     assertNoJsErrors(jsErrors);
-    record("U27", "PASS", "An existing long answer splits in place, preserves its original question and answer, and rejects incomplete output atomically.");
+    record("U27", "PASS", "A rejected ZCode split shows its reason and literal response preview without storing invalid cards or altering the original answer. Incomplete output also stays atomic, and a successful retry replaces the failure.");
   } catch (error) { record("U27", "FAIL", safeError(error)); await screenshot("U27-failure", session.page); }
   finally { await closeSession(session); }
 }
@@ -3225,7 +3298,7 @@ async function testAnswerSectionsQuickReorder() {
     await page.locator("#split-module").click();
     await card("A01").locator(".thread-answer").filter({ hasText: answer.summary }).waitFor();
     await clearCardSelection(page);
-    await page.locator("#organize-board").click();
+    await submitOrganization(page);
     await card("A01").locator(".organized-title").waitFor();
     const children = (await readManualNotes(page)).filter(({ sectionOf }) => sectionOf === "A01").map(({ id }) => id);
     assert.equal(children.length, 6);
@@ -4980,6 +5053,10 @@ async function testDraftBranchWorkflow() {
     organizerItems = priorItems.filter(({ id }) => !draftIds.includes(id));
     await clearCardSelection(page);
     await page.locator("#organize-board").click();
+    const scope = await page.locator("#organize-board-scope").innerText();
+    assert.equal(Number(scope.match(/(\d+)\s*张/)?.[1]), organizerItems.length);
+    assert.match(scope, /独立草稿/);
+    await page.locator("#confirm-organize-board").click();
     await page.getByText("测试：整理后的主线", { exact: true }).waitFor();
     await stop.waitFor({ state: "hidden" });
     const organize = requests.at(-1);

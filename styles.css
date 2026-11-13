@@ -161,8 +161,22 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   color: inherit;
 }
 
-#regenerate-branch-scope { margin-bottom: 14px; }
-#regenerate-branch-opinion { resize: vertical; font: inherit; }
+.board-dialog .board-dialog-scope { margin-bottom: 14px; }
+.board-dialog textarea { resize: vertical; font: inherit; }
+
+#response-preview-dialog { width: min(580px, calc(100% - 32px)); }
+#response-preview-text {
+  max-height: min(310px, 44dvh);
+  overflow: auto;
+  margin: 12px 0 0;
+  padding: 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #141c19;
+  font: 12px/1.55 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 .board-repository-field { margin-top: 14px; }
 .board-dialog .board-field-hint { margin-top: 6px; }
@@ -889,7 +903,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .thread-answer:empty { display: none; }
 .thread-status { margin: 0; color: #bed6c7; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
 .thread-status:not([data-state="pending"]) { color: #ffc7b8; }
-.thread-retry { align-self: flex-start; min-height: 28px; padding: 3px 9px; }
+.thread-retry, .thread-response-preview { align-self: flex-start; min-height: 28px; padding: 3px 9px; }
 .thread-retry[hidden] { display: none; }
 .thread-note.is-streaming { border-color: #b1e1c3; }
 
@@ -909,10 +923,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .organized-item[data-organized-category="optimize"] { --organized-accent: #bb9262; --organized-surface: #f0e6d4; }
 .organized-item[data-organized-category="reference"] { --organized-accent: #899fc4; --organized-surface: #e1e8f4; }
 .organized-item[hidden] { display: none; }
-.organized-item > :not(.organized-face, .thread-status, .thread-retry, .thread-original) { display: none; }
+.organized-item > :not(.organized-face, .thread-status, .thread-retry, .thread-original, .thread-response-preview) { display: none; }
 .organized-item > .thread-status { margin-bottom: 6px; color: #4b604f; }
 .organized-item > .thread-status:not([data-state="pending"]) { color: #842d25; }
-.organized-item > .thread-retry { margin-bottom: 6px; }
+.organized-item > :is(.thread-retry, .thread-response-preview) { margin-bottom: 6px; }
 
 .organized-face { display: grid; gap: 7px; min-width: 0; overflow-wrap: anywhere; }
 .organized-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }

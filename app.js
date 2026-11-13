@@ -2682,6 +2682,7 @@
     reply.retryButton.hidden = !delivery || delivery === "pending";
     const retryPayload = reply.saved?.retryPayload || reply.saved?.payload;
     reply.retryButton.textContent = retryPayload?.mode === "edit" ? "打开提问" : "重试回答";
+    reply.previewButton.hidden = delivery !== "failed" || !reply.responsePreview;
   }
 
   function renderReplyOutline(reply) {
@@ -2754,14 +2755,24 @@
     const retryButton = appendText(note, "button", "tool-button thread-retry", "重试回答");
     retryButton.type = "button";
     retryButton.dataset.retryQuestion = "";
+    const previewButton = appendText(note, "button", "tool-button thread-response-preview", "查看模型返回");
+    previewButton.type = "button";
+    previewButton.setAttribute("aria-haspopup", "dialog");
+    previewButton.setAttribute("aria-controls", "response-preview-dialog");
     renderAttachedNames(note, payload.attachments);
     questionLine.dataset.selectPart = "text";
     answer.dataset.selectPart = "text";
     makeSelectable(note);
     $("threads").append(note);
-    const reply = { note, heading, questionLine, answer, deliveryLine, retryButton, rect, payload, kind, branchId, sourceCardIds, anchors,
+    const reply = { note, heading, questionLine, answer, deliveryLine, retryButton, previewButton, rect, payload, kind, branchId, sourceCardIds, anchors,
       saved: restored ? record : null };
     retryButton.addEventListener("click", () => { void retryReply(reply); });
+    previewButton.addEventListener("click", () => {
+      if (!reply.responsePreview) return;
+      $("response-preview-reason").textContent = reply.saved?.deliveryMessage || "";
+      $("response-preview-text").textContent = reply.responsePreview;
+      $("response-preview-dialog").showModal();
+    });
     renderReplyDelivery(reply);
     renderReplyOutline(reply);
     replies.set(id, reply);
@@ -2769,6 +2780,11 @@
     renderBoardCount();
     return reply;
   }
+
+  $("response-preview-dialog").addEventListener("close", () => {
+    $("response-preview-reason").textContent = "";
+    $("response-preview-text").textContent = "";
+  });
 
   function renderAttachedNames(container, attachments) {
     const line = container.querySelector(":scope > .thread-attachments");
@@ -2988,6 +3004,7 @@
 
   async function runCodex(reply, payload, mode, branch, target) {
     deletionUndo = null;
+    reply.responsePreview = "";
     const { note, questionLine, answer } = reply;
     const previous = reply.saved;
     const previousAnswer = previous && (!previous.delivery || previous.retryPayload) ? previous : null;
@@ -3110,6 +3127,9 @@
           if (!explaining) changes = reportChanges(event.changedFiles);
         } else if (event.type === "error") {
           errorText = event.text;
+          if (explaining && typeof event.responsePreview === "string") {
+            reply.responsePreview = event.responsePreview.slice(0, 2800);
+          }
           changes = reportChanges(event.changedFiles);
         }
         if (event.type === "answer" || event.type === "status") layoutReplies(true);
@@ -3995,7 +4015,7 @@
     }
   }
 
-  async function organizeBoard(instruction = "", repair = false, submission = null, { initialize = false } = {}) {
+  async function organizeBoard(instruction, repair = false, submission = null, { initialize = false } = {}) {
     if (activeRun || gesture?.drag || (!repair && (sourceChanged || deletionPreparing)) || !relayAvailable || !organizationEngine) return false;
     const allNodes = boardForOrganization();
     const target = submission?.target || connectionTarget();
@@ -4038,7 +4058,7 @@
     const run = { controller, mode: "organize", repair, initialize, target, requestId, stopping: false, revisionSnapshot };
     activeRun = run;
     if (repair) deletionMessage = `节点已删除，AI 正在处理 ${nodes.length} 个直接关联节点…`;
-    const opinion = initialize ? "" : instruction || organizationOpinion.value.trim();
+    const opinion = initialize ? "" : instruction.trim();
     const archiveAllowed = new Set(Array.isArray(repairContext?.archiveAllowed) ? repairContext.archiveAllowed : []);
     const newIds = repair ? [] : availableModuleIds(allNodes, initialize ? 10 : Math.min(8, 64 - nodes.length));
     const request = {
@@ -5525,7 +5545,42 @@
     }
   });
 
-  organize.addEventListener("click", () => void organizeBoard());
+  const organizeDialog = $("organize-board-dialog");
+  const organizeOpinion = $("organize-board-opinion");
+  const confirmOrganize = $("confirm-organize-board");
+  const organizeError = $("organize-board-error");
+  let organizeOpinionDraft;
+  organize.addEventListener("click", () => {
+    const nodes = boardForOrganization();
+    const drafts = draftMembership(nodes);
+    const count = nodes.filter(({ id }) => !drafts.has(id)).length;
+    const scope = $("organize-board-scope");
+    scope.textContent = count
+      ? `整张白板的 ${count} 张卡片和批注，包含已收起的下级。` +
+        (drafts.size ? "独立草稿保留在原处。" : "") +
+        (count > 64 ? "一次最多整理 64 张，可以改为整理分支。" : "")
+      : "目前只有独立草稿。选中一张卡片可以整理它的分支。";
+    confirmOrganize.disabled = !count || count > 64;
+    organizeError.hidden = true;
+    organizeOpinion.value = organizeOpinionDraft ?? organizationOpinion.value;
+    organizeDialog.showModal();
+  });
+  organizeOpinion.addEventListener("input", () => { organizeOpinionDraft = organizeOpinion.value; });
+  $("cancel-organize-board").addEventListener("click", () => organizeDialog.close());
+  $("organize-board-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (confirmOrganize.disabled) return;
+    if (organize.disabled || !memory.storageIsCurrent()) {
+      organizeError.textContent = storageStale ? "另一页面已更新白板，请先复制意见，再刷新后重试。"
+        : "当前暂时无法整理，请关闭弹窗后查看连接和白板状态。";
+      organizeError.hidden = false;
+      return;
+    }
+    const opinion = organizeOpinion.value;
+    organizeOpinionDraft = opinion;
+    organizeDialog.close();
+    if (await organizeBoard(opinion)) organizeOpinionDraft = undefined;
+  });
   initializeRepository.addEventListener("click", () => void organizeBoard("", false, null, { initialize: true }));
   organizeBranch.addEventListener("click", () => void organizeSelectedBranch());
   fileOrphans.addEventListener("click", () => void fileOrphanCards(selected.map(({ id }) => id)));

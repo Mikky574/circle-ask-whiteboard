@@ -29,7 +29,9 @@ if str(ROOT) not in sys.path:
 
 import api_backend
 import server
+import zcode_backend
 import zcode_workspace
+from agent_trace import DETAIL_LIMIT
 from backends import BackendRequest, CodexAdapter, FACTORY
 from board_tools import BoardTools
 from fixtures import TEST_ONLY_KEY, api_settings, board_snapshot, response, tool_call
@@ -330,10 +332,10 @@ class ExplanationAcceptanceTests(unittest.TestCase):
             _, _, raw = post(port, "/api/codex", body, good_headers(host, body))
         events = [json.loads(line) for line in raw.splitlines()]
         self.assertEqual([event["type"] for event in events], ["status", "context", "error"])
+        self.assertIn("标题", events[-1]["text"])
+        self.assertIn("重复", events[-1]["text"])
 
-    def test_cli_adapters_emit_same_explanation_candidates(self):
-        explanation = self.explanation()
-        answer = json.dumps(explanation)
+    def cli_explanation_events(self, backend, answer):
         parsed = server.parse_request(json.dumps(self.request_body()).encode())
         schema = server.write_explanation_schema()
         self.addCleanup(schema.unlink)
@@ -342,22 +344,147 @@ class ExplanationAcceptanceTests(unittest.TestCase):
             events.put(("answer", answer))
             events.put(("eof", ""))
 
-        def emit_zcode(process, prompt, model, mode, workspace, events, files):
+        def emit_zcode(process, prompt, model, mode, workspace, events, files, **kwargs):
             emit(process, events)
 
-        for backend in ("codex", "zcode"):
-            with self.subTest(backend=backend):
-                runtime = RecordingRuntime()
-                process = Mock(returncode=0)
-                with patch.object(server, "CODEX_EXECUTABLE", "fake-codex"), \
-                     patch.object(server, "ZCODE_COMMAND", ["fake-zcode"]), \
-                     patch.object(server.subprocess, "Popen", return_value=process), \
-                     patch.object(server, "send_prompt"), patch.object(server, "read_events", emit), \
-                     patch.object(server, "run_zcode", emit_zcode), patch.object(server, "terminate"):
-                    server.WhiteboardHandler.run_agent(runtime, backend, "fixture", "ask", parsed[1], parsed[2],
-                                                       schema, ROOT, {}, [])
-                self.assertEqual([event["type"] for event in runtime.events], ["status", "context", "explanation", "done"])
-                self.assertEqual(runtime.events[-2]["explanation"], explanation)
+        runtime = RecordingRuntime()
+        process = Mock(returncode=0)
+        with patch.object(server, "CODEX_EXECUTABLE", "fake-codex"), \
+             patch.object(server, "ZCODE_COMMAND", ["fake-zcode"]), \
+             patch.object(server.subprocess, "Popen", return_value=process), \
+             patch.object(server, "send_prompt"), patch.object(server, "read_events", emit), \
+             patch.object(server, "run_zcode", emit_zcode), patch.object(server, "terminate"):
+            server.WhiteboardHandler.run_agent(runtime, backend, "fixture", "ask", parsed[1], parsed[2],
+                                               schema, ROOT, {}, [])
+        return runtime.events
+
+    def zcode_repair_run(self, first, second):
+        parsed = server.parse_request(json.dumps(self.request_body()).encode())
+        schema = server.write_explanation_schema()
+        self.addCleanup(schema.unlink)
+        runtime = RecordingRuntime()
+        process = Mock(returncode=0, stdin=io.BytesIO())
+        connection = Mock()
+        connection.request.return_value = {
+            "session": {"sessionId": "fixture-session"},
+            "settings": {"model": {"available": [], "current": {"modelId": "fixture"}}},
+        }
+        connection.begin_request.side_effect = [11, 12]
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        workspace = Path(directory.name)
+        (workspace / "fixture.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+        files = [{"path": "fixture.png", "name": "fixture.png"}]
+        with patch.object(server, "ZCODE_COMMAND", ["fake-zcode"]), \
+             patch.object(server.subprocess, "Popen", return_value=process) as start_process, \
+             patch.object(server, "terminate"), \
+             patch.object(zcode_backend, "ZCodeConnection", return_value=connection), \
+             patch.object(zcode_backend, "read_turn", side_effect=[first, second]) as read_turn:
+            server.WhiteboardHandler.run_agent(runtime, "zcode", "fixture", "ask", parsed[1], parsed[2],
+                                               schema, workspace, {}, files)
+        start_process.assert_called_once()
+        self.assertEqual([call.args[0] for call in connection.request.call_args_list].count("session/create"), 1)
+        sends = connection.begin_request.call_args_list
+        self.assertEqual(len(sends), read_turn.call_count)
+        for call in sends:
+            method, params = call.args
+            self.assertEqual(method, "session/send")
+            self.assertEqual(params["sessionId"], "fixture-session")
+        return runtime.events, [call.args[1] for call in sends]
+
+    def test_zcode_repairs_invalid_explanation_once_in_the_same_session(self):
+        explanation = self.explanation()
+        invalid = json.dumps({**explanation, "sections": explanation["sections"][:1]})
+        events, sends = self.zcode_repair_run(invalid, json.dumps(explanation))
+        self.assertEqual(len(sends), 2)
+        self.assertEqual([attachment["filename"] for attachment in sends[0]["attachments"]], ["fixture.png"])
+        self.assertEqual(sends[1]["attachments"], [])
+        self.assertIn("本次收到 1 张", sends[1]["content"])
+        self.assertEqual([event["type"] for event in events],
+                         ["status", "context", "status", "explanation", "done"])
+        self.assertIn("自动修正", events[2]["text"])
+        self.assertEqual(events[-2]["explanation"], explanation)
+
+    def test_zcode_valid_explanation_does_not_request_repair(self):
+        explanation = self.explanation()
+        events, sends = self.zcode_repair_run(json.dumps(explanation), "不得使用的第二次结果")
+        self.assertEqual(len(sends), 1)
+        self.assertEqual([event["type"] for event in events], ["status", "context", "explanation", "done"])
+        self.assertEqual(events[-2]["explanation"], explanation)
+
+    def test_zcode_invalid_repair_keeps_diagnostic_without_partial_cards(self):
+        explanation = self.explanation()
+        duplicate = [explanation["sections"][0]] * 2
+        invalid = json.dumps({**explanation, "sections": duplicate}, ensure_ascii=False)
+        events, sends = self.zcode_repair_run("原回答没有 JSON。", invalid)
+        self.assertEqual(len(sends), 2)
+        self.assertEqual([event["type"] for event in events], ["status", "context", "status", "error"])
+        self.assertIn("标题与前面的卡片重复", events[-1]["text"])
+        self.assertIn("白板初始化", events[-1]["responsePreview"])
+        self.assertEqual(events[-1]["changedFiles"], [])
+
+    def test_zcode_repair_transport_failure_keeps_original_preview(self):
+        original = "原回答没有 JSON，仍需保留用于诊断。"
+        events, sends = self.zcode_repair_run(original, zcode_backend.ZCodeError("fixture turn failed"))
+        self.assertEqual(len(sends), 2)
+        self.assertEqual([event["type"] for event in events], ["status", "context", "status", "error"])
+        self.assertIn("自动修正未返回可用", events[-1]["text"])
+        self.assertEqual(events[-1]["responsePreview"], original)
+
+    def test_zcode_repair_with_identical_invalid_response_reports_validation_reason(self):
+        invalid = "仍然只返回普通文字。"
+        events, sends = self.zcode_repair_run(invalid, invalid)
+        self.assertEqual(len(sends), 2)
+        self.assertEqual([event["type"] for event in events], ["status", "context", "status", "error"])
+        self.assertIn("找不到可解析的 JSON", events[-1]["text"])
+        self.assertEqual(events[-1]["responsePreview"], invalid)
+
+    def test_cli_adapters_emit_same_explanation_candidates(self):
+        explanation = self.explanation()
+        answer = json.dumps(explanation)
+        fence = chr(96) * 3
+        wrapped = f"下面是拆解。\n{fence}json\n{answer}\n{fence}\n以上是结构化结果。"
+        plain_wrapped = f"下面是拆解：\n{answer}\n以上是结构化结果。"
+        for backend, reply in (("codex", answer), ("zcode", wrapped), ("zcode", plain_wrapped)):
+            with self.subTest(backend=backend, reply=reply):
+                events = self.cli_explanation_events(backend, reply)
+                self.assertEqual([event["type"] for event in events], ["status", "context", "explanation", "done"])
+                self.assertEqual(events[-2]["explanation"], explanation)
+
+    def test_explanation_validation_identifies_rejected_structure(self):
+        explanation = self.explanation()
+        duplicate = [explanation["sections"][0]] * 2
+        long_title = [{"title": "字" * 73, "text": "正文"}, explanation["sections"][1]]
+        long_body = [{**explanation["sections"][0], "text": "字" * 701}, explanation["sections"][1]]
+        fence = chr(96) * 3
+        valid = json.dumps(explanation)
+        block = f"{fence}json\n{valid}\n{fence}"
+        invalid = [
+            (json.dumps({**explanation, "summary": "字" * 281}), "总览超过 280 字"),
+            (json.dumps({**explanation, "sections": explanation["sections"][:1]}), "本次收到 1 张"),
+            (json.dumps({**explanation, "sections": duplicate}), "标题与前面的卡片重复"),
+            (json.dumps({**explanation, "sections": long_title}), "第 1 张说明卡的标题超过 72 字"),
+            (json.dumps({**explanation, "sections": long_body}), "第 1 张说明卡的正文超过 700 字"),
+            (json.dumps({"summary": "总览", "children": explanation["sections"]}), "顶层字段必须是 summary 和 sections"),
+            ('{"summary":', "找不到可解析的 JSON"),
+            (f"说明\n{block}\n另一个候选\n{block}", "多个代码块"),
+            (f"说明\n{valid}\n另一个候选\n{valid}", "多个"),
+        ]
+        for answer, expected in invalid:
+            with self.subTest(expected=expected):
+                with self.assertRaises(ValueError) as rejected:
+                    server.structured_candidate(answer, {"scope": "explain"})
+                self.assertIn(expected, str(rejected.exception))
+
+    def test_zcode_invalid_reply_preview_is_redacted_and_bounded(self):
+        secret = "fixture-only-key-value"
+        answer = f"没有返回结构化结果。\napi_key: {secret}\n" + "样例正文" * 800
+        events = self.cli_explanation_events("zcode", answer)
+        self.assertEqual([event["type"] for event in events], ["status", "context", "error"])
+        preview = events[-1]["responsePreview"]
+        self.assertIn("没有返回结构化结果", preview)
+        self.assertNotIn(secret, json.dumps(events, ensure_ascii=False))
+        self.assertLessEqual(len(preview), DETAIL_LIMIT)
 
 
 class BranchOrganizationAcceptanceTests(unittest.TestCase):

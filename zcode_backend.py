@@ -135,7 +135,7 @@ class ZCodeConnection:
                 return self.response(message)
 
 
-def run_zcode(process, prompt, model, mode, workspace, events, attachments=(), repository=None):
+def run_zcode(process, prompt, model, mode, workspace, events, attachments=(), repository=None, *, repair_explanation=None):
     tools = EDIT_TOOLS if mode == "edit" else READ_TOOLS
     connection = ZCodeConnection(process, tools)
     workspace = Path(workspace).resolve()
@@ -172,6 +172,11 @@ def run_zcode(process, prompt, model, mode, workspace, events, attachments=(), r
                                              "attachments": list(native_attachments(workspace, attachments))})
         answer = read_turn(connection, send_id, session_id, mode, events)
         events.put(("answer", answer))
+        if answer.strip() and repair_explanation and (repair := repair_explanation(answer)):
+            events.put(("explanation_repair", ""))
+            send_id = connection.begin_request("session/send", {**session, "content": repair, "attachments": []})
+            answer = read_turn(connection, send_id, session_id, mode, events)
+            events.put(("answer", answer))
     except ZCodeError as error:
         events.put(("diagnostic", str(error)))
     except (OSError, ValueError, KeyError, TypeError):
