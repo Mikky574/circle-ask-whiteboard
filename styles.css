@@ -127,13 +127,16 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   gap: 10px;
 }
 .activity-header h2 { margin: 4px 0 0; font-size: clamp(24px, 3vw, 34px); line-height: 1.25; }
+#project-context > h2 { margin: 9px 0 3px; font-size: clamp(24px, 3vw, 34px); line-height: 1.25; }
+#project-context-directory { color: var(--muted); font: 12px/1.5 var(--mono); overflow-wrap: anywhere; }
+#project-context-error { color: #ffceac; }
 .activity-muted { color: var(--muted); font-size: 12px; margin: 0; }
+.activity-captured { margin-block: 6px 13px; }
 .activity-run { display: grid; gap: 3px; padding: 8px 11px; border-radius: 7px; background: #382d22; color: #f0cea7; font-size: 12px; }
 .activity-nav, .activity-options, .activity-footer { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .activity-nav { margin: 17px 0 13px; padding-bottom: 11px; border-bottom: 1px solid var(--panel-border); }
-.activity-nav [aria-pressed="true"] { color: var(--mint); background: #263d32; }
+.activity-nav [aria-current="page"] { color: var(--mint); background: #263d32; border-color: #466454; }
 .activity-canvas-link { text-decoration: none; }
-.activity-nav .activity-muted { margin-left: auto; }
 .activity-layout { display: grid; grid-template-columns: minmax(0, 1.12fr) minmax(0, 1fr); align-items: start; gap: 14px; }
 .activity-side, .activity-timeline { display: grid; gap: 7px; }
 .activity-list-heading { min-height: 33px; margin-bottom: 5px; }
@@ -170,7 +173,6 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .activity-editor textarea { width: 100%; padding: 7px; resize: vertical; border: 1px solid #466454; border-radius: 7px; color: #edf1e5; background: #111916; }
 @media (max-width: 700px) {
   .activity-layout { grid-template-columns: 1fr; }
-  .activity-nav .activity-muted { margin-left: 0; }
 }
 
 #board-actions {
@@ -270,7 +272,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 }
 
 .local-project-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.local-project-actions button { min-height: 34px; padding-inline: 10px; font-size: 13px; }
+.local-project-actions :is(a, button) { min-height: 34px; padding-inline: 10px; font-size: 13px; text-decoration: none; }
+.local-project-actions a { flex: 0 0 auto; }
+#local-project-more { margin-top: 12px; border-color: var(--panel-border); }
 .local-project-feedback { margin: 0; color: var(--mint); font-size: 12px; }
 .local-project-feedback:empty { margin-top: -10px; }
 

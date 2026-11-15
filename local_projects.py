@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import re
 from uuid import NAMESPACE_URL, uuid5
 
 
@@ -74,12 +75,14 @@ def load_catalog():
 def project_catalog_request(body, resolve_directory):
     if body == {"action": "list"}:
         return {"projects": list(load_catalog().values())}
-    if (not isinstance(body, dict) or body.keys() != {"action", "id"} or body["action"] != "open"
+    if (not isinstance(body, dict) or body.keys() != {"action", "id"} or body["action"] not in ("open", "get")
             or not isinstance(body["id"], str)):
         raise ProjectCatalogError(400, "无效的项目操作。")
     project = load_catalog().get(body["id"])
     if project is None:
         raise ProjectCatalogError(404, "项目已不在本机清单中，请刷新后重试。")
+    if body["action"] == "get":
+        return {"project": project}
     if os.name != "nt":
         raise ProjectCatalogError(501, "在资源管理器打开目录需要 Windows。")
 
@@ -92,3 +95,28 @@ def project_catalog_request(body, resolve_directory):
     except OSError as error:
         raise ProjectCatalogError(500, "无法在资源管理器中打开该目录。") from error
     return {"opened": True}
+
+
+def project_activity_request(body):
+    project_id = body.get("projectId") if isinstance(body, dict) and body.keys() == {"projectId"} else None
+    if not isinstance(project_id, str) or not re.fullmatch(r"[0-9a-f]{32}", project_id):
+        raise ProjectCatalogError(400, "请提供本机项目编号。")
+    folder = catalog_path().parent
+    paths = (folder / "workbench-activity" / f"{project_id}.json", folder / "workbench-activity.local.json")
+    for path in paths:
+        try:
+            with path.open("rb") as activity_file:
+                raw = activity_file.read(512 * 1024 + 1)
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            raise ProjectCatalogError(500, "无法读取本机项目动作。") from error
+        if len(raw) > 512 * 1024:
+            raise ProjectCatalogError(422, "本机项目动作文件过大。")
+        try:
+            activity = json.loads(raw.decode("utf-8-sig"))
+        except (ValueError, RecursionError) as error:
+            raise ProjectCatalogError(422, "本机项目动作文件格式有误。") from error
+        if isinstance(activity, dict) and activity.get("projectId") == project_id:
+            return {"activity": activity}
+    return {"activity": None}

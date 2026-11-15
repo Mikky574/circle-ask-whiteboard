@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from local_projects import ProjectCatalogError, project_catalog_request
+from local_projects import ProjectCatalogError, project_activity_request, project_catalog_request
 from server import resolve_repository_path
 
 
@@ -47,6 +47,37 @@ class LocalProjectTests(unittest.TestCase):
         with self.assertRaises(ProjectCatalogError) as malformed:
             self.request(action="list")
         self.assertEqual(malformed.exception.status, 422)
+
+    def test_project_detail_and_activity_have_the_same_identity(self):
+        self.write_catalog(self.entry, {
+            **self.entry, "name": "项目乙", "path": str(self.project.with_name("本机项目 乙")),
+        })
+        project_a, project_b = self.request(action="list")["projects"]
+        id_a, id_b = project_a["id"], project_b["id"]
+        self.assertEqual(self.request(action="get", id=id_a), {"project": project_a})
+        with self.assertRaises(ProjectCatalogError) as unknown:
+            self.request(action="get", id="0" * 32)
+        self.assertEqual(unknown.exception.status, 404)
+
+        snapshot_a = {"projectId": id_a, "events": [{"id": "a"}]}
+        legacy = self.manifest.with_name("workbench-activity.local.json")
+        legacy.write_text(json.dumps(snapshot_a), encoding="utf-8")
+        self.assertEqual(project_activity_request({"projectId": id_a}), {"activity": snapshot_a})
+        self.assertEqual(project_activity_request({"projectId": id_b}), {"activity": None})
+
+        folder = self.manifest.with_name("workbench-activity")
+        folder.mkdir()
+        file_b = folder / f"{id_b}.json"
+        file_b.write_text(json.dumps(snapshot_a), encoding="utf-8")
+        self.assertEqual(project_activity_request({"projectId": id_b}), {"activity": None})
+        snapshot_b = {"projectId": id_b, "events": [{"id": "b"}]}
+        file_b.write_text(json.dumps(snapshot_b), encoding="utf-8")
+        self.assertEqual(project_activity_request({"projectId": id_b}), {"activity": snapshot_b})
+        self.assertEqual(project_activity_request({"projectId": id_a}), {"activity": snapshot_a})
+
+        with self.assertRaises(ProjectCatalogError) as invalid:
+            project_activity_request({"projectId": "../projects.local"})
+        self.assertEqual(invalid.exception.status, 400)
 
     @unittest.skipUnless(os.name == "nt", "Explorer integration is Windows-specific")
     def test_only_registered_existing_directories_are_launched(self):

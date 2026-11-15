@@ -23,7 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from api_backend import validate_settings, run_api
 from board_tools import BoardTools
 from backends import FACTORY, BackendRequest, CancellationToken
-from local_projects import ProjectCatalogError, project_catalog_request
+from local_projects import ProjectCatalogError, project_activity_request, project_catalog_request
 from repo_index import RepositoryIndex, RepoIndexError
 
 from attachments import MAX_ATTACHMENT_BYTES, load_attachments, save_attachment, stage_attachments
@@ -1656,19 +1656,7 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                 self.send_json(200, result)
                 return
             if self.path == "/api/workbench-activity":
-                if json.loads(body) != {}:
-                    raise ValueError("项目动作接口只接受空对象。")
-                path = Path.home() / ".circle-ask-whiteboard" / "workbench-activity.local.json"
-                try:
-                    with path.open("rb") as activity_file:
-                        raw = activity_file.read(512 * 1024 + 1)
-                except FileNotFoundError:
-                    self.send_json(200, {"activity": None})
-                    return
-                if len(raw) > 512 * 1024:
-                    raise ValueError("本机项目动作记录过大。")
-                activity = json.loads(raw.decode("utf-8-sig"))
-                self.send_json(200, {"activity": activity})
+                self.send_json(200, project_activity_request(json.loads(body)))
                 return
             if self.path == "/api/codex":
                 parsed = parse_request(body)

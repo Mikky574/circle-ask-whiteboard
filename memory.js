@@ -19,9 +19,8 @@
   const activeBoard = selectActiveBoard(initialBoards);
   const activeBoardInfo = activeBoard === localProjectsBoard ? localProjectsInfo : initialBoards.find(({ id }) => id === activeBoard);
   const prefix = boardPrefix(activeBoard);
-  const storageKey = `${prefix}.v1`;
-  const organizationKey = `${prefix}.organization.v1`;
-  const storageKeys = Object.freeze({ memory: storageKey, organization: organizationKey });
+  const storageKeys = Object.freeze(boardStorageKeys(activeBoard));
+  const { memory: storageKey, organization: organizationKey } = storageKeys;
   let knownStorage = null;
   let storageConflicted = false;
 
@@ -67,6 +66,11 @@
 
   function boardPrefix(id) {
     return id === "original" ? originalPrefix : `${originalPrefix}.${id}`;
+  }
+
+  function boardStorageKeys(id) {
+    const prefix = boardPrefix(id);
+    return { memory: `${prefix}.v1`, organization: `${prefix}.organization.v1` };
   }
 
   function savedRepositoryPath(value) {
@@ -519,7 +523,7 @@
   window.BoardMemory = { load, save, branchFor, deletionPlan, repairNodes, cleanAttachments,
     activeBoard, activeBoardInfo, catalogKey, listBoards, createBoard, updateBoardRepository, deleteActiveBoard,
     localProjectsBoard, openLocalProject,
-    storageKeys, initializeProjectBoard, storageIsCurrent, writeStorage,
+    storageKeys, boardStorageKeys, initializeProjectBoard, storageIsCurrent, writeStorage,
     templateBackup: () => boardBackup(templateBackupKey),
     installTemplate: (value, sampleIds) => installBoard(value, sampleIds, templateBackupKey),
     restoreTemplate: () => restoreBoard(templateBackupKey),

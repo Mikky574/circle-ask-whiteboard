@@ -35,7 +35,7 @@
           <option value="repo-atlas">源码架构手册（Codex）</option>
           <option value="project-workbench">项目工作台</option>
         </select>
-        <a id="local-project-link" class="tool-button" href="?board=local-projects">本机项目</a>
+        <a id="local-project-link" class="tool-button" href="?board=project-workbench">项目入口</a>
         <button id="board-manage" class="tool-button" type="button" aria-expanded="false" aria-controls="board-actions" title="管理白板">管理</button>
         <div id="board-actions" role="group" aria-label="白板操作" hidden>
           <button id="board-create" class="tool-button" type="button" aria-haspopup="dialog">新建白板</button>
@@ -151,7 +151,7 @@
       <button id="board-empty-create" class="submit-button" type="button" aria-haspopup="dialog">新建白板</button>
     </section>
     <main id="local-projects" aria-labelledby="local-projects-heading" hidden>
-      <h2 id="local-projects-heading">本机项目总览</h2>
+      <h2 id="local-projects-heading">本机项目</h2>
       <section class="local-project-finder" aria-labelledby="local-project-finder-heading">
         <h3 id="local-project-finder-heading">用一句话找项目</h3>
         <form id="local-project-question-form" role="search" aria-label="按用途找项目">
@@ -165,7 +165,7 @@
           <div id="local-project-preview"></div>
         </div>
       </section>
-      <details id="local-project-browse" class="local-project-browse">
+      <details id="local-project-browse" class="local-project-browse" open>
         <summary id="local-project-browse-label">浏览全部项目</summary>
         <div class="local-project-filters">
           <input type="search" id="local-project-search" aria-label="搜索本机项目" placeholder="搜索名称、简介或目录">
@@ -175,19 +175,26 @@
         </div>
         <p id="local-project-count" role="status">正在读取本机项目…</p>
         <div id="local-project-cards" class="local-project-cards"></div>
+        <button id="local-project-more" class="tool-button" type="button" hidden>显示更多项目</button>
       </details>
     </main>
-    <main id="workbench-activity" aria-labelledby="activity-title" hidden>
+    <section id="project-context" aria-labelledby="project-context-title" hidden>
+      <a class="tool-button activity-canvas-link" href="?board=project-workbench">返回项目入口</a>
+      <h2 id="project-context-title"></h2>
+      <code id="project-context-directory"></code>
+      <nav class="activity-nav" aria-label="当前项目视图" hidden>
+        <a class="tool-button activity-canvas-link" data-project-view="actions">AI 动作</a>
+        <a class="tool-button activity-canvas-link" data-project-view="graph">项目图</a>
+        <a class="tool-button activity-canvas-link" data-project-view="canvas">项目画布</a>
+      </nav>
+      <p id="project-context-error" role="alert" hidden></p>
+    </section>
+    <main id="workbench-activity" aria-labelledby="project-context-title" hidden>
       <header class="activity-header">
         <div><p class="activity-muted" data-activity="category"></p><h2 id="activity-title" data-activity="title"></h2></div>
         <div class="activity-run"><strong data-activity="status"></strong><span data-activity="summary"></span></div>
       </header>
-      <nav class="activity-nav" aria-label="项目工作台视图">
-        <button class="tool-button" type="button" data-activity-view="actions" aria-pressed="true">AI 动作</button>
-        <button class="tool-button" type="button" data-activity-view="graph" aria-pressed="false">项目图</button>
-        <a class="tool-button activity-canvas-link" href="?board=project-workbench&amp;view=canvas">项目画布</a>
-        <span class="activity-muted" data-activity="captured"></span>
-      </nav>
+      <p class="activity-muted activity-captured" data-activity="captured"></p>
       <div class="activity-layout">
         <section data-activity="actions" aria-labelledby="activity-list-title">
           <div class="activity-list-heading"><h3 id="activity-list-title" data-activity="list-title">动作记录</h3><button type="button" class="tool-button" data-activity="clear-filter" hidden>查看全部</button></div>
@@ -217,7 +224,6 @@
             <p class="overline">项目画布 <span>/</span> 01</p>
             <h2 id="canvas-title">这块白板是怎么实现的？</h2>
             <p id="board-repository-label" hidden></p>
-            <a id="activity-from-canvas" class="tool-button activity-canvas-link" href="?board=project-workbench" hidden>训练观测</a>
           </div>
           <div class="toolbar" aria-label="画布操作">
             <div class="tool-group" role="group" aria-label="交互模式">

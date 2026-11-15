@@ -65,21 +65,65 @@
   let repositoryPath = memory.activeBoardInfo?.repositoryPath || "";
   let onRepositoryChange = () => {};
   const localProjects = memory.activeBoard === memory.localProjectsBoard;
-  const boardControls = initBoardControls();
-  if (!memory.activeBoard) return;
-  if (localProjects) {
-    boardControls.setBusy(false);
-    await renderLocalProjects(boardControls.boardUrl);
+  const pageParams = new URLSearchParams(location.search);
+  const projectId = pageParams.get("project");
+  const requestedView = pageParams.get("view");
+  const legacyWorkbench = !projectId && (requestedView === "canvas" || pageParams.has("project-guide") ||
+    pageParams.has("rebuild-project") || location.hash);
+  const workbenchRoute = memory.activeBoard === "project-workbench" && !legacyWorkbench;
+  const registeredBoard = /^[0-9a-f]{32}$/.test(projectId || "") ? `board-${projectId}` : "";
+  const projectCanvas = Boolean(registeredBoard && requestedView === "canvas" && pageParams.get("board") === registeredBoard);
+  if (projectCanvas && memory.activeBoard !== registeredBoard) {
+    location.replace(projectUrl(projectId, "canvas"));
     return;
   }
-  const pageParams = new URLSearchParams(location.search);
-  if (memory.activeBoard === "project-workbench" && pageParams.get("view") !== "canvas" &&
-      !pageParams.has("project-guide") && !pageParams.has("rebuild-project") && !location.hash &&
-      await window.WorkbenchActivity.open($("workbench-activity"))) {
-    $("board-workspace").hidden = true;
-    document.querySelector(".connection-area").hidden = true;
+  const projectDirectory = localProjects || (workbenchRoute && !projectId);
+  const projectViews = projectCanvas || (workbenchRoute && Boolean(projectId));
+  const boardControls = initBoardControls();
+  if (!memory.activeBoard) return;
+  if (projectDirectory) {
     boardControls.setBusy(false);
+    await renderLocalProjects();
     return;
+  }
+  let registeredProject = null;
+  let initialActivity = null;
+  if (projectViews) {
+    try {
+      if (!registeredBoard) throw new Error("这个项目链接无效。");
+      ({ project: registeredProject } = await localProjectRequest({ action: "get", id: projectId }));
+      if (requestedView === "canvas") {
+        const path = await validateRepositoryPath(registeredProject.path);
+        const id = await memory.openLocalProject(projectId, registeredProject.name, path);
+        if (!projectCanvas || path !== repositoryPath || registeredProject.name.slice(0, 80).trim() !== memory.activeBoardInfo.title) {
+          location.replace(projectUrl(projectId, "canvas", id));
+          return;
+        }
+        showProjectContext(registeredProject, "canvas");
+        if (!localStorage.getItem(memory.storageKeys.organization) && !localStorage.getItem(memory.storageKeys.memory)) {
+          initialActivity = await window.WorkbenchActivity.load(projectId);
+        }
+      } else {
+        const view = requestedView === "graph" ? "graph" : "actions";
+        const setView = (next) => {
+          showProjectContext(registeredProject, next);
+          history.replaceState(history.state, "", projectUrl(projectId, next));
+        };
+        showProjectContext(registeredProject, view);
+        await window.WorkbenchActivity.open($("workbench-activity"), registeredProject, view, setView);
+        boardControls.setBusy(false);
+        return;
+      }
+    } catch (error) {
+      $("project-context").hidden = false;
+      $("project-context-title").textContent = registeredProject?.name || "项目暂不可用";
+      $("project-context-error").hidden = false;
+      $("project-context-error").textContent = error.message;
+      $("project-context").querySelector("nav").hidden = true;
+      $("board-workspace").hidden = true;
+      boardControls.setBusy(false);
+      return;
+    }
   }
   const customBoard = memory.activeBoardInfo.custom;
   if (customBoard) {
@@ -89,7 +133,6 @@
   const cards = Array.from(board.querySelectorAll("[data-element-id]"));
   const boardId = memory.activeBoard === "original" ? "whiteboard-implementation" : memory.activeBoard;
   const workbench = boardId === "project-workbench";
-  $("activity-from-canvas").hidden = !workbench || pageParams.get("view") !== "canvas";
   const sourceManual = workbench || boardId === "repo-manual" || boardId === "repo-atlas";
   const recoveredReset = await recoverReset();
   const rebuiltProject = rebuildPublishedProject(pageParams.get("rebuild-project"));
@@ -127,6 +170,15 @@
   let organization = organizationEngine?.load() || { current: null, previous: null, opinion: "", rawPositions: {} };
   if (customBoard && !organization.current && !organization.rawCards?.length) {
     organization.current = organizationEngine.clean({ title: memory.activeBoardInfo.title, items: [] });
+    if (initialActivity?.branches?.length) {
+      organization.current = organizationEngine.clean({ title: registeredProject.name, items: [
+        { id: "E04", category: "main", title: registeredProject.name, summary: registeredProject.description },
+        ...initialActivity.branches.slice(0, 30).map((branch, index) => ({
+          id: `E${index + 5}`, parentId: "E04", category: "main", title: branch.title, summary: branch.desc,
+        })),
+      ] });
+      organizationEngine.save(organization);
+    }
   }
   let organizedRects = new Map();
   let guideRects = new Map();
@@ -168,6 +220,25 @@
     $("status").textContent = message;
   }
 
+  function projectUrl(id, view, board = "project-workbench") {
+    return `?${new URLSearchParams({ board, project: id, ...(view ? { view } : {}) })}`;
+  }
+
+  function showProjectContext(project, view) {
+    const header = $("project-context");
+    $("project-context-title").textContent = project.name;
+    $("project-context-directory").textContent = project.path;
+    header.querySelector("nav").hidden = false;
+    for (const tab of header.querySelectorAll("[data-project-view]")) {
+      const target = tab.dataset.projectView;
+      tab.href = projectUrl(project.id, target, target === view && projectCanvas ? registeredBoard : undefined);
+      if (target === view) tab.setAttribute("aria-current", "page");
+      else tab.removeAttribute("aria-current");
+    }
+    document.title = `${project.name} · 圈问白板`;
+    header.hidden = false;
+  }
+
   function initBoardControls() {
     const switcher = $("board-switcher");
     const manage = $("board-manage");
@@ -196,6 +267,7 @@
       url.searchParams.delete("project-guide");
       url.searchParams.delete("rebuild-project");
       url.searchParams.delete("view");
+      url.searchParams.delete("project");
       url.hash = "";
       return url;
     }
@@ -208,7 +280,8 @@
     function refreshControls() {
       switcher.disabled = busy || saving || !switcher.querySelector("option[value]:not([value=''])");
       manage.disabled = create.disabled = busy || saving;
-      remove.disabled = configureRepository.disabled = busy || saving || !available || localProjects;
+      remove.disabled = busy || saving || !available || projectDirectory || projectViews;
+      configureRepository.disabled = busy || saving || !available || projectDirectory || projectViews;
       $("board-empty-create").disabled = busy || saving;
       $("board-create-submit").disabled = $("board-delete-confirm").disabled = saving;
       $("board-create-cancel").disabled = $("board-delete-cancel").disabled = saving;
@@ -227,7 +300,7 @@
         repositoryPath = currentPath;
         onRepositoryChange();
       }
-      const options = boards.map(({ id, title }) => new Option(title, id));
+      const options = boards.map(({ id, title }) => new Option(id === "project-workbench" ? "白板功能示例" : title, id));
       if (!available) options.unshift(new Option(boards.length ? "选择白板" : "暂无白板", ""));
       if (!active) $("board-empty-heading").textContent = boards.length ? "请选择白板" : "还没有白板";
       switcher.replaceChildren(...options);
@@ -277,12 +350,14 @@
       }
     }
 
-    $("board-workspace").hidden = !active || localProjects;
-    $("local-projects").hidden = !localProjects;
-    if (localProjects) $("local-project-link").setAttribute("aria-current", "page");
+    $("board-workspace").hidden = !active || projectDirectory || (projectViews && !projectCanvas);
+    if (projectDirectory || projectViews) switcher.closest(".board-picker").hidden = true;
+    $("local-projects").hidden = !projectDirectory;
+    if (projectDirectory) $("local-project-link").setAttribute("aria-current", "page");
     $("board-empty-state").hidden = Boolean(active);
-    document.querySelector(".connection-area").hidden = !active || localProjects;
-    if (active && active !== "original") document.title = `${memory.activeBoardInfo.title} · 圈问白板`;
+    document.querySelector(".connection-area").hidden = !active || projectDirectory || (projectViews && !projectCanvas);
+    if (projectDirectory) document.title = "项目入口 · 圈问白板";
+    else if (active && active !== "original") document.title = `${memory.activeBoardInfo.title} · 圈问白板`;
     const currentUrl = new URL(location.href);
     const requested = currentUrl.searchParams.get("board");
     if ((requested !== null && requested !== active) || (!requested && active !== "original" &&
@@ -296,7 +371,9 @@
         refreshOptions();
         return;
       }
-      location.assign(boardUrl(switcher.value).href);
+      const url = boardUrl(switcher.value);
+      if (switcher.value === "project-workbench") url.searchParams.set("view", "canvas");
+      location.assign(url.href);
     });
     manage.addEventListener("click", () => setMenu(actions.hidden));
     document.addEventListener("pointerdown", (event) => {
@@ -382,11 +459,14 @@
     return result;
   }
 
-  async function renderLocalProjects(boardUrl) {
+  async function renderLocalProjects() {
     const count = $("local-project-count");
     const cards = $("local-project-cards");
     const search = $("local-project-search");
     const category = $("local-project-category");
+    const more = $("local-project-more");
+    const pageSize = 24;
+    let limit = pageSize;
     let projects;
     try {
       ({ projects } = await localProjectRequest({ action: "list" }));
@@ -413,42 +493,35 @@
       const path = document.createElement("code");
       path.className = "local-project-path";
       path.textContent = project.path;
-      const openBoard = document.createElement("button");
-      openBoard.type = "button";
-      openBoard.className = "submit-button";
-      openBoard.textContent = "进入项目白板";
+      const openProject = document.createElement("a");
+      openProject.className = "submit-button";
+      openProject.href = projectUrl(project.id);
+      openProject.textContent = "进入项目";
+      openProject.setAttribute("aria-label", `进入项目：${project.name}`);
       const openFolder = document.createElement("button");
       openFolder.type = "button";
       openFolder.className = "tool-button";
       openFolder.textContent = "打开文件夹";
       const actions = document.createElement("div");
       actions.className = "local-project-actions";
-      actions.append(openBoard, openFolder);
+      actions.append(openProject, openFolder);
       const feedback = document.createElement("p");
       feedback.className = "local-project-feedback";
       feedback.setAttribute("role", "status");
       card.append(label, name, description, path, actions, feedback);
 
-      async function perform(action) {
-        openBoard.disabled = openFolder.disabled = true;
+      openFolder.addEventListener("click", async () => {
+        openFolder.disabled = true;
         feedback.textContent = "";
         try {
-          await action();
+          await localProjectRequest({ action: "open", id: project.id });
+          feedback.textContent = "已在资源管理器打开。";
         } catch (error) {
           feedback.textContent = error.message;
         } finally {
-          openBoard.disabled = openFolder.disabled = false;
+          openFolder.disabled = false;
         }
-      }
-      openBoard.addEventListener("click", () => void perform(async () => {
-        const path = await validateRepositoryPath(project.path);
-        const id = await memory.openLocalProject(project.id, project.name, path);
-        location.assign(boardUrl(id).href);
-      }));
-      openFolder.addEventListener("click", () => void perform(async () => {
-        await localProjectRequest({ action: "open", id: project.id });
-        feedback.textContent = "已在资源管理器打开。";
-      }));
+      });
       return card;
     }
 
@@ -457,21 +530,21 @@
       category: project.category,
       searchText: [project.name, project.description, project.path, project.category, ...(project.aliases || [])].join("\n").toLowerCase(),
     }));
-    cards.replaceChildren(...entries.map(({ card }) => card));
-
-    function filter() {
+    function filter(focusNext = false) {
       const terms = search.value.trim().toLowerCase().split(/\s+/u);
-      let visible = 0;
-      for (const entry of entries) {
-        entry.card.hidden = Boolean(category.value && entry.category !== category.value) ||
-          !terms.every((term) => entry.searchText.includes(term));
-        if (!entry.card.hidden) visible += 1;
-      }
-      count.textContent = !entries.length ? "本机还没有登记项目。" : !visible ? "没有匹配的项目。"
-        : visible === entries.length ? `${visible} 个项目` : `显示 ${visible} / ${entries.length} 个项目`;
+      const matches = entries.filter((entry) => (!category.value || entry.category === category.value) &&
+        terms.every((term) => entry.searchText.includes(term)));
+      const visible = matches.slice(0, limit);
+      cards.replaceChildren(...visible.map(({ card }) => card));
+      more.hidden = visible.length >= matches.length;
+      count.textContent = !entries.length ? "本机还没有登记项目。" : !matches.length ? "没有匹配的项目。"
+        : more.hidden ? `${matches.length} 个项目` : `显示 ${visible.length} / ${matches.length} 个项目`;
+      if (focusNext) visible[limit - pageSize]?.card.querySelector("a")?.focus();
     }
-    search.addEventListener("input", filter);
-    category.addEventListener("change", filter);
+    const resetFilter = () => { limit = pageSize; filter(); };
+    search.addEventListener("input", resetFilter);
+    category.addEventListener("change", resetFilter);
+    more.addEventListener("click", () => { limit += pageSize; filter(true); });
     filter();
     initLocalProjectFinder(projects, createCard);
   }

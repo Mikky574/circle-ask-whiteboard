@@ -211,9 +211,10 @@
     };
   }
 
-  function load() {
+  function load(boardId) {
     try {
-      return state(JSON.parse(window.localStorage.getItem(storageKey)));
+      const key = boardId ? window.BoardMemory.boardStorageKeys(boardId).organization : storageKey;
+      return state(JSON.parse(window.localStorage.getItem(key)));
     } catch {
       return state(null);
     }
