@@ -72,6 +72,15 @@
     await renderLocalProjects(boardControls.boardUrl);
     return;
   }
+  const pageParams = new URLSearchParams(location.search);
+  if (memory.activeBoard === "project-workbench" && pageParams.get("view") !== "canvas" &&
+      !pageParams.has("project-guide") && !pageParams.has("rebuild-project") && !location.hash &&
+      await window.WorkbenchActivity.open($("workbench-activity"))) {
+    $("board-workspace").hidden = true;
+    document.querySelector(".connection-area").hidden = true;
+    boardControls.setBusy(false);
+    return;
+  }
   const customBoard = memory.activeBoardInfo.custom;
   if (customBoard) {
     board.querySelectorAll("[data-element-id]").forEach((sample) => sample.remove());
@@ -80,9 +89,9 @@
   const cards = Array.from(board.querySelectorAll("[data-element-id]"));
   const boardId = memory.activeBoard === "original" ? "whiteboard-implementation" : memory.activeBoard;
   const workbench = boardId === "project-workbench";
+  $("activity-from-canvas").hidden = !workbench || pageParams.get("view") !== "canvas";
   const sourceManual = workbench || boardId === "repo-manual" || boardId === "repo-atlas";
   const recoveredReset = await recoverReset();
-  const pageParams = new URLSearchParams(location.search);
   const rebuiltProject = rebuildPublishedProject(pageParams.get("rebuild-project"));
   const projectBoardMessage = initializeProjectBoard();
   const requestedGuide = pageParams.get("project-guide");
@@ -186,6 +195,7 @@
       else url.searchParams.delete("board");
       url.searchParams.delete("project-guide");
       url.searchParams.delete("rebuild-project");
+      url.searchParams.delete("view");
       url.hash = "";
       return url;
     }

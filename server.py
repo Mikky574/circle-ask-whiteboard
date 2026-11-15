@@ -45,6 +45,7 @@ STATIC = {
     "organization.js": "text/javascript; charset=utf-8",
     "run_gate.js": "text/javascript; charset=utf-8",
     "project_finder.js": "text/javascript; charset=utf-8",
+    "workbench_activity.js": "text/javascript; charset=utf-8",
 }
 SOURCE_ID = re.compile(r"[A-Z][0-9]{2,8}")
 DECOMPOSITION_ID = re.compile(r"[AE][0-9]{2,8}")
@@ -1604,7 +1605,7 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             self.send_json(403, {"type": "error", "text": "只接受来自当前本机白板的请求。"})
             return
         if self.path not in ("/api/codex", "/api/cancel", "/api/reset-recovery", "/api/attachments",
-                             "/api/repo-index", "/api/repository", "/api/local-projects"):
+                             "/api/repo-index", "/api/repository", "/api/local-projects", "/api/workbench-activity"):
             self.send_json(404, {"type": "error", "text": "接口不存在。"})
             return
         upload = self.path == "/api/attachments"
@@ -1619,7 +1620,7 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"type": "error", "text": "请求长度无效。"})
             return
         limit = MAX_ATTACHMENT_BYTES if upload else MAX_BODY
-        if self.path in ("/api/repo-index", "/api/local-projects"):
+        if self.path in ("/api/repo-index", "/api/local-projects", "/api/workbench-activity"):
             limit = 4096
         if len(lengths[0]) > 8 or int(lengths[0]) > limit:
             self.send_json(413, {"type": "error", "text": "单个附件上限为 10 MB。" if upload else "请求过大。"})
@@ -1653,6 +1654,21 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             if self.path == "/api/local-projects":
                 result = project_catalog_request(json.loads(body), resolve_repository_path)
                 self.send_json(200, result)
+                return
+            if self.path == "/api/workbench-activity":
+                if json.loads(body) != {}:
+                    raise ValueError("项目动作接口只接受空对象。")
+                path = Path.home() / ".circle-ask-whiteboard" / "workbench-activity.local.json"
+                try:
+                    with path.open("rb") as activity_file:
+                        raw = activity_file.read(512 * 1024 + 1)
+                except FileNotFoundError:
+                    self.send_json(200, {"activity": None})
+                    return
+                if len(raw) > 512 * 1024:
+                    raise ValueError("本机项目动作记录过大。")
+                activity = json.loads(raw.decode("utf-8-sig"))
+                self.send_json(200, {"activity": activity})
                 return
             if self.path == "/api/codex":
                 parsed = parse_request(body)

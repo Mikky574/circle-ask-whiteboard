@@ -11,6 +11,7 @@
   <script defer src="organization.js"></script>
   <script defer src="run_gate.js"></script>
   <script defer src="project_finder.js"></script>
+  <script defer src="workbench_activity.js"></script>
   <script defer src="app.js"></script>
 </head>
 <body>
@@ -176,6 +177,39 @@
         <div id="local-project-cards" class="local-project-cards"></div>
       </details>
     </main>
+    <main id="workbench-activity" aria-labelledby="activity-title" hidden>
+      <header class="activity-header">
+        <div><p class="activity-muted" data-activity="category"></p><h2 id="activity-title" data-activity="title"></h2></div>
+        <div class="activity-run"><strong data-activity="status"></strong><span data-activity="summary"></span></div>
+      </header>
+      <nav class="activity-nav" aria-label="项目工作台视图">
+        <button class="tool-button" type="button" data-activity-view="actions" aria-pressed="true">AI 动作</button>
+        <button class="tool-button" type="button" data-activity-view="graph" aria-pressed="false">项目图</button>
+        <a class="tool-button activity-canvas-link" href="?board=project-workbench&amp;view=canvas">项目画布</a>
+        <span class="activity-muted" data-activity="captured"></span>
+      </nav>
+      <div class="activity-layout">
+        <section data-activity="actions" aria-labelledby="activity-list-title">
+          <div class="activity-list-heading"><h3 id="activity-list-title" data-activity="list-title">动作记录</h3><button type="button" class="tool-button" data-activity="clear-filter" hidden>查看全部</button></div>
+          <div class="activity-timeline" data-activity="timeline" role="group" aria-label="选择动作"></div>
+        </section>
+        <section class="activity-graph" data-activity="graph" aria-label="项目图" hidden>
+          <strong class="activity-root" data-activity="root"></strong>
+          <div class="activity-branches" data-activity="branches" role="group" aria-label="选择项目卡片"></div>
+        </section>
+        <div class="activity-side">
+          <article class="activity-panel" data-activity="detail" aria-label="卡片详情" aria-live="polite"></article>
+          <section class="activity-panel" data-activity="guidance" aria-labelledby="activity-guidance-title" hidden>
+            <h3 id="activity-guidance-title">下一步由你指导</h3>
+            <div class="activity-options" data-activity="options" role="group" aria-label="指导建议"></div>
+            <label class="activity-editor" for="activity-instruction">给 AI 的指导草稿
+              <textarea id="activity-instruction" data-activity="instruction" rows="3" maxlength="2000"></textarea>
+            </label>
+            <div class="activity-footer"><button type="button" class="submit-button" data-activity="save">保存指导草稿</button><span data-activity="save-status" class="activity-muted" role="status"></span></div>
+          </section>
+        </div>
+      </div>
+    </main>
     <main id="board-workspace" class="workspace">
       <section class="canvas-panel" aria-label="白板实现说明">
         <header class="canvas-bar">
@@ -183,6 +217,7 @@
             <p class="overline">项目画布 <span>/</span> 01</p>
             <h2 id="canvas-title">这块白板是怎么实现的？</h2>
             <p id="board-repository-label" hidden></p>
+            <a id="activity-from-canvas" class="tool-button activity-canvas-link" href="?board=project-workbench" hidden>训练观测</a>
           </div>
           <div class="toolbar" aria-label="画布操作">
             <div class="tool-group" role="group" aria-label="交互模式">
