@@ -91,7 +91,8 @@
   if (projectViews) {
     try {
       if (!registeredBoard) throw new Error("这个项目链接无效。");
-      ({ project: registeredProject } = await localProjectRequest({ action: "get", id: projectId }));
+      const details = await localProjectRequest({ action: "get", id: projectId });
+      registeredProject = details.project;
       if (requestedView === "canvas") {
         const path = await validateRepositoryPath(registeredProject.path);
         const id = await memory.openLocalProject(projectId, registeredProject.name, path);
@@ -99,17 +100,25 @@
           location.replace(projectUrl(projectId, "canvas", id));
           return;
         }
-        showProjectContext(registeredProject, "canvas");
+        showProjectContext(details, "canvas");
         if (!localStorage.getItem(memory.storageKeys.organization) && !localStorage.getItem(memory.storageKeys.memory)) {
           initialActivity = await window.WorkbenchActivity.load(projectId);
         }
       } else {
-        const view = requestedView === "graph" ? "graph" : "actions";
+        const view = ["graph", "actions"].includes(requestedView) ? requestedView
+          : details.children.length ? "projects" : "actions";
+        showProjectContext(details, view);
+        if (view === "projects") {
+          $("project-children-description").textContent = registeredProject.description;
+          $("project-children-cards").replaceChildren(...details.children.map((project) => createLocalProjectCard(project, 4)));
+          $("project-children").hidden = false;
+          boardControls.setBusy(false);
+          return;
+        }
         const setView = (next) => {
-          showProjectContext(registeredProject, next);
+          showProjectContext(details, next);
           history.replaceState(history.state, "", projectUrl(projectId, next));
         };
-        showProjectContext(registeredProject, view);
         await window.WorkbenchActivity.open($("workbench-activity"), registeredProject, view, setView);
         boardControls.setBusy(false);
         return;
@@ -119,7 +128,7 @@
       $("project-context-title").textContent = registeredProject?.name || "项目暂不可用";
       $("project-context-error").hidden = false;
       $("project-context-error").textContent = error.message;
-      $("project-context").querySelector("nav").hidden = true;
+      $("project-context-views").hidden = true;
       $("board-workspace").hidden = true;
       boardControls.setBusy(false);
       return;
@@ -224,19 +233,29 @@
     return `?${new URLSearchParams({ board, project: id, ...(view ? { view } : {}) })}`;
   }
 
-  function showProjectContext(project, view) {
-    const header = $("project-context");
+  function showProjectContext({ project, ancestors, children }, view) {
+    const breadcrumb = $("project-context-ancestors");
+    breadcrumb.replaceChildren(breadcrumb.firstElementChild, ...ancestors.map((ancestor) => {
+      const item = document.createElement("li");
+      const link = document.createElement("a");
+      link.href = projectUrl(ancestor.id);
+      link.textContent = ancestor.name;
+      item.append(link);
+      return item;
+    }));
     $("project-context-title").textContent = project.name;
     $("project-context-directory").textContent = project.path;
-    header.querySelector("nav").hidden = false;
-    for (const tab of header.querySelectorAll("[data-project-view]")) {
+    const tabs = $("project-context-views");
+    tabs.hidden = false;
+    for (const tab of tabs.querySelectorAll("[data-project-view]")) {
       const target = tab.dataset.projectView;
+      tab.hidden = target === "projects" && !children.length;
       tab.href = projectUrl(project.id, target, target === view && projectCanvas ? registeredBoard : undefined);
       if (target === view) tab.setAttribute("aria-current", "page");
       else tab.removeAttribute("aria-current");
     }
     document.title = `${project.name} · 圈问白板`;
-    header.hidden = false;
+    $("project-context").hidden = false;
   }
 
   function initBoardControls() {
@@ -459,6 +478,52 @@
     return result;
   }
 
+  function createLocalProjectCard(project, headingLevel = 3) {
+    const card = document.createElement("article");
+    card.className = "local-project-card";
+    const label = document.createElement("p");
+    label.className = "local-project-category";
+    label.textContent = project.childCount ? `${project.category} · ${project.childCount} 个子项目` : project.category;
+    const name = document.createElement(`h${headingLevel}`);
+    name.textContent = project.name;
+    const description = document.createElement("p");
+    description.className = "local-project-description";
+    description.textContent = project.description;
+    const path = document.createElement("code");
+    path.className = "local-project-path";
+    path.textContent = project.path;
+    const openProject = document.createElement("a");
+    openProject.className = "submit-button";
+    openProject.href = projectUrl(project.id);
+    openProject.textContent = "进入项目";
+    openProject.setAttribute("aria-label", `进入项目：${project.name}`);
+    const openFolder = document.createElement("button");
+    openFolder.type = "button";
+    openFolder.className = "tool-button";
+    openFolder.textContent = "打开文件夹";
+    const actions = document.createElement("div");
+    actions.className = "local-project-actions";
+    actions.append(openProject, openFolder);
+    const feedback = document.createElement("p");
+    feedback.className = "local-project-feedback";
+    feedback.setAttribute("role", "status");
+    card.append(label, name, description, path, actions, feedback);
+
+    openFolder.addEventListener("click", async () => {
+      openFolder.disabled = true;
+      feedback.textContent = "";
+      try {
+        await localProjectRequest({ action: "open", id: project.id });
+        feedback.textContent = "已在资源管理器打开。";
+      } catch (error) {
+        feedback.textContent = error.message;
+      } finally {
+        openFolder.disabled = false;
+      }
+    });
+    return card;
+  }
+
   async function renderLocalProjects() {
     const count = $("local-project-count");
     const cards = $("local-project-cards");
@@ -475,78 +540,75 @@
       return;
     }
 
-    $("local-project-browse-label").textContent = `浏览全部项目（${projects.length}）`;
     const categories = [...new Set(projects.map((project) => project.category))];
     category.append(...categories.map((name) => new Option(name, name)));
+    const byId = new Map(projects.map((project) => [project.id, project]));
+    const roots = projects.filter((project) => !project.parentId);
+    const entries = new Map(projects.map((project) => {
+      const trail = [project];
+      let parent = byId.get(project.parentId);
+      while (parent) {
+        trail.unshift(parent);
+        parent = byId.get(parent.parentId);
+      }
+      const searchText = [project.name, project.description, project.path, project.category, ...(project.aliases || [])]
+        .join("\n").toLowerCase().replaceAll("\\", "/");
+      return [project.id, { project, trail, searchText }];
+    }));
 
-    function createCard(project) {
-      const card = document.createElement("article");
-      card.className = "local-project-card";
-      const label = document.createElement("p");
-      label.className = "local-project-category";
-      label.textContent = project.category;
-      const name = document.createElement("h3");
-      name.textContent = project.name;
-      const description = document.createElement("p");
-      description.className = "local-project-description";
-      description.textContent = project.description;
-      const path = document.createElement("code");
-      path.className = "local-project-path";
-      path.textContent = project.path;
-      const openProject = document.createElement("a");
-      openProject.className = "submit-button";
-      openProject.href = projectUrl(project.id);
-      openProject.textContent = "进入项目";
-      openProject.setAttribute("aria-label", `进入项目：${project.name}`);
-      const openFolder = document.createElement("button");
-      openFolder.type = "button";
-      openFolder.className = "tool-button";
-      openFolder.textContent = "打开文件夹";
-      const actions = document.createElement("div");
-      actions.className = "local-project-actions";
-      actions.append(openProject, openFolder);
-      const feedback = document.createElement("p");
-      feedback.className = "local-project-feedback";
-      feedback.setAttribute("role", "status");
-      card.append(label, name, description, path, actions, feedback);
-
-      openFolder.addEventListener("click", async () => {
-        openFolder.disabled = true;
-        feedback.textContent = "";
-        try {
-          await localProjectRequest({ action: "open", id: project.id });
-          feedback.textContent = "已在资源管理器打开。";
-        } catch (error) {
-          feedback.textContent = error.message;
-        } finally {
-          openFolder.disabled = false;
-        }
-      });
+    function createRootCard(root, matches = [], expandMatches = false) {
+      const card = createLocalProjectCard(root);
+      if (!matches.length) return card;
+      const details = document.createElement("details");
+      details.className = "local-project-descendants";
+      details.open = expandMatches;
+      const summary = document.createElement("summary");
+      summary.textContent = `匹配的子项目（${matches.length}）`;
+      const list = document.createElement("ul");
+      for (const { project, trail } of matches) {
+        const item = document.createElement("li");
+        const link = document.createElement("a");
+        link.href = projectUrl(project.id);
+        link.textContent = trail.slice(1).map((entry) => entry.name).join(" / ");
+        item.append(link);
+        list.append(item);
+      }
+      details.append(summary, list);
+      card.append(details);
       return card;
     }
 
-    const entries = projects.map((project) => ({
-      card: createCard(project),
-      category: project.category,
-      searchText: [project.name, project.description, project.path, project.category, ...(project.aliases || [])].join("\n").toLowerCase(),
-    }));
     function filter(focusNext = false) {
-      const terms = search.value.trim().toLowerCase().split(/\s+/u);
-      const matches = entries.filter((entry) => (!category.value || entry.category === category.value) &&
-        terms.every((term) => entry.searchText.includes(term)));
-      const visible = matches.slice(0, limit);
-      cards.replaceChildren(...visible.map(({ card }) => card));
-      more.hidden = visible.length >= matches.length;
-      count.textContent = !entries.length ? "本机还没有登记项目。" : !matches.length ? "没有匹配的项目。"
-        : more.hidden ? `${matches.length} 个项目` : `显示 ${visible.length} / ${matches.length} 个项目`;
-      if (focusNext) visible[limit - pageSize]?.card.querySelector("a")?.focus();
+      const query = search.value.trim().toLowerCase().replaceAll("\\", "/");
+      const terms = query.split(/\s+/u);
+      const isFiltered = Boolean(query || category.value);
+      const groups = new Map();
+      if (isFiltered) {
+        for (const entry of entries.values()) {
+          if ((category.value && entry.project.category !== category.value) ||
+              !terms.every((term) => entry.searchText.includes(term))) continue;
+          const root = entry.trail[0];
+          if (!groups.has(root.id)) groups.set(root.id, []);
+          if (entry.project.id !== root.id) groups.get(root.id).push(entry);
+        }
+      }
+      const matchingRoots = isFiltered ? roots.filter((root) => groups.has(root.id)) : roots;
+      const visible = matchingRoots.slice(0, limit).map((root) => createRootCard(root, groups.get(root.id), Boolean(query)));
+      cards.replaceChildren(...visible);
+      more.hidden = visible.length >= matchingRoots.length;
+      count.textContent = !roots.length ? "本机还没有登记项目。" : !matchingRoots.length ? "没有匹配的项目。"
+        : more.hidden ? `${matchingRoots.length} 个顶层项目` : `显示 ${visible.length} / ${matchingRoots.length} 个顶层项目`;
+      if (focusNext) visible[limit - pageSize]?.querySelector("a")?.focus();
     }
     const resetFilter = () => { limit = pageSize; filter(); };
     search.addEventListener("input", resetFilter);
     category.addEventListener("change", resetFilter);
     more.addEventListener("click", () => { limit += pageSize; filter(true); });
     filter();
-    initLocalProjectFinder(projects, createCard);
+    initLocalProjectFinder(projects, (project) => {
+      const entry = entries.get(project.id);
+      return createRootCard(entry.trail[0], project.parentId ? [entry] : [], true);
+    });
   }
 
   function initLocalProjectFinder(projects, createCard) {

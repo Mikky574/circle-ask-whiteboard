@@ -48,13 +48,33 @@ class LocalProjectTests(unittest.TestCase):
             self.request(action="list")
         self.assertEqual(malformed.exception.status, 422)
 
+    def test_project_tree_uses_the_nearest_registered_ancestor(self):
+        parent_path = self.project / "未登记目录" / "父项目"
+        leaf_path = parent_path / "子项目"
+        neighbor_path = self.project.with_name(f"{self.project.name}备份")
+        self.write_catalog(
+            {**self.entry, "name": "子项目", "path": str(leaf_path)},
+            {**self.entry, "name": "同名前缀", "path": str(neighbor_path)},
+            self.entry,
+            {**self.entry, "name": "父项目", "path": str(parent_path)},
+        )
+        leaf, neighbor, root, parent = self.request(action="list")["projects"]
+        self.assertIsNone(root["parentId"])
+        self.assertIsNone(neighbor["parentId"])
+        self.assertEqual((root["childCount"], parent["childCount"], leaf["childCount"]), (1, 1, 0))
+        self.assertEqual(parent["parentId"], root["id"])
+        self.assertEqual(leaf["parentId"], parent["id"])
+        self.assertEqual(self.request(action="get", id=root["id"])["children"], [parent])
+        self.assertEqual(self.request(action="get", id=parent["id"])["children"], [leaf])
+        self.assertEqual(self.request(action="get", id=leaf["id"])["ancestors"], [root, parent])
+
     def test_project_detail_and_activity_have_the_same_identity(self):
         self.write_catalog(self.entry, {
             **self.entry, "name": "项目乙", "path": str(self.project.with_name("本机项目 乙")),
         })
         project_a, project_b = self.request(action="list")["projects"]
         id_a, id_b = project_a["id"], project_b["id"]
-        self.assertEqual(self.request(action="get", id=id_a), {"project": project_a})
+        self.assertEqual(self.request(action="get", id=id_a), {"project": project_a, "ancestors": [], "children": []})
         with self.assertRaises(ProjectCatalogError) as unknown:
             self.request(action="get", id="0" * 32)
         self.assertEqual(unknown.exception.status, 404)

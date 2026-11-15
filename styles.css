@@ -130,6 +130,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 #project-context > h2 { margin: 9px 0 3px; font-size: clamp(24px, 3vw, 34px); line-height: 1.25; }
 #project-context-directory { color: var(--muted); font: 12px/1.5 var(--mono); overflow-wrap: anywhere; }
 #project-context-error { color: #ffceac; }
+.project-breadcrumb ol { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 9px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.project-breadcrumb li + li::before { content: "/"; margin-inline-end: 9px; color: var(--muted); }
+.project-breadcrumb a, .local-project-descendants a { color: var(--mint); overflow-wrap: anywhere; text-underline-offset: 3px; }
+#project-children-description { margin: 0 0 18px; color: var(--muted); line-height: 1.6; }
+#project-children-heading { margin: 0 0 11px; font-size: 17px; }
 .activity-muted { color: var(--muted); font-size: 12px; margin: 0; }
 .activity-captured { margin-block: 6px 13px; }
 .activity-run { display: grid; gap: 3px; padding: 8px 11px; border-radius: 7px; background: #382d22; color: #f0cea7; font-size: 12px; }
@@ -259,7 +264,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   background: var(--surface);
 }
 
-.local-project-card h3 { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
+.local-project-card :is(h3, h4) { margin: 0; font-size: 17px; overflow-wrap: anywhere; }
 .local-project-category { margin: 0; color: var(--teal); font-size: 12px; }
 .local-project-description { flex: 1; margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .local-project-path {
@@ -277,6 +282,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 #local-project-more { margin-top: 12px; border-color: var(--panel-border); }
 .local-project-feedback { margin: 0; color: var(--mint); font-size: 12px; }
 .local-project-feedback:empty { margin-top: -10px; }
+.local-project-descendants { padding-top: 6px; border-top: 1px solid var(--panel-border); font-size: 13px; }
+.local-project-descendants ul { display: grid; gap: 7px; margin: 4px 0 0; padding-inline-start: 19px; }
 
 .board-dialog {
   width: min(360px, calc(100% - 32px));

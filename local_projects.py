@@ -68,7 +68,17 @@ def load_catalog():
             "category": project_text(entry.get("category"), 40),
             "path": str(directory),
             "aliases": project_aliases(entry),
+            "childCount": 0,
         })
+    directory_ids = {
+        Path(os.path.normcase(os.path.normpath(project["path"]))): project_id
+        for project_id, project in projects.items()
+    }
+    for directory, project_id in directory_ids.items():
+        parent_id = next((directory_ids[parent] for parent in directory.parents if parent in directory_ids), None)
+        projects[project_id]["parentId"] = parent_id
+        if parent_id is not None:
+            projects[parent_id]["childCount"] += 1
     return projects
 
 
@@ -78,11 +88,22 @@ def project_catalog_request(body, resolve_directory):
     if (not isinstance(body, dict) or body.keys() != {"action", "id"} or body["action"] not in ("open", "get")
             or not isinstance(body["id"], str)):
         raise ProjectCatalogError(400, "无效的项目操作。")
-    project = load_catalog().get(body["id"])
+    projects = load_catalog()
+    project = projects.get(body["id"])
     if project is None:
         raise ProjectCatalogError(404, "项目已不在本机清单中，请刷新后重试。")
     if body["action"] == "get":
-        return {"project": project}
+        ancestors = []
+        parent_id = project["parentId"]
+        while parent_id is not None:
+            parent = projects[parent_id]
+            ancestors.append(parent)
+            parent_id = parent["parentId"]
+        return {
+            "project": project,
+            "ancestors": list(reversed(ancestors)),
+            "children": [entry for entry in projects.values() if entry["parentId"] == project["id"]],
+        }
     if os.name != "nt":
         raise ProjectCatalogError(501, "在资源管理器打开目录需要 Windows。")
 

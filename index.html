@@ -166,7 +166,7 @@
         </div>
       </section>
       <details id="local-project-browse" class="local-project-browse" open>
-        <summary id="local-project-browse-label">浏览全部项目</summary>
+        <summary id="local-project-browse-label">浏览顶层项目</summary>
         <div class="local-project-filters">
           <input type="search" id="local-project-search" aria-label="搜索本机项目" placeholder="搜索名称、简介或目录">
           <select id="local-project-category" aria-label="项目类别">
@@ -179,16 +179,26 @@
       </details>
     </main>
     <section id="project-context" aria-labelledby="project-context-title" hidden>
-      <a class="tool-button activity-canvas-link" href="?board=project-workbench">返回项目入口</a>
+      <nav class="project-breadcrumb" aria-label="项目层级">
+        <ol id="project-context-ancestors">
+          <li><a href="?board=project-workbench">项目入口</a></li>
+        </ol>
+      </nav>
       <h2 id="project-context-title"></h2>
       <code id="project-context-directory"></code>
-      <nav class="activity-nav" aria-label="当前项目视图" hidden>
+      <nav id="project-context-views" class="activity-nav" aria-label="当前项目视图" hidden>
+        <a class="tool-button activity-canvas-link" data-project-view="projects" hidden>子项目</a>
         <a class="tool-button activity-canvas-link" data-project-view="actions">AI 动作</a>
         <a class="tool-button activity-canvas-link" data-project-view="graph">项目图</a>
         <a class="tool-button activity-canvas-link" data-project-view="canvas">项目画布</a>
       </nav>
       <p id="project-context-error" role="alert" hidden></p>
     </section>
+    <main id="project-children" aria-labelledby="project-children-heading" hidden>
+      <p id="project-children-description"></p>
+      <h3 id="project-children-heading">子项目</h3>
+      <div id="project-children-cards" class="local-project-cards"></div>
+    </main>
     <main id="workbench-activity" aria-labelledby="project-context-title" hidden>
       <header class="activity-header">
         <div><p class="activity-muted" data-activity="category"></p><h2 id="activity-title" data-activity="title"></h2></div>

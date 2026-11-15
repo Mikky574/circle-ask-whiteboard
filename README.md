@@ -39,13 +39,13 @@ Codex 沿用本机 `codex login`。ZCode 沿用本机 CLI 配置和登录，可�
 
 ## 本机项目入口
 
-[项目入口](http://127.0.0.1:8791/?board=project-workbench) 集中展示本机项目。可按名称、简介、目录和类别筛选，也可在「用一句话找项目」里描述用途、模型或记得的名称，最多得到三张候选卡片。
+[项目入口](http://127.0.0.1:8791/?board=project-workbench) 展示本机的顶层项目。父项目内的「子项目」显示下一层卡片，页面顶部的路径导航可返回上一级。搜索可以匹配子项目，结果显示在所属的顶层项目卡片内。
 
 每张卡片显示项目简介和目录。点击「进入项目」后，在同一个项目内切换「AI 动作」「项目图」和「项目画布」。项目图展示所属项目的卡片与分支，画布绑定该目录并独立保存。Windows 上点击「打开文件夹」可直接在资源管理器查看目录。
 
 项目的本机动作快照放在清单旁的 `workbench-activity/<项目编号>.json`，文件内的 `projectId` 须与项目链接中的 `project` 一致。也可继续使用带同一字段的 `workbench-activity.local.json`。快照可提供项目状态、项目卡片、关联动作、来源和指导选项。没有快照的项目仍可打开独立画布与项目图，AI 动作页显示空状态。
 
-项目资料保存在当前用户主目录下的 `.circle-ask-whiteboard/projects.local.json`，也可用环境变量 `WHITEBOARD_PROJECTS_FILE` 指定清单。清单使用 UTF-8 JSON 数组。每个项目包含 `name`（名称）、`description`（简介）、`category`（类别）和 `path`（本机绝对目录路径）。可用 `aliases` 补充常用叫法、缩写或用途短语。编辑后刷新总览即可看见更新。
+项目资料保存在当前用户主目录下的 `.circle-ask-whiteboard/projects.local.json`，也可用环境变量 `WHITEBOARD_PROJECTS_FILE` 指定清单。清单使用 UTF-8 JSON 数组。每个项目包含 `name`（名称）、`description`（简介）、`category`（类别）和 `path`（本机绝对目录路径）。可用 `aliases` 补充常用叫法、缩写或用途短语。每个项目归入最近的已登记上级目录，编辑清单后刷新总览即可更新。
 
 ```json
 [
