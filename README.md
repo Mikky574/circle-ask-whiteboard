@@ -39,9 +39,11 @@ Codex 沿用本机 `codex login`。ZCode 沿用本机 CLI 配置和登录，可�
 
 ## 本机项目总览
 
-点击顶部的「本机项目」打开「本机项目总览」。每张卡片显示项目简介和目录，可以按名称、简介、目录、类别查找。点击「进入项目白板」会创建或打开绑定到该目录的白板，供 Codex 或 ZCode 只读查看项目文件。Windows 上也可以点击「打开文件夹」，在资源管理器里直接查看目录。
+点击顶部的「本机项目」打开总览。在「用一句话找项目」里描述用途、模型或记得的名称，白板会在本机清单中查找，最多给出三张候选卡片。展开「浏览全部项目」可以按名称、简介、目录和类别查找。
 
-项目资料保存在当前用户主目录下的 `.circle-ask-whiteboard/projects.local.json`，也可用环境变量 `WHITEBOARD_PROJECTS_FILE` 指定清单。清单使用 UTF-8 JSON 数组。每个项目包含 `name`（名称）、`description`（简介）、`category`（类别）和 `path`（本机绝对目录路径）。编辑后刷新总览即可看见更新。
+每张卡片显示项目简介和目录。点击「进入项目白板」会打开绑定到该目录的白板，供 Codex 或 ZCode 只读查看项目文件。Windows 上点击「打开文件夹」可直接在资源管理器查看目录。
+
+项目资料保存在当前用户主目录下的 `.circle-ask-whiteboard/projects.local.json`，也可用环境变量 `WHITEBOARD_PROJECTS_FILE` 指定清单。清单使用 UTF-8 JSON 数组。每个项目包含 `name`（名称）、`description`（简介）、`category`（类别）和 `path`（本机绝对目录路径）。可用 `aliases` 补充常用叫法、缩写或用途短语。编辑后刷新总览即可看见更新。
 
 ```json
 [
@@ -49,7 +51,8 @@ Codex 沿用本机 `codex login`。ZCode 沿用本机 CLI 配置和登录，可�
     "name": "示例项目",
     "description": "包含训练脚本和评估报告。",
     "category": "模型实验",
-    "path": "D:\\项目\\示例项目"
+    "path": "D:\\项目\\示例项目",
+    "aliases": ["训练评估", "核对模型指标"]
   }
 ]
 ```

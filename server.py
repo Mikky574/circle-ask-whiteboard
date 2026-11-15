@@ -44,6 +44,7 @@ STATIC = {
     "memory.js": "text/javascript; charset=utf-8",
     "organization.js": "text/javascript; charset=utf-8",
     "run_gate.js": "text/javascript; charset=utf-8",
+    "project_finder.js": "text/javascript; charset=utf-8",
 }
 SOURCE_ID = re.compile(r"[A-Z][0-9]{2,8}")
 DECOMPOSITION_ID = re.compile(r"[AE][0-9]{2,8}")

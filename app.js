@@ -381,13 +381,15 @@
     try {
       ({ projects } = await localProjectRequest({ action: "list" }));
     } catch (error) {
-      count.textContent = error.message;
+      count.textContent = $("local-project-find-status").textContent = error.message;
       return;
     }
 
+    $("local-project-browse-label").textContent = `浏览全部项目（${projects.length}）`;
     const categories = [...new Set(projects.map((project) => project.category))];
     category.append(...categories.map((name) => new Option(name, name)));
-    const entries = projects.map((project) => {
+
+    function createCard(project) {
       const card = document.createElement("article");
       card.className = "local-project-card";
       const label = document.createElement("p");
@@ -437,9 +439,14 @@
         await localProjectRequest({ action: "open", id: project.id });
         feedback.textContent = "已在资源管理器打开。";
       }));
-      const searchText = [project.name, project.description, project.path, project.category].join("\n").toLowerCase();
-      return { card, searchText, category: project.category };
-    });
+      return card;
+    }
+
+    const entries = projects.map((project) => ({
+      card: createCard(project),
+      category: project.category,
+      searchText: [project.name, project.description, project.path, project.category, ...(project.aliases || [])].join("\n").toLowerCase(),
+    }));
     cards.replaceChildren(...entries.map(({ card }) => card));
 
     function filter() {
@@ -456,6 +463,62 @@
     search.addEventListener("input", filter);
     category.addEventListener("change", filter);
     filter();
+    initLocalProjectFinder(projects, createCard);
+  }
+
+  function initLocalProjectFinder(projects, createCard) {
+    const form = $("local-project-question-form");
+    const input = $("local-project-question");
+    const feedback = $("local-project-find-status");
+    const panel = $("local-project-matches");
+    const choices = $("local-project-choices");
+    const preview = $("local-project-preview");
+    const storageKey = "whiteboard.local-projects.question";
+    feedback.textContent = projects.length ? "" : "本机还没有登记项目。";
+    if (!projects.length) return;
+    input.disabled = $("local-project-find").disabled = false;
+
+    function showMatches() {
+      const question = input.value.trim();
+      try {
+        if (question) sessionStorage.setItem(storageKey, question);
+        else sessionStorage.removeItem(storageKey);
+      } catch { /* The finder still works when browser storage is unavailable. */ }
+
+      const matches = window.WhiteboardProjectFinder.findProjects(projects, question);
+      panel.hidden = !matches.length;
+      choices.replaceChildren();
+      preview.replaceChildren();
+      if (!matches.length) {
+        feedback.textContent = question ? "没找到相关项目。可以补充用途、模型名或目录的一部分。" : "";
+        return;
+      }
+
+      feedback.textContent = matches.length === 1 ? "找到 1 个候选项目" : `找到 ${matches.length} 个候选项目，点击名称切换卡片。`;
+      const buttons = matches.length === 1 ? [] : matches.map((project, index) => {
+        const button = document.createElement("button");
+        button.className = "tool-button";
+        button.type = "button";
+        button.textContent = project.name;
+        button.addEventListener("click", () => showCard(index));
+        return button;
+      });
+      function showCard(index) {
+        buttons.forEach((button, position) => button.setAttribute("aria-pressed", String(position === index)));
+        preview.replaceChildren(createCard(matches[index]));
+      }
+      choices.replaceChildren(...buttons);
+      showCard(0);
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      showMatches();
+    });
+    input.addEventListener("input", () => { if (!input.value.trim()) showMatches(); });
+    try { input.value = (sessionStorage.getItem(storageKey) || "").slice(0, input.maxLength); }
+    catch { /* An unavailable storage does not affect the finder. */ }
+    if (input.value) showMatches();
   }
 
   async function validateRepositoryPath(value) {

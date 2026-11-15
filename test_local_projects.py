@@ -39,6 +39,15 @@ class LocalProjectTests(unittest.TestCase):
         self.assertEqual(updated["name"], "新名称")
         self.assertEqual(Path(updated["path"]), self.project)
 
+    def test_lists_optional_search_aliases(self):
+        self.write_catalog({**self.entry, "aliases": [" 图像识别 ", "图像识别", "训练"]})
+        project, = self.request(action="list")["projects"]
+        self.assertEqual(project["aliases"], ["图像识别", "训练"])
+        self.write_catalog({**self.entry, "aliases": "图像识别"})
+        with self.assertRaises(ProjectCatalogError) as malformed:
+            self.request(action="list")
+        self.assertEqual(malformed.exception.status, 422)
+
     @unittest.skipUnless(os.name == "nt", "Explorer integration is Windows-specific")
     def test_only_registered_existing_directories_are_launched(self):
         self.write_catalog(self.entry)

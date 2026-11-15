@@ -27,6 +27,13 @@ def project_text(value, limit):
     return value.strip()
 
 
+def project_aliases(entry):
+    aliases = entry.get("aliases", [])
+    if not isinstance(aliases, list) or len(aliases) > 24:
+        raise ProjectCatalogError(422, "项目别名请填写为名称或用途短语的数组，最多 24 项。")
+    return list(dict.fromkeys(project_text(alias, 80) for alias in aliases))
+
+
 def load_catalog():
     try:
         with catalog_path().open("rb") as catalog:
@@ -59,6 +66,7 @@ def load_catalog():
             "description": project_text(entry.get("description"), 400),
             "category": project_text(entry.get("category"), 40),
             "path": str(directory),
+            "aliases": project_aliases(entry),
         })
     return projects
 
