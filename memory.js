@@ -6,6 +6,8 @@
   const repoManual = "repo-manual";
   const repoAtlas = "repo-atlas";
   const projectWorkbench = "project-workbench";
+  const localProjectsBoard = "local-projects";
+  const localProjectsInfo = { id: localProjectsBoard, title: "本机项目总览", custom: false };
   const builtInBoards = new Map([
     ["original", "原白板"],
     [projectBoard, "项目定义与交付"],
@@ -15,7 +17,7 @@
   ]);
   const initialBoards = listBoards();
   const activeBoard = selectActiveBoard(initialBoards);
-  const activeBoardInfo = initialBoards.find(({ id }) => id === activeBoard);
+  const activeBoardInfo = activeBoard === localProjectsBoard ? localProjectsInfo : initialBoards.find(({ id }) => id === activeBoard);
   const prefix = boardPrefix(activeBoard);
   const storageKey = `${prefix}.v1`;
   const organizationKey = `${prefix}.organization.v1`;
@@ -96,6 +98,7 @@
     const search = window.location?.search;
     const params = search ? new URLSearchParams(search) : null;
     const requested = params?.get("board") ?? null;
+    if (requested === localProjectsBoard) return localProjectsBoard;
     const exists = (boardId) => boards.some(({ id }) => id === boardId);
     const fallback = exists("original") ? "original" : boards[0]?.id ?? null;
     if (exists(requested)) {
@@ -135,8 +138,27 @@
     });
   }
 
+  function openLocalProject(projectId, title, repositoryPath) {
+    return changeBoards(() => {
+      const id = `board-${projectId}`;
+      const name = text(title, 80).trim();
+      const path = savedRepositoryPath(repositoryPath);
+      if (!/^board-[0-9a-f]{32}$/.test(id) || !name || !path) throw new Error("无效的项目目录或项目名称。");
+      const boards = listBoards();
+      const existing = boards.find((entry) => entry.id === id);
+      if (!existing) {
+        saveBoardList([...boards, { id, title: name, repositoryPath: path }]);
+      } else if (existing.repositoryPath !== path || existing.title !== name) {
+        Object.assign(existing, { title: name, repositoryPath: path });
+        saveBoardList(boards);
+      }
+      return id;
+    });
+  }
+
   function updateBoardRepository(id, repositoryPath, expectedPath) {
     return changeBoards(() => {
+      if (id === localProjectsBoard) throw new Error("总览中的目录由本机项目清单提供。");
       const boards = listBoards();
       const board = boards.find((item) => item.id === id);
       if (!board) throw new Error("这张白板已删除。");
@@ -154,6 +176,7 @@
 
   function deleteActiveBoard() {
     return changeBoards(() => {
+      if (activeBoard === localProjectsBoard) throw new Error("本机项目总览是内置白板。");
       if (!activeBoard || !storageIsCurrent()) throw new Error("白板已在另一页面变更，请刷新后重试。");
       const storage = window.localStorage;
       const previousCatalog = storage.getItem(catalogKey);
@@ -494,6 +517,7 @@
 
   window.BoardMemory = { load, save, branchFor, deletionPlan, repairNodes, cleanAttachments,
     activeBoard, activeBoardInfo, catalogKey, listBoards, createBoard, updateBoardRepository, deleteActiveBoard,
+    localProjectsBoard, openLocalProject,
     storageKeys, initializeProjectBoard, storageIsCurrent, writeStorage,
     templateBackup: () => boardBackup(templateBackupKey),
     installTemplate: (value, sampleIds) => installBoard(value, sampleIds, templateBackupKey),

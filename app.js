@@ -64,8 +64,14 @@
   const organizationEngine = window.BoardOrganization;
   let repositoryPath = memory.activeBoardInfo?.repositoryPath || "";
   let onRepositoryChange = () => {};
+  const localProjects = memory.activeBoard === memory.localProjectsBoard;
   const boardControls = initBoardControls();
   if (!memory.activeBoard) return;
+  if (localProjects) {
+    boardControls.setBusy(false);
+    await renderLocalProjects(boardControls.boardUrl);
+    return;
+  }
   const customBoard = memory.activeBoardInfo.custom;
   if (customBoard) {
     board.querySelectorAll("[data-element-id]").forEach((sample) => sample.remove());
@@ -192,7 +198,7 @@
     function refreshControls() {
       switcher.disabled = busy || saving || !switcher.querySelector("option[value]:not([value=''])");
       manage.disabled = create.disabled = busy || saving;
-      remove.disabled = configureRepository.disabled = busy || saving || !available;
+      remove.disabled = configureRepository.disabled = busy || saving || !available || localProjects;
       $("board-empty-create").disabled = busy || saving;
       $("board-create-submit").disabled = $("board-delete-confirm").disabled = saving;
       $("board-create-cancel").disabled = $("board-delete-cancel").disabled = saving;
@@ -203,6 +209,7 @@
 
     function refreshOptions() {
       const boards = memory.listBoards();
+      if (localProjects) boards.unshift(memory.activeBoardInfo);
       const entry = boards.find(({ id }) => id === active);
       available = Boolean(entry);
       const currentPath = entry?.repositoryPath || "";
@@ -260,9 +267,11 @@
       }
     }
 
-    $("board-workspace").hidden = !active;
+    $("board-workspace").hidden = !active || localProjects;
+    $("local-projects").hidden = !localProjects;
+    if (localProjects) $("local-project-link").setAttribute("aria-current", "page");
     $("board-empty-state").hidden = Boolean(active);
-    document.querySelector(".connection-area").hidden = !active;
+    document.querySelector(".connection-area").hidden = !active || localProjects;
     if (active && active !== "original") document.title = `${memory.activeBoardInfo.title} · 圈问白板`;
     const currentUrl = new URL(location.href);
     const requested = currentUrl.searchParams.get("board");
@@ -343,7 +352,110 @@
     window.addEventListener("pageshow", (event) => {
       if (event.persisted) refreshCatalog();
     });
-    return { setBusy(value) { busy = value; refreshControls(); } };
+    return { boardUrl, setBusy(value) { busy = value; refreshControls(); } };
+  }
+
+  async function localProjectRequest(body) {
+    let response;
+    try {
+      response = await fetch("/api/local-projects", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch {
+      throw new Error("无法连接本机白板服务。");
+    }
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.text || "无法读取本机项目。");
+    return result;
+  }
+
+  async function renderLocalProjects(boardUrl) {
+    const count = $("local-project-count");
+    const cards = $("local-project-cards");
+    const search = $("local-project-search");
+    const category = $("local-project-category");
+    let projects;
+    try {
+      ({ projects } = await localProjectRequest({ action: "list" }));
+    } catch (error) {
+      count.textContent = error.message;
+      return;
+    }
+
+    const categories = [...new Set(projects.map((project) => project.category))];
+    category.append(...categories.map((name) => new Option(name, name)));
+    const entries = projects.map((project) => {
+      const card = document.createElement("article");
+      card.className = "local-project-card";
+      const label = document.createElement("p");
+      label.className = "local-project-category";
+      label.textContent = project.category;
+      const name = document.createElement("h3");
+      name.textContent = project.name;
+      const description = document.createElement("p");
+      description.className = "local-project-description";
+      description.textContent = project.description;
+      const path = document.createElement("code");
+      path.className = "local-project-path";
+      path.textContent = project.path;
+      const openBoard = document.createElement("button");
+      openBoard.type = "button";
+      openBoard.className = "submit-button";
+      openBoard.textContent = "进入项目白板";
+      const openFolder = document.createElement("button");
+      openFolder.type = "button";
+      openFolder.className = "tool-button";
+      openFolder.textContent = "打开文件夹";
+      const actions = document.createElement("div");
+      actions.className = "local-project-actions";
+      actions.append(openBoard, openFolder);
+      const feedback = document.createElement("p");
+      feedback.className = "local-project-feedback";
+      feedback.setAttribute("role", "status");
+      card.append(label, name, description, path, actions, feedback);
+
+      async function perform(action) {
+        openBoard.disabled = openFolder.disabled = true;
+        feedback.textContent = "";
+        try {
+          await action();
+        } catch (error) {
+          feedback.textContent = error.message;
+        } finally {
+          openBoard.disabled = openFolder.disabled = false;
+        }
+      }
+      openBoard.addEventListener("click", () => void perform(async () => {
+        const path = await validateRepositoryPath(project.path);
+        const id = await memory.openLocalProject(project.id, project.name, path);
+        location.assign(boardUrl(id).href);
+      }));
+      openFolder.addEventListener("click", () => void perform(async () => {
+        await localProjectRequest({ action: "open", id: project.id });
+        feedback.textContent = "已在资源管理器打开。";
+      }));
+      const searchText = [project.name, project.description, project.path, project.category].join("\n").toLowerCase();
+      return { card, searchText, category: project.category };
+    });
+    cards.replaceChildren(...entries.map(({ card }) => card));
+
+    function filter() {
+      const terms = search.value.trim().toLowerCase().split(/\s+/u);
+      let visible = 0;
+      for (const entry of entries) {
+        entry.card.hidden = Boolean(category.value && entry.category !== category.value) ||
+          !terms.every((term) => entry.searchText.includes(term));
+        if (!entry.card.hidden) visible += 1;
+      }
+      count.textContent = !entries.length ? "本机还没有登记项目。" : !visible ? "没有匹配的项目。"
+        : visible === entries.length ? `${visible} 个项目` : `显示 ${visible} / ${entries.length} 个项目`;
+    }
+    search.addEventListener("input", filter);
+    category.addEventListener("change", filter);
+    filter();
   }
 
   async function validateRepositoryPath(value) {

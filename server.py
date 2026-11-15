@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from api_backend import validate_settings, run_api
 from board_tools import BoardTools
 from backends import FACTORY, BackendRequest, CancellationToken
+from local_projects import ProjectCatalogError, project_catalog_request
 from repo_index import RepositoryIndex, RepoIndexError
 
 from attachments import MAX_ATTACHMENT_BYTES, load_attachments, save_attachment, stage_attachments
@@ -1602,7 +1603,7 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             self.send_json(403, {"type": "error", "text": "只接受来自当前本机白板的请求。"})
             return
         if self.path not in ("/api/codex", "/api/cancel", "/api/reset-recovery", "/api/attachments",
-                             "/api/repo-index", "/api/repository"):
+                             "/api/repo-index", "/api/repository", "/api/local-projects"):
             self.send_json(404, {"type": "error", "text": "接口不存在。"})
             return
         upload = self.path == "/api/attachments"
@@ -1617,7 +1618,7 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"type": "error", "text": "请求长度无效。"})
             return
         limit = MAX_ATTACHMENT_BYTES if upload else MAX_BODY
-        if self.path == "/api/repo-index":
+        if self.path in ("/api/repo-index", "/api/local-projects"):
             limit = 4096
         if len(lengths[0]) > 8 or int(lengths[0]) > limit:
             self.send_json(413, {"type": "error", "text": "单个附件上限为 10 MB。" if upload else "请求过大。"})
@@ -1648,12 +1649,19 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                 repository = resolve_repository_path(value["repositoryPath"])
                 self.send_json(200, {"repositoryPath": str(repository) if repository is not None else ""})
                 return
+            if self.path == "/api/local-projects":
+                result = project_catalog_request(json.loads(body), resolve_repository_path)
+                self.send_json(200, result)
+                return
             if self.path == "/api/codex":
                 parsed = parse_request(body)
                 backend_request = backend_request_from_body(body, parsed)
                 context, backend = backend_request.context, backend_request.backend
                 adapter = FACTORY.get(backend)
                 adapter.validate(backend_request, sys.modules[__name__])
+        except ProjectCatalogError as error:
+            self.send_json(error.status, {"type": "error", "text": str(error)})
+            return
         except (UnicodeError, json.JSONDecodeError, RecursionError, OSError):
             self.send_json(400, {"type": "error", "text": "无法读取 JSON 请求。"})
             return
