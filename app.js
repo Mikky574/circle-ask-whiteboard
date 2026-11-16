@@ -219,6 +219,7 @@
   let connectionDrag = null;
   let suppressConnectionClick = false;
   let gesture = null;
+  let canvasSpace = null;
   let canvasMenuContext = null;
   let scale = 1;
   let offsetX = 0;
@@ -1133,6 +1134,13 @@
     positionAsk();
   }
 
+  function panCamera(x, y) {
+    offsetX = x;
+    offsetY = y;
+    autoFit = false;
+    renderCamera();
+  }
+
   function positionAsk() {
     if (askPopover.hidden || !askAt) return;
     const gap = 12;
@@ -1268,9 +1276,12 @@
     $("pin-mode").setAttribute("aria-pressed", String(mode === "pin"));
     $("connect-mode").setAttribute("aria-pressed", String(mode === "connect"));
     $("overlay").setAttribute("aria-hidden", String(mode !== "connect"));
-    $("canvas-gesture-hint").textContent = mode === "pan"
-      ? "Shift 点选多张卡一起移动。拖空白处平移，右键空白处新建卡片"
-      : "圈文字可提问，圈整张卡片后可拖动。右键打开画布菜单。";
+    const navigationHint = "拖空白处或用方向键平移。";
+    $("canvas-gesture-hint").textContent = mode === "pin"
+      ? `点卡片固定重点。${navigationHint}`
+      : mode === "pan"
+        ? `Shift 点选多张卡一起移动。${navigationHint}`
+        : `从卡片上拖动圈选，或按住 Shift 从空白处开始。${navigationHint}`;
     if (mode === "pin") {
       askAt = null;
       status("点一个模块加红色图钉。点已固定的模块可取消。");
@@ -1293,7 +1304,7 @@
       $("canvas-gesture-hint").textContent = selectedEdgeVisible
         ? `已选中连线 ${selectedConnection.parentId} → ${selectedConnection.childId}，可删除`
         : connectionSource ? `父卡 ${connectionSource} 已选中，按住 Shift 拖向子卡，或点选子卡`
-          : "按住 Shift 从父卡拖向子卡，也可依次点选两张卡或选择已有连线";
+          : "按住 Shift 从父卡拖向子卡，也可依次点选两张卡。拖空白处平移。";
     }
   }
 
@@ -1785,23 +1796,32 @@
     status("已切换到移动模式，可拖动任一选中卡片。");
   }
 
+  const canvasControls = "#ask-popover, #canvas-menu, button, summary, input, textarea, select, a[href], [contenteditable]:not([contenteditable='false'])";
+
   function startGesture(event) {
     if (gesture || connectionDrag || ![0, 1].includes(event.button)) return;
     suppressConnectionClick = false;
-    const grip = mode === "select" && event.button === 0 && !moveSelection.hidden && !moveSelection.disabled &&
+    const temporaryPan = event.button === 1 || Boolean(canvasSpace);
+    const grip = !temporaryPan && mode === "select" && !moveSelection.hidden && !moveSelection.disabled &&
       event.target.closest("#move-selection") === moveSelection;
-    if (!grip && event.target.closest("#ask-popover, button, summary")) return;
-    if (mode === "connect" && event.button === 0) {
-      if (event.shiftKey) startConnectionDrag(event);
-      return;
+    if (!grip && event.target.closest(canvasControls)) return;
+    const card = event.target.closest("[data-element-id]");
+    const edge = event.target.closest(".connection-hit");
+    const blank = !card && !edge && !grip;
+    const gripCards = grip ? movableSelection() : [];
+    const availableCard = card?.getAttribute("aria-busy") === "true" ? null : card;
+    const item = grip ? gripCards[0] : availableCard;
+    (item || edge || viewport).focus({ preventScroll: true });
+    if (!temporaryPan && mode === "connect") {
+      if (event.shiftKey && (item || connectionSource)) startConnectionDrag(event);
+      if (connectionDrag || !blank) return;
     }
-    const panning = grip || mode === "pan" || event.button === 1;
+    const panning = temporaryPan || grip || mode === "pan" || (blank && !(mode === "select" && event.shiftKey));
     const preparing = preparingQuestion();
     if (preparing && !panning) return;
-    const gripCards = grip ? movableSelection() : [];
-    const item = grip ? gripCards[0] : event.target.closest("[data-element-id]:not([aria-busy='true'])");
+    if (canvasSpace) canvasSpace.used = true;
     const id = item?.dataset.elementId;
-    const selecting = (grip || mode === "pan") && event.button === 0 && !preparing;
+    const selecting = !temporaryPan && !preparing && (mode === "pan" || grip || (blank && mode === "select"));
     let drag = null;
     if (selecting && visibleRect(id) && organizationEngine && !deletionPreparing &&
         activeRun?.mode !== "organize" && !storageStale && memory.storageIsCurrent()) {
@@ -1826,6 +1846,7 @@
       id: event.pointerId,
       grip,
       panning,
+      temporaryPan,
       selecting,
       additive: event.shiftKey,
       clientX: event.clientX,
@@ -1844,7 +1865,6 @@
       drawLasso(mode === "pin" ? [] : gesture.points);
     }
     viewport.setPointerCapture(event.pointerId);
-    if (selecting && item) item.focus({ preventScroll: true });
     event.preventDefault();
   }
 
@@ -1886,10 +1906,7 @@
       return;
     }
     if (gesture.panning) {
-      offsetX = gesture.offsetX + dx;
-      offsetY = gesture.offsetY + dy;
-      autoFit = false;
-      renderCamera();
+      if (gesture.moved) panCamera(gesture.offsetX + dx, gesture.offsetY + dy);
       return;
     }
     if (mode === "pin") return;
@@ -1943,6 +1960,7 @@
       return;
     }
     if (finished.panning) {
+      if (finished.moved || finished.temporaryPan) suppressConnectionClick = true;
       if (finished.grip) {
         if (!cancelled && !finished.moved) useSelectionMoveMode();
         return;
@@ -5440,6 +5458,18 @@
     element.classList.toggle("board-pinned", pinnedIds.has(element.dataset.elementId));
   }
 
+  const panDirections = { ArrowUp: [0, 1], ArrowDown: [0, -1], ArrowLeft: [1, 0], ArrowRight: [-1, 0] };
+
+  function clearCanvasSpace() {
+    canvasSpace = null;
+    viewport.classList.remove("is-space-panning");
+  }
+
+  // Keep the canvas focusable when embedded by servers that cache the HTML at startup.
+  viewport.tabIndex = 0;
+  viewport.setAttribute("role", "group");
+  viewport.setAttribute("aria-label", "白板画布");
+  viewport.setAttribute("aria-describedby", "canvas-gesture-hint");
   viewport.addEventListener("pointerdown", startGesture);
   moveSelection.addEventListener("click", (event) => {
     if (event.detail === 0) useSelectionMoveMode();
@@ -5448,12 +5478,15 @@
   viewport.addEventListener("pointerup", (event) => endGesture(event));
   viewport.addEventListener("pointercancel", (event) => endGesture(event, true));
   viewport.addEventListener("lostpointercapture", (event) => endGesture(event, true));
+  viewport.addEventListener("auxclick", (event) => {
+    if (event.button === 1 && !event.target.closest(canvasControls)) event.preventDefault();
+  });
   viewport.addEventListener("click", (event) => {
     if (suppressConnectionClick && event.detail) {
       suppressConnectionClick = false;
       return;
     }
-    if (mode !== "connect" || event.target.closest("button, summary")) return;
+    if (mode !== "connect" || event.target.closest(canvasControls)) return;
     const path = event.target.closest(".connection-hit");
     if (path) {
       selectConnection(path);
@@ -5468,12 +5501,32 @@
     }
   });
   viewport.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented || event.target.closest(canvasControls)) return;
     if (event.key === "Escape" && gesture?.drag) {
       event.preventDefault();
       const pointerId = gesture.id;
       endGesture({ pointerId }, true);
       if (viewport.hasPointerCapture(pointerId)) viewport.releasePointerCapture(pointerId);
       return;
+    }
+    if (!event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (Object.hasOwn(panDirections, event.key)) {
+        event.preventDefault();
+        if (!gesture && !connectionDrag) {
+          const [dx, dy] = panDirections[event.key];
+          const step = event.shiftKey ? 120 : 48;
+          panCamera(offsetX + dx * step, offsetY + dy * step);
+        }
+        return;
+      }
+      if (event.key === " ") {
+        event.preventDefault();
+        if (!event.repeat && !gesture && !connectionDrag) {
+          canvasSpace = { target: event.target, shiftKey: event.shiftKey, used: false };
+          viewport.classList.add("is-space-panning");
+        }
+        return;
+      }
     }
     if (mode !== "connect") return;
     if (event.key === "Escape") {
@@ -5486,35 +5539,60 @@
       deleteSelectedConnection();
     }
   });
+  viewport.addEventListener("focusout", (event) => {
+    if (!viewport.contains(event.relatedTarget) || event.relatedTarget.closest(canvasControls)) clearCanvasSpace();
+  });
+  window.addEventListener("blur", clearCanvasSpace);
+  window.addEventListener("keyup", (event) => {
+    if (event.key !== " " || !canvasSpace) return;
+    const { target, shiftKey, used } = canvasSpace;
+    clearCanvasSpace();
+    if (!used && document.activeElement === target && activateCanvasItem(target, shiftKey)) event.preventDefault();
+  });
   viewport.addEventListener("wheel", (event) => {
-    if (!event.ctrlKey || gesture || connectionDrag || event.target.closest("#ask-popover")) return;
+    if (event.target.closest("#ask-popover, #canvas-menu")) return;
+    const zooming = event.ctrlKey || event.metaKey;
+    const originalAnswer = event.target.closest(".thread-original p");
+    if (!zooming && originalAnswer && originalAnswer.scrollHeight > originalAnswer.clientHeight) return;
     event.preventDefault();
-    const box = viewport.getBoundingClientRect();
-    zoom(Math.exp(-event.deltaY * 0.002), event.clientX - box.left, event.clientY - box.top);
+    if (gesture || connectionDrag) return;
+    const unitX = event.deltaMode === 2 ? viewport.clientWidth : event.deltaMode === 1 ? 16 : 1;
+    const unitY = event.deltaMode === 2 ? viewport.clientHeight : event.deltaMode === 1 ? 16 : 1;
+    const dx = event.deltaX * unitX;
+    const dy = event.deltaY * unitY;
+    if (zooming && dy) {
+      const box = viewport.getBoundingClientRect();
+      zoom(Math.exp(-dy * 0.002), event.clientX - box.left, event.clientY - box.top);
+    } else if (!zooming && (dx || dy)) {
+      const horizontal = event.shiftKey && !dx;
+      panCamera(offsetX - (horizontal ? dy : dx), offsetY - (horizontal ? 0 : dy));
+    }
   }, { passive: false });
   cards.forEach(makeSelectable);
-  board.addEventListener("keydown", (event) => {
-    if (gesture?.drag || preparingQuestion() || (event.key !== "Enter" && event.key !== " ") ||
-        event.target.closest("button, summary")) return;
-    const path = event.target.closest(".connection-hit");
+  function activateCanvasItem(target, additive) {
+    if (gesture || connectionDrag || preparingQuestion()) return false;
+    const path = target.closest(".connection-hit");
     if (mode === "connect" && path) {
-      event.preventDefault();
       selectConnection(path);
-      return;
+      return true;
     }
-    const element = event.target.closest("[data-element-id]:not([aria-busy='true'])");
-    if (!element) return;
-    event.preventDefault();
+    const element = target.closest("[data-element-id]:not([aria-busy='true'])");
+    if (!element) return false;
     if (mode === "connect") {
       chooseConnectionCard(element.dataset.elementId);
-      return;
-    }
-    if (mode === "pin") {
+    } else if (mode === "pin") {
       togglePin(element);
-      return;
+    } else {
+      chooseElement(element, undefined, additive);
+      if (mode !== "pan") askOpen.focus();
     }
-    chooseElement(element, undefined, event.shiftKey);
-    if (mode !== "pan") askOpen.focus();
+    return true;
+  }
+
+  board.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.target.closest(canvasControls) && activateCanvasItem(event.target, event.shiftKey)) {
+      event.preventDefault();
+    }
   });
   $("select-mode").addEventListener("click", () => setMode("select"));
   $("pan-mode").addEventListener("click", () => setMode("pan"));

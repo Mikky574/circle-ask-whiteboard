@@ -2052,6 +2052,14 @@ async function testQuestionDuringPlanning() {
     await page.mouse.click(viewport.x + 6, viewport.y + 6);
     assert.equal(await page.locator("#question").isVisible(), true);
     assert.equal(await page.locator("#question").inputValue(), question);
+    const camera = () => page.locator("#board").evaluate((board) => board.style.transform);
+    const beforePan = await camera();
+    await page.mouse.down();
+    await page.mouse.move(viewport.x + 48, viewport.y + 42, { steps: 8 });
+    await page.mouse.up();
+    assert.notEqual(await camera(), beforePan, "The canvas can still pan while question planning is pending");
+    assert.equal(await page.locator("#question").isVisible(), true);
+    assert.equal(await page.locator("#question").inputValue(), question);
     releasePlan();
     const note = page.locator('#threads .thread-note[data-anchor="E05"]');
     await note.locator(".thread-answer").filter({ hasText: answer }).waitFor();
@@ -2059,7 +2067,7 @@ async function testQuestionDuringPlanning() {
     assert.equal(executions.length, 1);
     assert.deepEqual(executions[0].anchor.elementIds, ["E05"]);
     assertNoJsErrors(jsErrors);
-    record("U23", "PASS", "Clicking blank canvas while a plan is pending preserves the question and executes the sent anchor when planning completes.");
+    record("U23", "PASS", "Clicking and dragging blank canvas while a plan is pending preserve the question and execute the sent anchor when planning completes.");
   } catch (error) { record("U23", "FAIL", safeError(error)); await screenshot("U23-failure", session.page); }
   finally { releasePlan(); await closeSession(session); }
 }
@@ -3742,8 +3750,13 @@ async function testLassoSelectionMove() {
       const x = Math.min(first.x, second.x);
       const y = Math.min(first.y, second.y);
       // Include part of the third card's title without enclosing that card.
-      await lassoBox(page, { x, y, width: partial.x + partial.width / 3 - x,
-        height: Math.max(first.y + first.height, second.y + second.height) - y }, 5);
+      await page.keyboard.down("Shift");
+      try {
+        await lassoBox(page, { x, y, width: partial.x + partial.width / 3 - x,
+          height: Math.max(first.y + first.height, second.y + second.height) - y }, 5);
+      } finally {
+        await page.keyboard.up("Shift");
+      }
       assert.deepEqual(await selectedIds(), ["E05", "E06"]);
       assert.equal(await page.locator("#selection-highlights rect").count(), 0);
       await handle.waitFor();
@@ -4632,6 +4645,149 @@ async function testCreateManualCard() {
     assertNoJsErrors(jsErrors);
     record("U43", "PASS", "A manual constraint card can be drafted, saved, edited, pinned, linked, restored after reload, and included in AI context only where relevant.");
   } catch (error) { record("U43", "FAIL", safeError(error)); await screenshot("U43-failure", session.page); }
+  finally { await closeSession(session); }
+}
+
+async function testCanvasNavigation() {
+  const session = await openPage("normal", "repo-manual");
+  try {
+    const { page, jsErrors } = session;
+    const viewport = page.locator("#viewport");
+    const title = page.locator('#board [data-element-id="E05"] .organized-title');
+    const camera = () => page.locator("#board").evaluate((board) => {
+      const { e: x, f: y, a: scale } = new DOMMatrixReadOnly(getComputedStyle(board).transform);
+      return { x, y, scale };
+    });
+    const blank = async () => {
+      const point = await viewport.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        for (let y = Math.ceil(bounds.top) + 20; y < bounds.bottom - 100; y += 24) {
+          for (let x = Math.ceil(bounds.left) + 20; x < bounds.right - 100; x += 24) {
+            const hit = document.elementFromPoint(x, y);
+            if (hit && element.contains(hit) && !hit.closest("[data-element-id], #ask-popover, button, summary, .connection-hit")) return { x, y };
+          }
+        }
+        return null;
+      });
+      assert.ok(point, "Navigation needs an empty canvas point");
+      return point;
+    };
+    const drag = async ({ x, y }, dx, dy, button = "left") => {
+      await page.mouse.move(x, y);
+      await page.mouse.down({ button });
+      await page.mouse.move(x + dx, y + dy, { steps: 8 });
+      await page.mouse.up({ button });
+    };
+    const dragFromCard = async (button) => {
+      const box = await title.boundingBox();
+      await drag({ x: box.x + box.width / 2, y: box.y + box.height / 2 }, 42, 36, button);
+    };
+    const assertTranslation = async (before, dx, dy) => {
+      const after = await camera();
+      assert.equal(after.scale, before.scale);
+      assert.ok(Math.abs(after.x - before.x - dx) < 0.1 && Math.abs(after.y - before.y - dy) < 0.1,
+        `Expected canvas translation (${dx}, ${dy}), got (${after.x - before.x}, ${after.y - before.y})`);
+    };
+    const activeElementId = () => page.evaluate(() => document.activeElement.id);
+    const initialRects = await visibleCardRects(page);
+    const initialPositions = await page.evaluate(() => localStorage.getItem("whiteboard.codex.repo-manual.organization.v1"));
+    const requestCount = telemetry.requests.length;
+
+    let point = await blank();
+    await page.mouse.click(point.x, point.y);
+    assert.equal(await activeElementId(), "viewport");
+    const initial = await camera();
+    await page.keyboard.press("ArrowRight");
+    const right = await camera();
+    assert.ok(right.x < initial.x && right.y === initial.y && right.scale === initial.scale);
+    await page.keyboard.press("ArrowDown");
+    const down = await camera();
+    assert.ok(down.y < right.y && down.x === right.x && down.scale === right.scale);
+    await page.keyboard.press("ArrowLeft");
+    await page.keyboard.press("ArrowUp");
+    await assertTranslation(initial, 0, 0);
+
+    const card = page.locator('#board [data-element-id="E05"]');
+    await card.press("Space");
+    assert.equal(await card.getAttribute("aria-pressed"), "true", "Tapping Space should still activate the focused card");
+    await assertTranslation(initial, 0, 0);
+    await title.click();
+    await page.keyboard.press("ArrowRight");
+    assert.equal((await camera()).x, right.x, "Arrow navigation should still work after a card is selected");
+    await page.keyboard.press("ArrowLeft");
+    await page.locator("#ask-open").click();
+    const question = page.locator("#question");
+    await question.fill("abcd");
+    const editing = await camera();
+    await question.press("Home");
+    await question.press("ArrowRight");
+    assert.equal(await question.evaluate((element) => element.selectionStart), 1);
+    assert.deepEqual(await camera(), editing, "Moving the text caret should leave the canvas still");
+    await question.press("Escape");
+
+    point = await blank();
+    await page.mouse.click(point.x, point.y, { button: "right" });
+    const menu = page.locator("#canvas-menu");
+    await menu.waitFor();
+    const previousItem = await activeElementId();
+    const context = await camera();
+    await page.keyboard.press("ArrowDown");
+    assert.notEqual(await activeElementId(), previousItem);
+    assert.deepEqual(await camera(), context, "Arrow navigation inside the context menu should stay there");
+    await page.keyboard.press("Escape");
+    await menu.waitFor({ state: "hidden" });
+
+    for (const mode of ["select", "pan", "pin", "connect"]) {
+      await page.locator("#fit").click();
+      const button = page.locator(`#${mode}-mode`);
+      await button.click();
+      const before = await camera();
+      await drag(await blank(), 42, 36);
+      await assertTranslation(before, 42, 36);
+      assert.equal(await button.getAttribute("aria-pressed"), "true");
+    }
+
+    await page.locator("#fit").click();
+    await page.locator("#pan-mode").click();
+    await title.click();
+    const beforeSpace = await camera();
+    await page.keyboard.down("Space");
+    try {
+      await dragFromCard();
+    } finally {
+      await page.keyboard.up("Space");
+    }
+    await assertTranslation(beforeSpace, 42, 36);
+    const beforeMiddle = await camera();
+    await dragFromCard("middle");
+    await assertTranslation(beforeMiddle, 42, 36);
+    assert.equal(await page.locator("#pan-mode").getAttribute("aria-pressed"), "true");
+
+    point = await blank();
+    await page.mouse.move(point.x, point.y);
+    const beforeWheel = await camera();
+    await page.mouse.wheel(30, 48);
+    await page.waitForFunction(({ x, y }) => {
+      const transform = new DOMMatrixReadOnly(getComputedStyle(document.querySelector("#board")).transform);
+      return transform.e !== x || transform.f !== y;
+    }, beforeWheel);
+    await assertTranslation(beforeWheel, -30, -48);
+    const beforeZoom = await camera();
+    await page.keyboard.down("Control");
+    try {
+      await page.mouse.wheel(0, -120);
+      await page.waitForFunction((scale) => new DOMMatrixReadOnly(
+        getComputedStyle(document.querySelector("#board")).transform).a > scale, beforeZoom.scale);
+    } finally {
+      await page.keyboard.up("Control");
+    }
+    assert.ok((await camera()).scale > beforeZoom.scale, "Ctrl+wheel should zoom the canvas");
+    assert.deepEqual(await visibleCardRects(page), initialRects);
+    assert.equal(await page.evaluate(() => localStorage.getItem("whiteboard.codex.repo-manual.organization.v1")), initialPositions);
+    assert.equal(telemetry.requests.length, requestCount);
+    assertNoJsErrors(jsErrors);
+    record("U61", "PASS", "The keyboard, blank-space drag in each mode, Space or middle-button drag from a card, and wheel operate the camera while preserving card positions, text and context-menu navigation, and local-only behavior.");
+  } catch (error) { record("U61", "FAIL", safeError(error)); await screenshot("U61-failure", session.page); }
   finally { await closeSession(session); }
 }
 
@@ -5659,7 +5815,7 @@ try {
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(0, "127.0.0.1", resolveListen); });
   port = server.address().port;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
-  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60").split(","));
+  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61").split(","));
   if (selected.has("U01")) { console.log("BROWSER_CASE=U01"); await testCapabilities(); }
   if (selected.has("U02")) { console.log("BROWSER_CASE=U02"); await testKeyEphemeral(); }
   if (selected.has("U05-A")) { console.log("BROWSER_CASE=U05-A"); await testStopLateEvents(); }
@@ -5722,6 +5878,7 @@ try {
   if (selected.has("U58")) { console.log("BROWSER_CASE=U58"); await testDeleteWithoutWaitingForAnswer(); }
   if (selected.has("U59")) { console.log("BROWSER_CASE=U59"); await testGeneratedExplanationHierarchy(); }
   if (selected.has("U60")) { console.log("BROWSER_CASE=U60"); await testGeneratedTaskHierarchy(); }
+  if (selected.has("U61")) { console.log("BROWSER_CASE=U61"); await testCanvasNavigation(); }
 } catch (error) {
   record("HARNESS", String(error?.message || "").startsWith("BLOCKED:") ? "BLOCKED" : "FAIL", safeError(error));
 } finally {
