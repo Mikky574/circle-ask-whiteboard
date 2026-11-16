@@ -1620,7 +1620,9 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             self.send_json(400, {"type": "error", "text": "请求长度无效。"})
             return
         limit = MAX_ATTACHMENT_BYTES if upload else MAX_BODY
-        if self.path in ("/api/repo-index", "/api/local-projects", "/api/workbench-activity"):
+        if self.path == "/api/local-projects":
+            limit = 24 * 1024
+        elif self.path in ("/api/repo-index", "/api/workbench-activity"):
             limit = 4096
         if len(lengths[0]) > 8 or int(lengths[0]) > limit:
             self.send_json(413, {"type": "error", "text": "单个附件上限为 10 MB。" if upload else "请求过大。"})

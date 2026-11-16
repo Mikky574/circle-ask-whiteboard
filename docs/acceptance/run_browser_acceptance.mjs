@@ -41,6 +41,12 @@ const firstTask = { title: "实现任务验收入口", task: "给项目任务添
   dependencies: ["确认任务字段"], acceptance: ["提交时显示未达标条目", "刷新后可继续验收"] };
 const nextTask = { title: "验证验收输入", task: "覆盖空值和超长输入。",
   dependencies: [], acceptance: ["无效输入不会更新验收结果"] };
+const parentProject = { id: "a".repeat(32), name: "接口平台", path: "C:\\fixture\\接口平台",
+  description: "负责接口文档和版本管理。", category: "开发", aliases: [], parentId: null, childCount: 1 };
+const childProject = { id: "b".repeat(32), name: "导入工具", path: "C:\\fixture\\接口平台\\导入工具",
+  description: "将文本清单导入接口平台。", category: "开发", aliases: [], parentId: parentProject.id, childCount: 0 };
+const registeredProjectId = "c".repeat(32);
+const localProjects = [parentProject, childProject];
 async function body(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -53,12 +59,48 @@ function staticPath(urlPath) {
 }
 function delay(ms) { return new Promise((resolveDelay) => setTimeout(resolveDelay, ms)); }
 
+function jsonResponse(res, result, status = 200) {
+  res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" });
+  res.end(JSON.stringify(result));
+}
+
 async function relay(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === "/favicon.ico") { res.writeHead(204); res.end(); return; }
   if (url.pathname === "/api/status") {
-    res.writeHead(200, { "Content-Type": "application/json", "Cache-Control": "no-store" });
-    res.end(JSON.stringify({ backends: FIXTURE.backends }));
+    jsonResponse(res, { backends: FIXTURE.backends });
+    return;
+  }
+  if (url.pathname === "/api/local-projects" && req.method === "POST") {
+    const payload = await body(req);
+    if (payload.action === "list") {
+      jsonResponse(res, { projects: localProjects });
+    } else if (payload.action === "get") {
+      const project = localProjects.find(({ id }) => id === payload.id);
+      if (!project) {
+        jsonResponse(res, { text: "项目已不在本机清单中。" }, 404);
+      } else {
+        const ancestors = project.parentId ? [parentProject] : [];
+        const children = localProjects.filter(({ parentId }) => parentId === project.id);
+        jsonResponse(res, { project, ancestors, children });
+      }
+    } else if (payload.action === "register" && payload.path.startsWith("C:\\fixture\\")) {
+      const project = { id: registeredProjectId, name: payload.name, path: payload.path, description: payload.description,
+        category: "本机项目", aliases: [], parentId: null, childCount: 0 };
+      localProjects.push(project);
+      jsonResponse(res, { project });
+    } else {
+      jsonResponse(res, { text: "项目目录不可读。" }, 422);
+    }
+    return;
+  }
+  if (url.pathname === "/api/repository" && req.method === "POST") {
+    const { repositoryPath } = await body(req);
+    jsonResponse(res, { repositoryPath });
+    return;
+  }
+  if (url.pathname === "/api/workbench-activity" && req.method === "POST") {
+    jsonResponse(res, { activity: null });
     return;
   }
   if (url.pathname === "/api/cancel" && req.method === "POST") {
@@ -119,7 +161,7 @@ async function relay(req, res) {
   } catch { res.writeHead(500); res.end("fixture static read failed"); }
 }
 
-async function openPage(flow = "normal", board = null) {
+async function openPage(flow = "normal", board = "original") {
   const context = await browser.newContext({ serviceWorkers: "block", viewport: { width: 1440, height: 980 } });
   context.setDefaultTimeout(8_000);
   const page = await context.newPage();
@@ -134,7 +176,11 @@ async function openPage(flow = "normal", board = null) {
   url.searchParams.set("flow", flow);
   if (board) url.searchParams.set("board", board);
   await page.goto(url.href, { waitUntil: "networkidle" });
-  await page.waitForFunction(() => document.querySelector("#connection-label")?.textContent?.includes("已安装"));
+  if (board) {
+    await page.waitForFunction(() => document.querySelector("#connection-label")?.textContent?.includes("已安装"));
+  } else {
+    await page.locator("#local-projects").waitFor();
+  }
   return { context, page, jsErrors };
 }
 async function closeSession(session) {
@@ -256,7 +302,7 @@ async function testCrossPageStale() {
   try {
     const { context, page, jsErrors } = session;
     peer = await context.newPage();
-    await peer.goto(`http://127.0.0.1:${port}/`, { waitUntil: "networkidle" });
+    await peer.goto(`http://127.0.0.1:${port}/?board=original`, { waitUntil: "networkidle" });
     // Establish the peer before starting the delayed stream: otherwise its
     // navigation itself can consume the whole test delay and fake a race.
     await chooseApi(page); await organize(page);
@@ -743,14 +789,12 @@ async function testBoardSwitcher() {
     assert.deepEqual(await readOriginal(), before);
 
     const origin = new URL(page.url()).origin;
-    for (const path of ["/?board=project-design", "/"]) {
-      await page.goto(origin + path, { waitUntil: "networkidle" });
-      await card(child.id).waitFor();
-      assert.equal(await switcher.inputValue(), "project-design");
-      assert.equal(await goal.inputValue(), projectGoal);
-      assert.equal(await opinion.inputValue(), projectOpinion);
-      assert.deepEqual(await readOriginal(), before);
-    }
+    await page.goto(origin + "/?board=project-design", { waitUntil: "networkidle" });
+    await card(child.id).waitFor();
+    assert.equal(await switcher.inputValue(), "project-design");
+    assert.equal(await goal.inputValue(), projectGoal);
+    assert.equal(await opinion.inputValue(), projectOpinion);
+    assert.deepEqual(await readOriginal(), before);
     assertNoJsErrors(jsErrors);
     const shot = await screenshot("U13-project-board-switcher", page);
     record("U13", "PASS", "The visible switcher and direct link select an independent project board, with edits and branch state saved separately from the original.", { screenshot: shot });
@@ -786,17 +830,12 @@ async function testBoardLifecycle() {
       await page.locator(action).click();
     };
     const removeCurrent = async (id, name) => {
-      const fallback = (await optionIds()).find((value) => value !== id);
       await openAction("#board-delete");
       await deleteDialog.waitFor();
       assert.equal((await page.locator("#board-delete-name").textContent()).trim(), name);
       await page.locator("#board-delete-confirm").click();
-      await page.waitForFunction(({ id, fallback }) => {
-        const control = document.querySelector("#board-switcher");
-        return control?.value === fallback && !Array.from(control.options).some((option) => option.value === id);
-      }, { id, fallback });
-      assert.equal(await switcher.inputValue(), fallback);
-      assert.ok(!(await optionIds()).includes(id));
+      await page.locator("#local-projects").waitFor();
+      assert.equal(await page.evaluate((deleted) => BoardMemory.listBoards().some(({ id }) => id === deleted), id), false);
       assert.deepEqual(await readBoardStorage(id), [null, null, null, null]);
     };
 
@@ -875,8 +914,10 @@ async function testBoardLifecycle() {
     assert.equal(await goal.inputValue(), customGoal);
     const origin = new URL(page.url()).origin;
     await page.goto(origin + "/", { waitUntil: "networkidle" });
+    await page.locator("#local-projects").waitFor();
+    await page.locator(`#home-board-list a[href*="board=${customId}"]`).click();
     await card.waitFor();
-    assert.equal(await switcher.inputValue(), customId, "The last selected board must reopen from the base URL");
+    assert.equal(await switcher.inputValue(), customId, "Saved independent boards must reopen from the homepage");
 
     await openAction("#board-delete");
     await deleteDialog.waitFor();
@@ -897,6 +938,7 @@ async function testBoardLifecycle() {
       "Another tab must refresh its board catalog when a board is deleted");
     await peer.locator("#project-goal").fill("在旧标签页编辑时，已删除的白板不能复活。");
     assert.deepEqual(await readBoardStorage(customId), [null, null, null, null]);
+    peer.once("dialog", (dialog) => { void dialog.accept(); });
     await Promise.all([
       peer.waitForURL((url) => url.searchParams.get("board") === "project-design"),
       peer.locator("#board-switcher").selectOption("project-design"),
@@ -907,15 +949,16 @@ async function testBoardLifecycle() {
     assert.deepEqual(await readBoardStorage("original"), original);
     assert.deepEqual(await readBoardStorage("project-design"), project);
     await page.goto(origin + "/?board=" + customId, { waitUntil: "networkidle" });
-    assert.ok(presets.includes(await switcher.inputValue()));
-    assert.ok(!(await optionIds()).includes(customId));
+    await page.locator("#local-projects").waitFor();
+    assert.equal(await page.locator("#home-board-list").getByText(name, { exact: true }).count(), 0);
     assert.deepEqual(await readBoardStorage(customId), [null, null, null, null]);
 
-    await switchBoard("project-design");
+    await page.goto(origin + "/?board=project-design", { waitUntil: "networkidle" });
     await removeCurrent("project-design", projectName);
     await page.goto(origin + "/?board=project-design", { waitUntil: "networkidle" });
-    assert.notEqual(await switcher.inputValue(), "project-design");
-    assert.ok(!(await optionIds()).includes("project-design"), "A deleted preset must not reappear when its URL is reopened");
+    await page.locator("#local-projects").waitFor();
+    assert.ok(!(await page.evaluate(() => BoardMemory.listBoards().some(({ id }) => id === "project-design"))),
+      "A deleted preset must not reappear when its URL is reopened");
     assert.deepEqual(await readBoardStorage("project-design"), [null, null, null, null]);
     assert.deepEqual(await readBoardStorage("original"), original);
     assertNoJsErrors(jsErrors);
@@ -929,7 +972,7 @@ async function testLastBoardLifecycle() {
   try {
     const { page, jsErrors } = session;
     const switcher = page.locator("#board-switcher");
-    const emptyState = page.locator("#board-empty-state");
+    const home = page.locator("#local-projects");
     const ids = await switcher.locator("option").evaluateAll((options) => options.map((option) => option.value));
     assert.equal(ids.length, 5);
     for (const [index, id] of ids.entries()) {
@@ -939,22 +982,23 @@ async function testLastBoardLifecycle() {
       await page.locator("#board-delete").click();
       await page.locator("#board-delete-dialog").waitFor();
       await page.locator("#board-delete-confirm").click();
+      await home.waitFor();
       const next = ids[index + 1];
       if (next) {
+        await openDetails(page, "home-examples");
+        await page.locator(`#home-example-list a[href*="board=${next}"]`).click();
         await page.waitForURL((url) => url.searchParams.get("board") === next);
         assert.equal(await switcher.inputValue(), next);
-      } else {
-        await emptyState.waitFor();
       }
     }
     await page.reload();
-    await emptyState.waitFor();
+    await home.waitFor();
     const origin = new URL(page.url()).origin;
     await page.goto(origin + "/?board=original", { waitUntil: "networkidle" });
-    await emptyState.waitFor();
+    await home.waitFor();
     assert.equal(await page.locator("#board [data-element-id]:visible").count(), 0);
 
-    await page.locator("#board-empty-create").click();
+    await page.locator("#home-create-board").click();
     await page.locator("#board-create-dialog").waitFor();
     await page.locator("#board-name").fill("重新开始");
     await Promise.all([
@@ -964,9 +1008,9 @@ async function testLastBoardLifecycle() {
     assert.equal(await switcher.locator("option").count(), 1);
     assert.equal((await switcher.locator("option:checked").textContent()).trim(), "重新开始");
     assert.equal(await page.locator("#board [data-element-id]:visible").count(), 0);
-    assert.equal(await emptyState.isVisible(), false);
+    assert.equal(await home.isVisible(), false);
     assertNoJsErrors(jsErrors);
-    record("U51", "PASS", "Removing all boards stays empty after reload and an old direct link, and the empty state creates a fresh blank board.");
+    record("U51", "PASS", "Removing all boards returns home, where a stale board link cannot restore a removed board and a new blank board can be created.");
   } catch (error) { record("U51", "FAIL", safeError(error)); await screenshot("U51-failure", session.page); }
   finally { await closeSession(session); }
 }
@@ -5809,13 +5853,123 @@ async function testReparentAnswerOwnership() {
   finally { await closeSession(session); }
 }
 
+async function testProjectHomeWorkflow() {
+  const session = await openPage("normal", null);
+  try {
+    const { page, jsErrors } = session;
+    const home = page.locator("#local-projects");
+    const canvas = page.locator("#board-workspace");
+    const tab = (view) => page.locator(`[data-project-view="${view}"]`);
+    const onProjectCanvas = (id) => (url) =>
+      url.searchParams.get("board") === `board-${id}` &&
+      url.searchParams.get("project") === id && url.searchParams.get("view") === "canvas";
+    const projectLink = (within, project) => page.locator(`${within} a[href*="project=${project.id}"]`).first();
+    const closeProject = async () => {
+      await page.locator("#close-project").click();
+      await home.waitFor();
+      const params = new URL(page.url()).searchParams;
+      assert.equal(params.has("project"), false);
+      assert.equal(params.has("board"), false);
+      assert.equal(await canvas.isVisible(), false);
+    };
+
+    assert.equal(await canvas.isVisible(), false);
+    await projectLink("#local-project-cards", parentProject).click();
+    await page.waitForURL(onProjectCanvas(parentProject.id));
+    await canvas.waitFor();
+    assert.equal((await page.locator("#project-context-title").textContent()).trim(), parentProject.name);
+    assert.equal(await tab("canvas").getAttribute("aria-current"), "page");
+
+    const cardTitle = "接口版本写作提纲";
+    await page.locator("#empty-canvas-write").click();
+    await page.locator("#workbench-card-title").fill(cardTitle);
+    await page.locator("#workbench-card-body").fill("先写清调用入口，再补上兼容性例子。");
+    let leaveDialogType;
+    page.once("dialog", async (dialog) => {
+      leaveDialogType = dialog.type();
+      await dialog.dismiss();
+    });
+    await page.locator("#close-project").click();
+    assert.equal(leaveDialogType, "confirm", "Closing a project with an unsaved card must ask first");
+    assert.ok(onProjectCanvas(parentProject.id)(new URL(page.url())));
+    assert.equal(await page.locator("#workbench-card-title").inputValue(), cardTitle);
+    await page.locator("#save-workbench-card").click();
+    const writtenCard = page.locator('#board [data-organized-category="main"]').getByText(cardTitle, { exact: true });
+    await writtenCard.waitFor();
+
+    await tab("graph").click();
+    await page.locator('[data-activity="graph"]').getByText(cardTitle, { exact: true }).waitFor();
+    assert.equal(await tab("graph").getAttribute("aria-current"), "page");
+    await tab("actions").click();
+    await page.locator('[data-activity="timeline"]').getByText("该项目暂无 AI 动作记录。").waitFor();
+    assert.equal(await tab("actions").getAttribute("aria-current"), "page");
+    await tab("projects").click();
+    await projectLink("#project-children-cards", childProject).click();
+    await page.waitForURL(onProjectCanvas(childProject.id));
+    await canvas.waitFor();
+    assert.equal((await page.locator("#project-context-title").textContent()).trim(), childProject.name);
+    assert.equal(await writtenCard.count(), 0, "The parent canvas must stay separate from its child project");
+
+    await closeProject();
+    await page.reload();
+    await home.waitFor();
+    await projectLink("#local-project-cards", parentProject).click();
+    await page.waitForURL(onProjectCanvas(parentProject.id));
+    await writtenCard.waitFor();
+    await closeProject();
+    assert.equal(await page.locator(`#home-board-list a[href*="board=board-${parentProject.id}"]`).count(), 0,
+      "Project canvases must appear under their projects only");
+
+    await page.locator("#home-add-project").click();
+    const registration = page.locator("#project-register-form");
+    await registration.waitFor();
+    const name = "新登记的写作工具";
+    const path = "C:\\fixture\\写作工具";
+    await page.locator("#project-register-name").fill(name);
+    await page.locator("#project-register-description").fill("试用项目主路线。");
+    await page.locator("#project-register-path").fill("missing-directory");
+    await Promise.all([
+      page.waitForResponse((response) => response.url().endsWith("/api/local-projects") && response.status() === 422),
+      page.locator("#project-register-submit").click(),
+    ]);
+    await page.locator("#project-register-error").waitFor();
+    assert.equal(await page.locator("#project-register-name").inputValue(), name);
+    await page.locator("#project-register-path").fill(path);
+    await page.locator("#project-register-submit").click();
+    await page.waitForURL(onProjectCanvas(registeredProjectId));
+    await canvas.waitFor();
+    assert.equal((await page.locator("#project-context-title").textContent()).trim(), name);
+    assert.equal((await page.locator("#project-context-directory").textContent()).trim(), path);
+    await closeProject();
+    await page.locator("#local-project-cards").getByText(name, { exact: true }).waitFor();
+
+    await page.locator("#home-create-board").click();
+    const note = "独立写作草稿";
+    await page.locator("#board-name").fill(note);
+    await page.locator("#board-create-submit").click();
+    await canvas.waitFor();
+    const independent = new URL(page.url()).searchParams;
+    assert.match(independent.get("board"), /^board-[a-f0-9]{32}$/);
+    assert.equal(independent.has("project"), false);
+    await page.locator("#local-project-link").click();
+    await home.waitFor();
+    const localBoard = page.locator(`#home-board-list a[href*="board=${independent.get("board")}"]`);
+    await localBoard.click();
+    await canvas.waitFor();
+    assert.equal((await page.locator("#canvas-title").textContent()).trim(), note);
+    assertNoJsErrors(jsErrors.filter((message) => !/^Failed to load resource:.*\b422\b/.test(message)));
+    record("U62", "PASS", "The homepage opens registered project canvases first, guards a card draft before closing, preserves saved cards through reopen, and separates project registration from independent boards.");
+  } catch (error) { record("U62", "FAIL", safeError(error)); await screenshot("U62-failure", session.page); }
+  finally { await closeSession(session); }
+}
+
 try {
   if (!existsSync(EDGE)) throw new Error(`BLOCKED: installed msedge channel not found at ${EDGE}`);
   server = createServer((req, res) => { relay(req, res).catch(() => { if (!res.headersSent) res.writeHead(500); res.end(); }); });
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(0, "127.0.0.1", resolveListen); });
   port = server.address().port;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
-  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61").split(","));
+  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62").split(","));
   if (selected.has("U01")) { console.log("BROWSER_CASE=U01"); await testCapabilities(); }
   if (selected.has("U02")) { console.log("BROWSER_CASE=U02"); await testKeyEphemeral(); }
   if (selected.has("U05-A")) { console.log("BROWSER_CASE=U05-A"); await testStopLateEvents(); }
@@ -5879,6 +6033,7 @@ try {
   if (selected.has("U59")) { console.log("BROWSER_CASE=U59"); await testGeneratedExplanationHierarchy(); }
   if (selected.has("U60")) { console.log("BROWSER_CASE=U60"); await testGeneratedTaskHierarchy(); }
   if (selected.has("U61")) { console.log("BROWSER_CASE=U61"); await testCanvasNavigation(); }
+  if (selected.has("U62")) { console.log("BROWSER_CASE=U62"); await testProjectHomeWorkflow(); }
 } catch (error) {
   record("HARNESS", String(error?.message || "").startsWith("BLOCKED:") ? "BLOCKED" : "FAIL", safeError(error));
 } finally {

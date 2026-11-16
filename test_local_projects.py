@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 from pathlib import Path
@@ -47,6 +48,71 @@ class LocalProjectTests(unittest.TestCase):
         with self.assertRaises(ProjectCatalogError) as malformed:
             self.request(action="list")
         self.assertEqual(malformed.exception.status, 422)
+
+    def test_registers_and_reopens_without_overwriting_a_project(self):
+        registered = self.request(action="register", name="  我的项目  ", path=str(self.project))["project"]
+        self.assertEqual(registered["name"], "我的项目")
+        self.assertEqual(registered["description"], "")
+        self.assertEqual(self.request(action="list")["projects"], [registered])
+
+        manifest = self.manifest.read_bytes()
+        reopened = self.request(action="register", name="其他名称", path=str(self.project), description="其他简介")
+        self.assertEqual(reopened["project"], registered)
+        self.assertEqual(self.manifest.read_bytes(), manifest)
+        self.assertEqual(self.request(action="get", id=registered["id"])["project"], registered)
+
+    def test_registers_child_and_preserves_existing_catalog_fields(self):
+        parent = {**self.entry, "aliases": ["旧名称"], "extra": {"owner": "本机用户"}}
+        self.manifest.write_text(json.dumps([parent], ensure_ascii=False), encoding="utf-8-sig")
+        old_project, = self.request(action="list")["projects"]
+        child_path = self.project / "子项目"
+        child_path.mkdir()
+        child = self.request(action="register", name="子项目", path=str(child_path), description="子项目\n简介")["project"]
+        self.assertEqual(child["parentId"], old_project["id"])
+        self.assertEqual(child["description"], "子项目 简介")
+        updated, = self.request(action="get", id=child["id"])["ancestors"]
+        self.assertEqual(updated["childCount"], 1)
+        self.assertEqual(json.loads(self.manifest.read_text(encoding="utf-8-sig"))[0], parent)
+
+    def test_invalid_registration_and_catalog_preserve_existing_data(self):
+        for path in ("relative", str(self.project / "missing")):
+            with self.subTest(path=path), self.assertRaises(ProjectCatalogError) as invalid:
+                self.request(action="register", name="项目", path=path)
+            self.assertEqual(invalid.exception.status, 422)
+            self.assertFalse(self.manifest.exists())
+
+        for data in (b"\xff\xfe", b"{broken", b"{}", b"[{}]"):
+            with self.subTest(catalog=data):
+                self.manifest.write_bytes(data)
+                with self.assertRaises(ProjectCatalogError) as invalid:
+                    self.request(action="register", name="项目", path=str(self.project))
+                self.assertEqual(invalid.exception.status, 422)
+                self.assertEqual(self.manifest.read_bytes(), data)
+
+    def test_concurrent_registrations_keep_each_project_once(self):
+        second = self.project.with_name("本机项目 乙")
+        second.mkdir()
+
+        def register(directory):
+            return self.request(action="register", name=directory.name, path=str(directory))["project"]["id"]
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            first_id, second_id, repeated_id = executor.map(register, (self.project, second, self.project))
+        self.assertEqual(first_id, repeated_id)
+        self.assertNotEqual(first_id, second_id)
+        self.assertEqual({project["id"] for project in self.request(action="list")["projects"]}, {first_id, second_id})
+
+    def test_failed_catalog_replacement_keeps_the_original_file(self):
+        self.write_catalog(self.entry)
+        second = self.project.with_name("本机项目 乙")
+        second.mkdir()
+        current_bytes = self.manifest.read_bytes()
+        current_files = set(self.manifest.parent.iterdir())
+        with patch.object(Path, "replace", side_effect=PermissionError), self.assertRaises(ProjectCatalogError) as error:
+            self.request(action="register", name="项目乙", path=str(second))
+        self.assertEqual(error.exception.status, 500)
+        self.assertEqual(self.manifest.read_bytes(), current_bytes)
+        self.assertEqual(set(self.manifest.parent.iterdir()), current_files)
 
     def test_project_tree_uses_the_nearest_registered_ancestor(self):
         parent_path = self.project / "未登记目录" / "父项目"

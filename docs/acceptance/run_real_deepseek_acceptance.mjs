@@ -155,7 +155,7 @@ try {
   const page = await context.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(safeError(error)));
-  await page.goto(base, { waitUntil: "networkidle", timeout: timeRemaining() });
+  await page.goto(`${base}/?board=original`, { waitUntil: "networkidle", timeout: timeRemaining() });
   await page.waitForFunction(() => {
     const select = document.querySelector("#backend-select");
     const label = document.querySelector("#connection-label")?.textContent || "";

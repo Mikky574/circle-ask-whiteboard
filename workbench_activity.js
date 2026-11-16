@@ -160,6 +160,7 @@
     try { draft = localStorage.getItem(draftKey) || ""; }
     catch { /* A blocked storage session can still display the source records. */ }
     instruction.value = draft || options[0]?.text || "";
+    let savedInstruction = instruction.value.trim();
     if (draft) ref("save-status").textContent = "已载入本机指导草稿。";
     ref("options").replaceChildren(...options.map((option) => button(option.label, () => {
       instruction.value = option.text;
@@ -171,6 +172,7 @@
       try {
         if (instruction.value.trim()) localStorage.setItem(draftKey, instruction.value.trim());
         else localStorage.removeItem(draftKey);
+        savedInstruction = instruction.value.trim();
         ref("save-status").textContent = instruction.value.trim() ? "指导草稿已保存在本机浏览器。" : "指导草稿已清除。";
       } catch {
         ref("save-status").textContent = "浏览器存储不可用，草稿未保存。";
@@ -179,7 +181,7 @@
     ref("clear-filter").addEventListener("click", () => { filter = ""; changeView("actions"); });
     render();
     root.hidden = false;
-    return true;
+    return { hasUnsavedGuidance: () => instruction.value.trim() !== savedInstruction };
   }
 
   window.WorkbenchActivity = { load, open };

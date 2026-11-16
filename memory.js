@@ -1,6 +1,5 @@
 (() => {
   const originalPrefix = "whiteboard.codex";
-  const preferenceKey = `${originalPrefix}.active-board.v1`;
   const catalogKey = `${originalPrefix}.boards.v1`;
   const projectBoard = "project-design";
   const repoManual = "repo-manual";
@@ -90,7 +89,9 @@
           const title = custom ? text(entry.title, 80).trim() : builtInBoards.get(id);
           const repositoryPath = savedRepositoryPath(entry.repositoryPath);
           if (title && (!custom || /^board-[0-9a-f]{32}$/.test(id))) {
-            unique.set(id, { id, title, custom, ...(repositoryPath ? { repositoryPath } : {}) });
+            const project = custom && typeof entry.projectId === "string" && id === `board-${entry.projectId}`;
+            unique.set(id, { id, title, custom, ...(repositoryPath ? { repositoryPath } : {}),
+              ...(project ? { projectId: entry.projectId } : {}) });
           }
         }
         return [...unique.values()];
@@ -105,19 +106,12 @@
     const requested = params?.get("board") ?? null;
     if (requested === localProjectsBoard) return localProjectsBoard;
     const exists = (boardId) => boards.some(({ id }) => id === boardId);
-    const fallback = exists("original") ? "original" : boards[0]?.id ?? null;
-    if (exists(requested)) {
-      try { window.localStorage.setItem(preferenceKey, requested); } catch { /* The explicit link still works. */ }
-      return requested;
+    if (exists(requested)) return requested;
+    if (requested === null && (params?.has("project-guide") || params?.has("rebuild-project") ||
+        window.location?.hash === "#project-template")) {
+      return exists("original") ? "original" : boards[0]?.id ?? localProjectsBoard;
     }
-    if (requested !== null || params?.has("project-guide") || params?.has("rebuild-project") ||
-        window.location?.hash === "#project-template") return fallback;
-    try {
-      const remembered = window.localStorage.getItem(preferenceKey);
-      return exists(remembered) ? remembered : fallback;
-    } catch {
-      return fallback;
-    }
+    return localProjectsBoard;
   }
 
   function changeBoards(change) {
@@ -127,8 +121,8 @@
   }
 
   function saveBoardList(boards) {
-    window.localStorage.setItem(catalogKey, JSON.stringify(boards.map(({ id, title, repositoryPath }) =>
-      ({ id, title, ...(repositoryPath ? { repositoryPath } : {}) }))));
+    window.localStorage.setItem(catalogKey, JSON.stringify(boards.map(({ id, title, repositoryPath, projectId }) =>
+      ({ id, title, ...(repositoryPath ? { repositoryPath } : {}), ...(projectId ? { projectId } : {}) }))));
   }
 
   function createBoard(title, repositoryPath = "") {
@@ -152,9 +146,9 @@
       const boards = listBoards();
       const existing = boards.find((entry) => entry.id === id);
       if (!existing) {
-        saveBoardList([...boards, { id, title: name, repositoryPath: path }]);
-      } else if (existing.repositoryPath !== path || existing.title !== name) {
-        Object.assign(existing, { title: name, repositoryPath: path });
+        saveBoardList([...boards, { id, title: name, repositoryPath: path, projectId }]);
+      } else if (existing.repositoryPath !== path || existing.title !== name || existing.projectId !== projectId) {
+        Object.assign(existing, { title: name, repositoryPath: path, projectId });
         saveBoardList(boards);
       }
       return id;
@@ -199,14 +193,6 @@
         else storage.setItem(catalogKey, previousCatalog);
         throw error;
       }
-      const fallback = remaining[0]?.id ?? null;
-      try {
-        if (storage.getItem(preferenceKey) === activeBoard) {
-          if (fallback) storage.setItem(preferenceKey, fallback);
-          else storage.removeItem(preferenceKey);
-        }
-      } catch { /* Active selection falls back to a registered board. */ }
-      return fallback;
     });
   }
 

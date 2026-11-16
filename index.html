@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101816">
-  <title>圈问白板 · 实现说明</title>
+  <title>圈问白板</title>
   <link rel="stylesheet" href="styles.css">
   <script defer src="geometry.js"></script>
   <script defer src="memory.js"></script>
@@ -26,23 +26,26 @@
           <h1>圈问白板</h1>
         </div>
       </div>
-      <div class="board-picker" role="group" aria-label="白板管理">
-        <label for="board-switcher">切换白板</label>
-        <select id="board-switcher">
-          <option value="original">原白板</option>
-          <option value="project-design">项目定义与交付</option>
-          <option value="repo-manual">代码仓库详解手册</option>
-          <option value="repo-atlas">源码架构手册（Codex）</option>
-          <option value="project-workbench">项目工作台</option>
-        </select>
-        <a id="local-project-link" class="tool-button" href="?board=project-workbench">项目入口</a>
-        <button id="board-manage" class="tool-button" type="button" aria-expanded="false" aria-controls="board-actions" title="管理白板">管理</button>
-        <div id="board-actions" role="group" aria-label="白板操作" hidden>
-          <button id="board-create" class="tool-button" type="button" aria-haspopup="dialog">新建白板</button>
-          <button id="board-repository" class="tool-button" type="button" aria-haspopup="dialog" aria-controls="board-repository-dialog">项目目录</button>
-          <button id="board-delete" class="tool-button" type="button" aria-haspopup="dialog">删除当前白板</button>
+      <nav class="workspace-nav" aria-label="工作区导航">
+        <a id="local-project-link" class="tool-button" href="./">首页</a>
+        <a id="close-project" class="tool-button" href="./" hidden>关闭项目</a>
+        <div class="board-picker" role="group" aria-label="白板管理">
+          <label for="board-switcher">切换白板</label>
+          <select id="board-switcher">
+            <option value="original">原白板</option>
+            <option value="project-design">项目定义与交付</option>
+            <option value="repo-manual">代码仓库详解手册</option>
+            <option value="repo-atlas">源码架构手册（Codex）</option>
+            <option value="project-workbench">项目工作台</option>
+          </select>
+          <button id="board-manage" class="tool-button" type="button" aria-expanded="false" aria-controls="board-actions" title="管理白板">管理</button>
+          <div id="board-actions" role="group" aria-label="白板操作" hidden>
+            <button id="board-create" class="tool-button" type="button" aria-haspopup="dialog">新建白板</button>
+            <button id="board-repository" class="tool-button" type="button" aria-haspopup="dialog" aria-controls="board-repository-dialog">项目目录</button>
+            <button id="board-delete" class="tool-button" type="button" aria-haspopup="dialog">删除当前白板</button>
+          </div>
         </div>
-      </div>
+      </nav>
       <div class="connection-area">
         <div class="demo-label" role="status"><span class="connection-dot" aria-hidden="true"></span><span id="connection-label">正在连接本地服务…</span></div>
         <details class="connection-settings">
@@ -66,6 +69,27 @@
     </header>
 
     <p id="board-lifecycle-status" role="status"></p>
+    <dialog id="project-register-dialog" class="board-dialog" aria-labelledby="project-register-heading">
+      <form id="project-register-form">
+        <h2 id="project-register-heading">添加本机项目</h2>
+        <label for="project-register-name">项目名称</label>
+        <input id="project-register-name" type="text" maxlength="80" required autofocus>
+        <div class="board-repository-field">
+          <label for="project-register-path">本机目录</label>
+          <input id="project-register-path" type="text" maxlength="1024" placeholder="C:\Projects\my-repo" autocomplete="off" spellcheck="false" aria-describedby="project-register-hint" required>
+          <p id="project-register-hint" class="board-field-hint">填写已有项目的绝对路径，添加后可进入对应的项目画布。</p>
+        </div>
+        <div class="board-repository-field">
+          <label for="project-register-description">项目简介（可选）</label>
+          <textarea id="project-register-description" rows="3" maxlength="400"></textarea>
+        </div>
+        <p id="project-register-error" class="board-dialog-error" role="alert" hidden></p>
+        <div class="board-dialog-actions">
+          <button id="project-register-cancel" class="tool-button" type="button">取消</button>
+          <button id="project-register-submit" class="submit-button" type="submit">添加并打开</button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="board-create-dialog" class="board-dialog" aria-labelledby="board-create-heading">
       <form id="board-create-form">
         <h2 id="board-create-heading">新建白板</h2>
@@ -151,22 +175,15 @@
       <button id="board-empty-create" class="submit-button" type="button" aria-haspopup="dialog">新建白板</button>
     </section>
     <main id="local-projects" aria-labelledby="local-projects-heading" hidden>
-      <h2 id="local-projects-heading">本机项目</h2>
-      <section class="local-project-finder" aria-labelledby="local-project-finder-heading">
-        <h3 id="local-project-finder-heading">用一句话找项目</h3>
-        <form id="local-project-question-form" role="search" aria-label="按用途找项目">
-          <input id="local-project-question" type="search" aria-label="描述想找的项目" maxlength="200" required
-            placeholder="例如：哪个项目能数出照片里有几根竹签？" autocomplete="off" disabled>
-          <button id="local-project-find" class="submit-button" type="submit" disabled>找项目</button>
-        </form>
-        <p id="local-project-find-status" role="status">正在读取本机项目…</p>
-        <div id="local-project-matches" hidden>
-          <div id="local-project-choices" role="group" aria-label="候选项目"></div>
-          <div id="local-project-preview"></div>
+      <header class="project-home-header">
+        <div>
+          <h2 id="local-projects-heading">项目</h2>
+          <p>打开本机项目，在项目画布中写下想法、读代码或继续讨论。</p>
         </div>
-      </section>
+        <button id="home-add-project" class="submit-button" type="button" aria-haspopup="dialog" aria-controls="project-register-dialog">添加项目</button>
+      </header>
       <details id="local-project-browse" class="local-project-browse" open>
-        <summary id="local-project-browse-label">浏览顶层项目</summary>
+        <summary id="local-project-browse-label">本机项目</summary>
         <div class="local-project-filters">
           <input type="search" id="local-project-search" aria-label="搜索本机项目" placeholder="搜索名称、简介或目录">
           <select id="local-project-category" aria-label="项目类别">
@@ -177,20 +194,47 @@
         <div id="local-project-cards" class="local-project-cards"></div>
         <button id="local-project-more" class="tool-button" type="button" hidden>显示更多项目</button>
       </details>
+      <details class="local-project-finder" aria-labelledby="local-project-finder-heading">
+        <summary id="local-project-finder-heading">用一句话找项目</summary>
+        <form id="local-project-question-form" role="search" aria-label="按用途找项目">
+          <input id="local-project-question" type="search" aria-label="描述想找的项目" maxlength="200" required
+            placeholder="描述项目的用途" autocomplete="off" disabled>
+          <button id="local-project-find" class="submit-button" type="submit" disabled>找项目</button>
+        </form>
+        <p id="local-project-find-status" role="status">正在读取本机项目…</p>
+        <div id="local-project-matches" hidden>
+          <div id="local-project-choices" role="group" aria-label="候选项目"></div>
+          <div id="local-project-preview"></div>
+        </div>
+      </details>
+      <section id="home-boards" class="home-board-section" aria-labelledby="home-boards-heading">
+        <header class="home-board-header">
+          <div>
+            <h3 id="home-boards-heading">独立白板</h3>
+            <p>随手记录或讨论，稍后可从这里继续。</p>
+          </div>
+          <button id="home-create-board" class="tool-button" type="button" aria-haspopup="dialog" aria-controls="board-create-dialog">新建白板</button>
+        </header>
+        <div id="home-board-list" class="local-project-cards"></div>
+      </section>
+      <details id="home-examples" class="home-board-section">
+        <summary>示例与手册</summary>
+        <div id="home-example-list" class="local-project-cards"></div>
+      </details>
     </main>
     <section id="project-context" aria-labelledby="project-context-title" hidden>
       <nav class="project-breadcrumb" aria-label="项目层级">
         <ol id="project-context-ancestors">
-          <li><a href="?board=project-workbench">项目入口</a></li>
+          <li><a href="./">项目</a></li>
         </ol>
       </nav>
       <h2 id="project-context-title"></h2>
       <code id="project-context-directory"></code>
       <nav id="project-context-views" class="activity-nav" aria-label="当前项目视图" hidden>
-        <a class="tool-button activity-canvas-link" data-project-view="projects" hidden>子项目</a>
-        <a class="tool-button activity-canvas-link" data-project-view="actions">AI 动作</a>
-        <a class="tool-button activity-canvas-link" data-project-view="graph">项目图</a>
         <a class="tool-button activity-canvas-link" data-project-view="canvas">项目画布</a>
+        <a class="tool-button activity-canvas-link" data-project-view="projects" hidden>子项目</a>
+        <a class="tool-button activity-canvas-link" data-project-view="graph">项目图</a>
+        <a class="tool-button activity-canvas-link" data-project-view="actions">AI 动作</a>
       </nav>
       <p id="project-context-error" role="alert" hidden></p>
     </section>
@@ -231,7 +275,7 @@
       <section class="canvas-panel" aria-label="白板实现说明">
         <header class="canvas-bar">
           <div class="canvas-name">
-            <p class="overline">项目画布 <span>/</span> 01</p>
+            <p class="overline">画布</p>
             <h2 id="canvas-title">这块白板是怎么实现的？</h2>
             <p id="board-repository-label" hidden></p>
           </div>
@@ -292,10 +336,19 @@
         </header>
 
         <div id="viewport" aria-label="拖动鼠标圈选文字、公式或图形">
-          <div id="repository-init" hidden>
-            <button id="initialize-repository" class="submit-button" type="button" aria-describedby="repository-init-hint">初始化工程介绍</button>
-            <p id="repository-init-hint"></p>
-            <p id="repository-init-status" role="status"></p>
+          <div id="empty-canvas-start" hidden>
+            <div class="empty-canvas-panel">
+              <h3>从一张卡片开始</h3>
+              <p>写下你想弄清的问题、需求或约束。</p>
+              <div class="empty-canvas-actions">
+                <button id="empty-canvas-write" class="submit-button" type="button">写第一张卡片</button>
+                <div id="repository-init" hidden>
+                  <button id="initialize-repository" class="tool-button" type="button" aria-describedby="repository-init-hint">初始化工程介绍</button>
+                </div>
+              </div>
+              <p id="repository-init-hint"></p>
+              <p id="repository-init-status" role="status"></p>
+            </div>
           </div>
           <div id="board">
             <div class="board-caption" aria-hidden="true"><span>01</span> 圈选 · 定位 · 项目记忆</div>
