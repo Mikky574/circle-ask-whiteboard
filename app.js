@@ -110,8 +110,10 @@
           return;
         }
         showProjectContext(details, "canvas");
-        if (!localStorage.getItem(memory.storageKeys.organization) && !localStorage.getItem(memory.storageKeys.memory)) {
-          initialActivity = await window.WorkbenchActivity.load(projectId);
+        if (isEmptyProjectCanvas(organizationEngine.load(), memory.load())) {
+          const untouched = Object.values(memory.storageKeys).every((key) => localStorage.getItem(key) === null);
+          const activity = await window.WorkbenchActivity.load(projectId);
+          if (activity?.initialBoard || untouched) initialActivity = activity;
         }
       } else {
         showProjectContext(details, projectView);
@@ -185,17 +187,22 @@
   const segmenter = new Intl.Segmenter("zh", { granularity: "grapheme" });
   const replies = new Map();
   let organization = organizationEngine?.load() || { current: null, previous: null, opinion: "", rawPositions: {} };
-  if (customBoard && !organization.current && !organization.rawCards?.length) {
-    organization.current = organizationEngine.clean({ title: memory.activeBoardInfo.title, items: [] });
-    if (initialActivity?.branches?.length) {
-      organization.current = organizationEngine.clean({ title: registeredProject.name, items: [
+  if (initialActivity && isEmptyProjectCanvas(organization, saved)) {
+    const intro = initialActivity.initialBoard;
+    const initialMap = intro ? projectIntroduction(intro) : initialActivity.branches.length
+      ? organizationEngine.clean({ title: registeredProject.name, items: [
         { id: "E04", category: "main", title: registeredProject.name, summary: registeredProject.description },
         ...initialActivity.branches.slice(0, 30).map((branch, index) => ({
           id: `E${index + 5}`, parentId: "E04", category: "main", title: branch.title, summary: branch.desc,
         })),
-      ] });
-      organizationEngine.save(organization);
+      ] }) : null;
+    if (initialMap) {
+      const next = { ...organization, current: initialMap, ...(intro ? { appliedGuideId: "local-project-introduction" } : {}) };
+      if (organizationEngine.save(next)) organization = next;
     }
+  }
+  if (customBoard && !organization.current && !organization.rawCards?.length) {
+    organization.current = organizationEngine.clean({ title: memory.activeBoardInfo.title, items: [] });
   }
   let organizedRects = new Map();
   let guideRects = new Map();
@@ -246,6 +253,28 @@
   function projectCanvasUrl(project) {
     if (project.boardUrl && new URL(project.boardUrl).origin !== location.origin) return project.boardUrl;
     return projectUrl(project.id);
+  }
+
+  function isEmptyProjectCanvas(state, savedBoard) {
+    return !state.appliedGuideId && !state.current?.items.length && !state.previous?.items.length && !state.rawCards?.length &&
+      !savedBoard.notes.length && !savedBoard.deletedIds.length && !savedBoard.pinnedIds.length && !savedBoard.pendingRepair;
+  }
+
+  function projectIntroduction(value) {
+    if (!Array.isArray(value.items) || !value.items.length || value.items.length > 64) return null;
+    const plan = organizationEngine.clean({
+      title: value.title, summary: value.summary, layout: { flow: "vertical", density: "compact" },
+      items: value.items.map((item) => ({ ...item, repositoryFiles: item?.sources, sources: undefined })),
+      collapsedBranches: value.collapsedBranches,
+    });
+    const roots = plan.items.filter(({ parentId }) => parentId === null);
+    if (roots.length !== 1 || plan.items.length !== value.items.length || plan.items.some((item, index) =>
+      item.category === "archive" || item.parentId !== value.items[index].parentId)) return null;
+    const rootId = roots[0].id;
+    const parents = new Set(plan.items.map(({ parentId }) => parentId));
+    return { ...plan, projectGuide: { rootId, x: 64, y: 100 },
+      collapsedBranches: plan.collapsedBranches.filter((id) => id !== rootId && parents.has(id)),
+    };
   }
 
   function showProjectContext({ project, ancestors, children }, view) {
@@ -1646,11 +1675,12 @@
 
   function getPayload(text) {
     const box = unionRects(selected.map((item) => item.box));
-    const sourceFiles = repositoryPath ? [] : [...new Set([...selectedSourceFiles(), ...selected.flatMap(({ id }) =>
+    const chapters = selectedChapters();
+    const sourceFiles = repositoryPath ? [] : [...new Set([...selectedSourceFiles(chapters), ...selected.flatMap(({ id }) =>
       replies.get(id)?.payload.anchor.sourceFiles || [])])];
-    const selectedIds = new Set(selected.map(({ id }) => id));
-    const repositoryFiles = connection.backend === "api" ? [] : [...new Set((organization.current?.items || [])
-      .filter((item) => item.codePreview && selectedIds.has(item.id)).map((item) => item.codePreview.path))].slice(0, 12);
+    const repositoryFiles = connection.backend === "api" ? [] : [...new Set(chapters.flatMap((item) => [
+      ...(item.codePreview ? [item.codePreview.path] : []), ...(repositoryPath ? item.repositoryFiles || [] : []),
+    ]))].slice(0, 12);
     const formulaFragments = selected.flatMap((item) => item.formulaFragments.map((fragment) => ({
       elementId: item.id,
       ...fragment,
@@ -2918,7 +2948,8 @@
       if (item.spec?.runner) appendText(body, "p", "organized-evidence", item.spec.runner);
       const formula = element.querySelector(":scope > .element-content [data-select-part='formula']");
       if (formula) appendText(body, "div", "element-content organized-formula", "").append(formula.cloneNode(true));
-      if (item.sources?.length) appendText(body, "p", "organized-evidence", `代码依据 · ${item.sources.join("、")}`).dataset.selectPart = "text";
+      const sources = [...(item.sources || []), ...(item.repositoryFiles || [])];
+      if (sources.length) appendText(body, "p", "organized-evidence", `代码依据 · ${sources.join("、")}`).dataset.selectPart = "text";
       if (item.codePreview) {
         appendText(body, "code", "organized-evidence organized-code-path", item.codePreview.path).dataset.selectPart = "text";
         appendText(body, "pre", "organized-code-preview", item.codePreview.text).dataset.selectPart = "text";
@@ -3721,6 +3752,7 @@
       const parentIds = [layoutParentId, ...(raw || []), ...item.parentIds];
       const box = visibleRect(item.id) || item.box;
       const summary = current?.taskDetails ? taskContext(current.taskDetails) : current?.summary;
+      const repositoryFiles = current?.codePreview ? [current.codePreview.path] : current?.repositoryFiles;
       return {
         ...item,
         layoutParentId,
@@ -3734,7 +3766,7 @@
         ...(current?.sources?.length ? { sources: current.sources } : {}),
         title: excerpt((!current?.nativeFace && current?.title) || item.title, 96),
         text: excerpt(current && !current.nativeFace ?
-          (current.codePreview ? `源码文件：${current.codePreview.path}。\n` : "") +
+          (repositoryFiles?.length ? `源码文件：${repositoryFiles.join("、")}。\n` : "") +
           `上次整理角色：${current.category}。 ${summary}` + (item.text ? `\n原内容：${item.text}` : "") : item.text, excerptLength),
         parentIds: [...new Set(parentIds)].filter((id) => id !== item.id && ids.has(id)),
         box: Object.fromEntries(Object.entries(box).map(([key, value]) => [key, Math.round(value)])),
@@ -4666,6 +4698,7 @@
         if (old?.taskDetails) item.taskDetails = old.taskDetails;
         if (old?.spec) item.spec = specAfterContentChange(old, item);
         if (old?.codePreview) item.codePreview = old.codePreview;
+        if (old?.repositoryFiles) item.repositoryFiles = old.repositoryFiles;
         if (old?.draft) item.draft = true;
         if (old?.explicitParent || (!previous.current && Object.hasOwn(previous.rawLinks || {}, item.id))) item.explicitParent = true;
         if (old?.category === item.category && typeof old.folded === "boolean") item.folded = old.folded;

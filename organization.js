@@ -91,10 +91,15 @@
     return { kind, id, status, ...(runner ? { runner } : {}) };
   }
 
+  function repositoryFile(value) {
+    if (typeof value !== "string" || value.length > 300 || !/^[\p{L}\p{N}\p{M}_ .()\[\]@+/-]+$/u.test(value) ||
+        value.split("/").some((part) => !part || part === "." || part === "..")) return null;
+    return value;
+  }
+
   function cleanCodePreview(value) {
-    const path = text(value?.path, 300);
-    if (!path || !/^[\p{L}\p{N}\p{M}_ .()\[\]@+/-]+$/u.test(path) ||
-        path.split("/").some((part) => !part || part === "." || part === "..")) return null;
+    const path = repositoryFile(text(value?.path, 300));
+    if (!path) return null;
     const code = typeof value?.text === "string" ? value.text.slice(0, 1400) : "";
     return code.trim() ? { path, text: code } : null;
   }
@@ -107,6 +112,8 @@
       if (!id || byId.has(id)) continue;
       const sources = Array.isArray(item.sources)
         ? [...new Set(item.sources.filter((file) => sourceFiles.has(file)))] : null;
+      const repositoryFiles = Array.isArray(item.repositoryFiles)
+        ? [...new Set(item.repositoryFiles.map(repositoryFile).filter(Boolean))].slice(0, 12) : [];
       const attachments = window.BoardMemory?.cleanAttachments(item.attachments) || [];
       const taskDetails = cleanTaskDetails(item.taskDetails);
       const spec = cleanSpec(item.spec);
@@ -118,6 +125,7 @@
         title: text(item.title, 100) || id,
         summary: text(item.summary, 800),
         ...(sources ? { sources } : {}),
+        ...(repositoryFiles.length ? { repositoryFiles } : {}),
         ...(attachments.length ? { attachments } : {}),
         ...(taskDetails ? { taskDetails } : {}),
         ...(spec ? { spec } : {}),

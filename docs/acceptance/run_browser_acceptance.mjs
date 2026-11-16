@@ -5863,6 +5863,8 @@ async function testProjectHomeWorkflow() {
     const onProjectCanvas = (id) => (url) =>
       url.searchParams.get("board") === `board-${id}` &&
       url.searchParams.get("project") === id && url.searchParams.get("view") === "canvas";
+    const waitProjectName = (name) =>
+      page.waitForFunction((title) => document.querySelector("#project-context-title")?.textContent === title, name);
     const projectLink = (within, project) => page.locator(`${within} a[href*="project=${project.id}"]`).first();
     const closeProject = async () => {
       await page.locator("#close-project").click();
@@ -5877,7 +5879,7 @@ async function testProjectHomeWorkflow() {
     await projectLink("#local-project-cards", parentProject).click();
     await page.waitForURL(onProjectCanvas(parentProject.id));
     await canvas.waitFor();
-    assert.equal((await page.locator("#project-context-title").textContent()).trim(), parentProject.name);
+    await waitProjectName(parentProject.name);
     assert.equal(await tab("canvas").getAttribute("aria-current"), "page");
 
     const cardTitle = "接口版本写作提纲";
@@ -5907,7 +5909,7 @@ async function testProjectHomeWorkflow() {
     await projectLink("#project-children-cards", childProject).click();
     await page.waitForURL(onProjectCanvas(childProject.id));
     await canvas.waitFor();
-    assert.equal((await page.locator("#project-context-title").textContent()).trim(), childProject.name);
+    await waitProjectName(childProject.name);
     assert.equal(await writtenCard.count(), 0, "The parent canvas must stay separate from its child project");
 
     await closeProject();
@@ -5938,7 +5940,7 @@ async function testProjectHomeWorkflow() {
     await page.locator("#project-register-submit").click();
     await page.waitForURL(onProjectCanvas(registeredProjectId));
     await canvas.waitFor();
-    assert.equal((await page.locator("#project-context-title").textContent()).trim(), name);
+    await waitProjectName(name);
     assert.equal((await page.locator("#project-context-directory").textContent()).trim(), path);
     await closeProject();
     await page.locator("#local-project-cards").getByText(name, { exact: true }).waitFor();
@@ -6035,13 +6037,118 @@ async function testLinkedProjectBoards() {
   finally { await closeSession(session); }
 }
 
+async function testRegisteredProjectIntroduction() {
+  const session = await openPage("normal", null);
+  try {
+    const { page, jsErrors } = session;
+    const fresh = parentProject;
+    const empty = { ...childProject, name: "已打开的空项目" };
+    const edited = { ...parentProject, id: "2".repeat(32), name: "已有自写内容的项目" };
+    const cleared = { ...parentProject, id: "3".repeat(32), name: "已主动清空的项目" };
+    const legacy = { ...parentProject, id: "4".repeat(32), name: "原有动作项目" };
+    const initialBoard = {
+      title: "工程说明",
+      summary: "从项目用途到源码位置。",
+      items: [
+        { id: "E04", parentId: null, category: "main", title: "项目总览", summary: "这是分层说明的根卡。" },
+        { id: "E05", parentId: "E04", category: "reference", title: "运行流程", summary: "按请求生命周期阅读。" },
+        { id: "E06", parentId: "E05", category: "reference", title: "处理上传", summary: "解析请求、校验输入。",
+          sources: ["frontend/src/Upload.ts", "backend/app/main.py"] },
+      ],
+      collapsedBranches: ["E05"],
+    };
+    const editedCard = { id: "E90", parentId: null, category: "main", title: "用户写过的卡片", summary: "必须原样保留。" };
+    const projects = [fresh, empty, edited, cleared, legacy];
+    await page.route("**/api/local-projects", async (route) => {
+      const request = route.request().postDataJSON();
+      if (request.action === "list") await route.fulfill({ json: { projects } });
+      else {
+        const project = projects.find(({ id }) => id === request.id);
+        assert.ok(project, "The canvas must open the selected project");
+        await route.fulfill({ json: { project, ancestors: [], children: [] } });
+      }
+    });
+    await page.route("**/api/workbench-activity", (route) => {
+      const { projectId } = route.request().postDataJSON();
+      const base = { version: 1, id: "project-introduction", projectId, branches: [], events: [] };
+      const activity = projectId === legacy.id
+        ? { ...base, branches: [{ id: "legacy-step", title: "历史动作分支", desc: "旧快照分支可以继续使用。" }] }
+        : { ...base, initialBoard };
+      return route.fulfill({ json: { activity } });
+    });
+
+    await page.evaluate(({ empty, edited, cleared, editedCard }) => {
+      const setStored = (project, organization, memory) => {
+        const keys = BoardMemory.boardStorageKeys("board-" + project.id);
+        localStorage.setItem(keys.organization, JSON.stringify(organization));
+        localStorage.setItem(keys.memory, JSON.stringify(memory));
+      };
+      const blank = { current: { title: "浏览过的空板", items: [] } };
+      setStored(empty, blank, { notes: [] });
+      setStored(edited, { current: { title: "用户已有的白板", items: [editedCard] } }, { notes: [] });
+      setStored(cleared, { ...blank, previous: { title: "删除前的白板", items: [editedCard] } },
+        { notes: [], deletedIds: [editedCard.id] });
+    }, { empty, edited, cleared, editedCard });
+
+    const openCanvas = async (project) => {
+      const url = new URL("/", page.url());
+      url.searchParams.set("board", "board-" + project.id);
+      url.searchParams.set("project", project.id);
+      url.searchParams.set("view", "canvas");
+      await page.goto(url.href, { waitUntil: "networkidle" });
+      assert.equal((await page.locator("#project-context-title").textContent()).trim(), project.name);
+      await page.locator("#board-workspace").waitFor();
+    };
+    const card = (id) => page.locator("#board [data-element-id=\"" + id + "\"]");
+    const savedOrganization = () => page.evaluate(() => JSON.parse(localStorage.getItem(BoardMemory.storageKeys.organization)));
+
+    for (const project of [fresh, empty]) {
+      await openCanvas(project);
+      await card("E04").getByText("项目总览", { exact: true }).waitFor();
+      await card("E05").getByText("运行流程", { exact: true }).waitFor();
+      assert.equal(await card("E06").isVisible(), false, "The prepared child branch should start collapsed");
+
+      const expectedItems = initialBoard.items.map(({ id, parentId, sources }) => [id, parentId, sources ?? []]);
+      const persistedItems = async () => (await savedOrganization()).current.items
+        .map(({ id, parentId, repositoryFiles }) => [id, parentId, repositoryFiles ?? []]);
+      assert.deepEqual(await persistedItems(), expectedItems, "The saved introduction must retain hierarchy and project source paths");
+      await card("E05").locator(".branch-toggle").click();
+      await card("E06").getByText("处理上传", { exact: true }).waitFor();
+      assert.match(await card("E06").locator(".organized-evidence").textContent(), /frontend\/src\/Upload\.ts/);
+      await page.reload({ waitUntil: "networkidle" });
+      await card("E06").waitFor();
+      assert.deepEqual(await persistedItems(), expectedItems, "Reload must preserve folds and avoid inserting a second copy");
+      await card("E06").locator(".organized-title").click();
+      assert.deepEqual(JSON.parse(await page.locator("#payload").textContent()).anchor.repositoryFiles,
+        initialBoard.items[2].sources, "Selecting the saved card must send project-relative references to the local CLI");
+    }
+
+    await openCanvas(edited);
+    await card(editedCard.id).getByText(editedCard.title, { exact: true }).waitFor();
+    assert.deepEqual((await savedOrganization()).current.items.map(({ id }) => id), [editedCard.id]);
+
+    await openCanvas(cleared);
+    assert.equal(await card("E04").count(), 0, "A project the user intentionally cleared must stay empty");
+    assert.deepEqual((await savedOrganization()).current.items, []);
+
+    await openCanvas(legacy);
+    await page.locator("#board").getByText("历史动作分支", { exact: true }).waitFor();
+    const legacyItems = (await savedOrganization()).current.items;
+    assert.deepEqual(legacyItems.map(({ parentId, title }) => [parentId, title]),
+      [[null, legacy.name], [legacyItems[0].id, "历史动作分支"]]);
+    assertNoJsErrors(jsErrors);
+    record("U64", "PASS", "Registered projects with a prepared introduction recover fresh and visited empty canvases, retain nesting and sources, and preserve saved boards and older activity snapshots.");
+  } catch (error) { record("U64", "FAIL", safeError(error)); await screenshot("U64-failure", session.page); }
+  finally { await closeSession(session); }
+}
+
 try {
   if (!existsSync(EDGE)) throw new Error(`BLOCKED: installed msedge channel not found at ${EDGE}`);
   server = createServer((req, res) => { relay(req, res).catch(() => { if (!res.headersSent) res.writeHead(500); res.end(); }); });
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(0, "127.0.0.1", resolveListen); });
   port = server.address().port;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
-  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62,U63").split(","));
+  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62,U63,U64").split(","));
   if (selected.has("U01")) { console.log("BROWSER_CASE=U01"); await testCapabilities(); }
   if (selected.has("U02")) { console.log("BROWSER_CASE=U02"); await testKeyEphemeral(); }
   if (selected.has("U05-A")) { console.log("BROWSER_CASE=U05-A"); await testStopLateEvents(); }
@@ -6107,6 +6214,7 @@ try {
   if (selected.has("U61")) { console.log("BROWSER_CASE=U61"); await testCanvasNavigation(); }
   if (selected.has("U62")) { console.log("BROWSER_CASE=U62"); await testProjectHomeWorkflow(); }
   if (selected.has("U63")) { console.log("BROWSER_CASE=U63"); await testLinkedProjectBoards(); }
+  if (selected.has("U64")) { console.log("BROWSER_CASE=U64"); await testRegisteredProjectIntroduction(); }
 } catch (error) {
   record("HARNESS", String(error?.message || "").startsWith("BLOCKED:") ? "BLOCKED" : "FAIL", safeError(error));
 } finally {

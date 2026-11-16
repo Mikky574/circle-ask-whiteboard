@@ -53,6 +53,8 @@ Codex 沿用本机 `codex login`。ZCode 沿用本机 CLI 配置和登录，可�
 
 项目的本机动作快照放在清单旁的 `workbench-activity/<项目编号>.json`，文件内的 `projectId` 须与项目链接中的 `project` 一致。也可继续使用带同一字段的 `workbench-activity.local.json`。快照可提供项目状态、项目卡片、关联动作、来源和指导选项。没有快照的项目仍可打开独立画布与项目图，AI 动作页显示空状态。
 
+已有项目介绍时，可以在快照中用 `initialBoard` 提供 `title`、`summary`、`items` 和 `collapsedBranches`。介绍应用于空画布，包括曾经打开并保存过的空板。用卡片的 `parentId` 表示层级，`sources` 填相对于绑定目录的源码路径。白板加载并保存介绍后，可继续编辑和展开，已有卡片与讨论保留。
+
 项目资料保存在当前用户主目录下的 `.circle-ask-whiteboard/projects.local.json`，也可用环境变量 `WHITEBOARD_PROJECTS_FILE` 指定清单。清单使用 UTF-8 JSON 数组。每个项目包含 `name`（名称）、`description`（简介）、`category`（类别）和 `path`（本机绝对目录路径）。可用 `aliases` 补充常用叫法、缩写或用途短语。每个项目归入最近的已登记上级目录，编辑清单后刷新总览即可更新。
 
 项目已有独立的本机白板服务时，可在本机清单为该项目设置 `boardUrl`，填写包含本机地址、端口和 `?board=…` 的原白板链接。「打开项目」会访问该服务的原画布。卡片和编辑记录继续在原地址的浏览器存储中读取。
