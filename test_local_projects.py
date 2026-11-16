@@ -49,6 +49,44 @@ class LocalProjectTests(unittest.TestCase):
             self.request(action="list")
         self.assertEqual(malformed.exception.status, 422)
 
+    def test_exposes_configured_board_url_and_preserves_it_when_reopening(self):
+        urls = (
+            "http://127.0.0.1:8797/?board=board-20261116000000000000000000000008",
+            "https://localhost:8797?board=repo-manual",
+            "http://[::1]:65535/?board=original",
+        )
+        for url in urls:
+            with self.subTest(url=url):
+                self.write_catalog({**self.entry, "boardUrl": url})
+                source = self.manifest.read_bytes()
+                project, = self.request(action="list")["projects"]
+                self.assertEqual(project["boardUrl"], url)
+                self.assertEqual(self.request(action="get", id=project["id"])["project"], project)
+                reopened = self.request(action="register", name="新名称", path=str(self.project))["project"]
+                self.assertEqual(reopened, project)
+                self.assertEqual(self.manifest.read_bytes(), source)
+
+        with self.assertRaises(ProjectCatalogError) as untrusted:
+            self.request(action="register", name="项目", path=str(self.project), boardUrl=urls[0])
+        self.assertEqual(untrusted.exception.status, 400)
+
+    def test_rejects_malformed_or_nonlocal_board_urls(self):
+        for url in (
+            None, "", "javascript:alert(1)", "//localhost:8797/?board=original",
+            "http://example.org:8797/?board=original", "http://localhost.example.org:8797/?board=original",
+            "http://localhost/?board=original", "http://localhost:0/?board=original",
+            "http://localhost:65536/?board=original", "http://localhost:abc/?board=original",
+            "http://user@localhost:8797/?board=original", "http://localhost:8797/?board=original#",
+            "http://localhost:8797/admin?board=original", "http://localhost:8797/?board=original&extra=1",
+            "http://localhost:8797/?board=original&board=project-design", "http://localhost:8797/?board=board-abcd",
+            "http://localhost:8797/?board=unknown",
+        ):
+            with self.subTest(url=url):
+                self.write_catalog({**self.entry, "boardUrl": url})
+                with self.assertRaises(ProjectCatalogError) as malformed:
+                    self.request(action="list")
+                self.assertEqual(malformed.exception.status, 422)
+
     def test_registers_and_reopens_without_overwriting_a_project(self):
         registered = self.request(action="register", name="  我的项目  ", path=str(self.project))["project"]
         self.assertEqual(registered["name"], "我的项目")

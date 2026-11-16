@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 MAX_CATALOG_BYTES = 1024 * 1024
 CATALOG_WRITE_LOCK = Lock()
+BUILT_IN_BOARD_IDS = {"original", "project-design", "repo-manual", "repo-atlas", "project-workbench"}
 
 
 class ProjectCatalogError(Exception):
@@ -37,6 +38,16 @@ def project_aliases(entry):
     if not isinstance(aliases, list) or len(aliases) > 24:
         raise ProjectCatalogError(422, "项目别名请填写为名称或用途短语的数组，最多 24 项。")
     return list(dict.fromkeys(project_text(alias, 80) for alias in aliases))
+
+
+def project_board_url(value):
+    url = project_text(value, 256, field="项目白板地址")
+    match = re.fullmatch(r"(?ai:https?://(?:localhost|127\.0\.0\.1|\[::1\])):([0-9]{1,5})/?\?board=([a-z0-9-]+)", url)
+    if match:
+        port, board_id = match.groups()
+        if 1 <= int(port) <= 65535 and (board_id in BUILT_IN_BOARD_IDS or re.fullmatch(r"board-[0-9a-f]{32}", board_id)):
+            return url
+    raise ProjectCatalogError(422, "项目白板地址须使用带端口和白板编号的本机链接。")
 
 
 def read_catalog_entries(path):
@@ -76,7 +87,7 @@ def catalog_projects(entries):
         if not directory.is_absolute() or directory.drive.startswith("\\\\"):
             raise ProjectCatalogError(422, "项目清单请使用本机目录的绝对路径。")
         key = project_key(directory)
-        projects.setdefault(key, {
+        project = {
             "id": key,
             "name": project_text(entry.get("name"), 80),
             "description": project_text(entry.get("description"), 400, allow_empty=True),
@@ -84,7 +95,10 @@ def catalog_projects(entries):
             "path": str(directory),
             "aliases": project_aliases(entry),
             "childCount": 0,
-        })
+        }
+        if "boardUrl" in entry:
+            project["boardUrl"] = project_board_url(entry["boardUrl"])
+        projects.setdefault(key, project)
     directory_ids = {
         Path(normalized_directory(project["path"])): project_id
         for project_id, project in projects.items()

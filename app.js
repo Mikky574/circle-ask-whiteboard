@@ -98,6 +98,11 @@
       const details = await localProjectRequest({ action: "get", id: projectId });
       registeredProject = details.project;
       if (projectView === "canvas") {
+        const canvasUrl = projectCanvasUrl(registeredProject);
+        if (canvasUrl === registeredProject.boardUrl) {
+          location.replace(canvasUrl);
+          return;
+        }
         const path = await validateRepositoryPath(registeredProject.path);
         await memory.openLocalProject(projectId, registeredProject.name, path);
         if (!projectCanvas || path !== repositoryPath || registeredProject.name.slice(0, 80).trim() !== memory.activeBoardInfo.title) {
@@ -238,6 +243,11 @@
     return `?${new URLSearchParams({ board, project: id, view })}`;
   }
 
+  function projectCanvasUrl(project) {
+    if (project.boardUrl && new URL(project.boardUrl).origin !== location.origin) return project.boardUrl;
+    return projectUrl(project.id);
+  }
+
   function showProjectContext({ project, ancestors, children }, view) {
     const breadcrumb = $("project-context-ancestors");
     breadcrumb.replaceChildren(breadcrumb.firstElementChild, ...ancestors.map((ancestor) => {
@@ -255,7 +265,7 @@
     for (const tab of tabs.querySelectorAll("[data-project-view]")) {
       const target = tab.dataset.projectView;
       tab.hidden = target === "projects" && !children.length;
-      tab.href = projectUrl(project.id, target);
+      tab.href = target === "canvas" ? projectCanvasUrl(project) : projectUrl(project.id, target);
       if (target === view) tab.setAttribute("aria-current", "page");
       else tab.removeAttribute("aria-current");
     }
@@ -576,7 +586,7 @@
     path.textContent = project.path;
     const openProject = document.createElement("a");
     openProject.className = "submit-button";
-    openProject.href = projectUrl(project.id);
+    openProject.href = projectCanvasUrl(project);
     openProject.textContent = "打开项目";
     openProject.setAttribute("aria-label", `打开项目：${project.name}`);
     const openFolder = document.createElement("button");
@@ -651,7 +661,7 @@
       for (const { project, trail } of matches) {
         const item = document.createElement("li");
         const link = document.createElement("a");
-        link.href = projectUrl(project.id);
+        link.href = projectCanvasUrl(project);
         link.textContent = trail.slice(1).map((entry) => entry.name).join(" / ");
         item.append(link);
         list.append(item);

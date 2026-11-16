@@ -5963,13 +5963,85 @@ async function testProjectHomeWorkflow() {
   finally { await closeSession(session); }
 }
 
+async function testLinkedProjectBoards() {
+  const session = await openPage("normal", null);
+  try {
+    const { context, page, jsErrors } = session;
+    const root = {
+      ...parentProject,
+      id: "d".repeat(32),
+      name: "已有讲义项目",
+      boardUrl: `http://127.0.0.1:18797/?board=board-${"f".repeat(32)}`,
+    };
+    const child = {
+      ...childProject,
+      id: "e".repeat(32),
+      parentId: root.id,
+      name: "已保存的研讨稿",
+      boardUrl: `http://127.0.0.1:18797/?board=board-${"1".repeat(32)}`,
+    };
+    const home = page.locator("#local-projects");
+    const homeUrl = page.url();
+    const getRequests = [];
+    await page.route("**/api/local-projects", async (route) => {
+      const request = route.request().postDataJSON();
+      if (request.action === "list") {
+        await route.fulfill({ json: { projects: [root, child] } });
+      } else if (request.action === "get" && request.id === root.id) {
+        getRequests.push(request.id);
+        await route.fulfill({ json: { project: root, ancestors: [], children: [child] } });
+      } else {
+        await route.fulfill({ status: 422, json: { text: "Unexpected project request" } });
+      }
+    });
+    for (const project of [root, child]) {
+      await context.route(project.boardUrl, (route) => route.fulfill({ contentType: "text/plain; charset=utf-8", body: project.name }));
+    }
+    await page.reload();
+    await home.waitFor();
+
+    const catalog = () => page.evaluate(() => localStorage.getItem(window.BoardMemory.catalogKey));
+    const before = await catalog();
+    const openExisting = async (link, { name, boardUrl }) => {
+      assert.equal(await link.getAttribute("href"), boardUrl);
+      await Promise.all([
+        page.waitForURL((url) => url.href === boardUrl),
+        link.click(),
+      ]);
+      assert.equal(await page.locator("body").innerText(), name);
+      await page.goBack();
+      await home.waitFor();
+      assert.equal(await catalog(), before, "Opening a linked board must not allocate a shadow local canvas");
+    };
+    await openExisting(home.getByRole("link", { name: `打开项目：${root.name}` }), root);
+    await page.locator("#local-project-search").fill(child.name);
+    await openExisting(home.getByRole("link", { name: child.name, exact: true }), child);
+    assert.deepEqual(getRequests, [], "Homepage links must open linked boards directly");
+
+    const oldProjectUrl = new URL(homeUrl);
+    oldProjectUrl.searchParams.set("board", `board-${root.id}`);
+    oldProjectUrl.searchParams.set("project", root.id);
+    oldProjectUrl.searchParams.set("view", "canvas");
+    await page.goto(oldProjectUrl.href);
+    await page.waitForURL((url) => url.href === root.boardUrl);
+    assert.equal(await page.locator("body").innerText(), root.name);
+    assert.deepEqual(getRequests, [root.id]);
+    await page.goto(homeUrl);
+    await home.waitFor();
+    assert.equal(await catalog(), before, "An older project URL must redirect without provisioning a local canvas");
+    assertNoJsErrors(jsErrors);
+    record("U63", "PASS", "Homepage project cards and nested search results open the existing board URL without creating a local canvas.");
+  } catch (error) { record("U63", "FAIL", safeError(error)); await screenshot("U63-failure", session.page); }
+  finally { await closeSession(session); }
+}
+
 try {
   if (!existsSync(EDGE)) throw new Error(`BLOCKED: installed msedge channel not found at ${EDGE}`);
   server = createServer((req, res) => { relay(req, res).catch(() => { if (!res.headersSent) res.writeHead(500); res.end(); }); });
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(0, "127.0.0.1", resolveListen); });
   port = server.address().port;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
-  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62").split(","));
+  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62,U63").split(","));
   if (selected.has("U01")) { console.log("BROWSER_CASE=U01"); await testCapabilities(); }
   if (selected.has("U02")) { console.log("BROWSER_CASE=U02"); await testKeyEphemeral(); }
   if (selected.has("U05-A")) { console.log("BROWSER_CASE=U05-A"); await testStopLateEvents(); }
@@ -6034,6 +6106,7 @@ try {
   if (selected.has("U60")) { console.log("BROWSER_CASE=U60"); await testGeneratedTaskHierarchy(); }
   if (selected.has("U61")) { console.log("BROWSER_CASE=U61"); await testCanvasNavigation(); }
   if (selected.has("U62")) { console.log("BROWSER_CASE=U62"); await testProjectHomeWorkflow(); }
+  if (selected.has("U63")) { console.log("BROWSER_CASE=U63"); await testLinkedProjectBoards(); }
 } catch (error) {
   record("HARNESS", String(error?.message || "").startsWith("BLOCKED:") ? "BLOCKED" : "FAIL", safeError(error));
 } finally {
