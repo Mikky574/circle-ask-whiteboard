@@ -240,6 +240,8 @@
   let repoIndex = null;
   let askAt = null;
   let expandCardTarget = null;
+  let expandCardDraftEdited = false;
+  const cardQuestionCache = new Map();
   let mode = "select";
   let connectionSource = null;
   let selectedConnection = null;
@@ -1376,11 +1378,24 @@
 
   function setCardExpansionOpen(id) {
     expandCardTarget = id;
+    expandCardDraftEdited = false;
     expandCardOpen.hidden = Boolean(id);
     expandCardForm.hidden = !id;
-    expandCardFocus.value = "";
+    setCardExpansionQuestion(organization.current?.items.find((item) => item.id === id)?.followupQuestion || "");
     expandCardStatus.hidden = true;
     expandCardStatus.textContent = "";
+    positionCardExpansion();
+  }
+
+  function setCardExpansionQuestion(value) {
+    expandCardFocus.value = value;
+    $("expand-card-label").textContent = value ? "AI 推荐的问题" : "想了解哪一点？";
+  }
+
+  function cardExpansionStatus(id, message) {
+    if (expandCardTarget !== id) return;
+    expandCardStatus.textContent = message;
+    expandCardStatus.hidden = !message;
     positionCardExpansion();
   }
 
@@ -1876,7 +1891,7 @@
     const unavailable = Boolean(activeRun || deleting || sourceChanged || storageStale || !relayAvailable);
     expandCardOpen.disabled = unavailable;
     expandCardFocus.readOnly = Boolean(activeRun?.expandCard);
-    expandCardSubmit.disabled = unavailable;
+    expandCardSubmit.disabled = unavailable || !expandCardFocus.value.trim();
     const preparing = preparingQuestion();
     moveSelection.disabled = preparing || deleting || storageStale || activeRun?.mode === "organize";
     question.readOnly = preparing;
@@ -4549,6 +4564,7 @@
       const item = { ...old, ...update, parentId: update.id === rootId ? old.parentId : update.parentId };
       if (replies.has(item.id) && (old.nativeFace || regenerate)) item.localContent = true;
       if (!replies.has(item.id)) delete item.nativeFace;
+      if (item.title !== old.title || item.summary !== old.summary) delete item.followupQuestion;
       if (old.taskDetails) item.taskDetails = { ...old.taskDetails, task: excerpt(update.summary, 500) };
       if (old.spec) item.spec = specAfterContentChange(old, item);
       return [item.id, item];
@@ -5679,15 +5695,89 @@
     return result;
   }
 
+  function cardReadRequest(scope, targetId, focus, context, attachments = []) {
+    const payload = getPayload(focus);
+    const target = connectionTarget();
+    const requestId = newRequestId();
+    const revisionSnapshot = captureBoardRevision();
+    const expand = scope === "expandCard";
+    const run = { controller: new AbortController(), mode: expand ? "organize" : "ask",
+      expandCard: expand, target, requestId, revisionSnapshot };
+    const request = {
+      ...payload, ...target, mode: "ask", scope, requestId, project: context,
+      anchor: { ...payload.anchor, wholeCardIds: [targetId] },
+      baseRevision: revisionToken(`${revisionSnapshot.organization}\n${JSON.stringify(revisionSnapshot.storage)}`),
+      ...(attachments.length ? { attachments } : {}),
+    };
+    activeRun = run;
+    $("sent-context").textContent = "正在等待本轮上下文…";
+    renderInspector();
+    return { run, request };
+  }
+
+  async function readCardResult(run, request, resultType, field, report) {
+    let result;
+    let completed = false;
+    let errorText = "";
+    await readExecution(run, request, (event) => {
+      if (!acceptsRunEvent(run) || (event.requestId != null && event.requestId !== request.requestId) ||
+          (event.baseRevision != null && event.baseRevision !== request.baseRevision)) return;
+      if (event.type === "context") $("sent-context").textContent = event.text;
+      else if (event.type === "status") report?.(event.text);
+      else if (event.type === resultType) {
+        if (result !== undefined) throw new Error("服务重复返回了结果，请重试。");
+        result = event[field] ?? null;
+      } else if (event.type === "done") completed = !event.changedFiles?.length;
+      else if (event.type === "error") errorText = event.text;
+    });
+    if (!acceptsRunEvent(run)) return;
+    if (errorText || !completed || result == null) throw new Error(errorText || "服务没有返回完整结果。");
+    return result;
+  }
+
+  async function suggestCardQuestion(id) {
+    if (activeRun || gesture || deletionPreparing || sourceChanged || storageStale || !relayAvailable ||
+        !memory.storageIsCurrent()) return;
+    const nodes = boardForOrganization();
+    const context = cardExpansionContext(id, hierarchyItems(nodes), nodes);
+    if (!context.expansion.path.length) return;
+    const signature = JSON.stringify(context);
+    const cached = cardQuestionCache.get(id);
+    if (cached?.signature === signature) {
+      setCardExpansionQuestion(cached.question);
+      renderInspector();
+      return;
+    }
+    const { run, request } = cardReadRequest("suggestCardQuestion", id, "判断这张卡最值得继续了解的一个问题。", context);
+    cardExpansionStatus(id, "正在根据卡片内容推荐问题…");
+    try {
+      const result = await readCardResult(run, request, "suggestion", "question");
+      if (!acceptsRunEvent(run)) return;
+      const suggestion = typeof result === "string" ? result.trim() : "";
+      if (!suggestion || Array.from(suggestion).length > 120 || !sameBoardRevision(run.revisionSnapshot)) {
+        throw new Error("没有取得适用的推荐问题。");
+      }
+      cardQuestionCache.set(id, { signature, question: suggestion });
+      if (expandCardTarget === id && !expandCardDraftEdited) setCardExpansionQuestion(suggestion);
+      cardExpansionStatus(id, "");
+    } catch (error) {
+      if (acceptsRunEvent(run)) cardExpansionStatus(id, `推荐未完成，可以自己输入。 ${error.message}`);
+    } finally {
+      if (run.stopping) await run.stopPromise;
+      if (activeRun === run) {
+        if (run.stopping) cardExpansionStatus(id, "已停止推荐，可以自己输入。");
+        activeRun = null;
+      }
+      renderInspector();
+    }
+  }
+
   async function expandSelectedCard(targetId, focus) {
     if (activeRun || gesture || deletionPreparing || sourceChanged || storageStale || !relayAvailable ||
         !memory.storageIsCurrent()) return;
     const report = (message) => {
       status(message);
-      if (expandCardTarget !== targetId) return;
-      expandCardStatus.textContent = message;
-      expandCardStatus.hidden = false;
-      positionCardExpansion();
+      cardExpansionStatus(targetId, message);
     };
     const nodes = boardForOrganization();
     const items = hierarchyItems(nodes);
@@ -5698,40 +5788,14 @@
       report("关联附件超过本轮上限，暂时无法展开。");
       return;
     }
-    const payload = getPayload(focus);
-    const target = connectionTarget();
-    const requestId = newRequestId();
-    const revisionSnapshot = captureBoardRevision();
-    const run = { controller: new AbortController(), mode: "organize", expandCard: true, target, requestId, revisionSnapshot };
-    const request = {
-      ...payload, ...target, mode: "ask", scope: "expandCard", requestId, project: context,
-      anchor: { ...payload.anchor, wholeCardIds: [targetId] },
-      baseRevision: revisionToken(`${revisionSnapshot.organization}\n${JSON.stringify(revisionSnapshot.storage)}`),
-      ...(attachments.length ? { attachments } : {}),
-    };
-    activeRun = run;
-    report(`${backendLabels[target.backend]} 正在补充下级卡片…`);
-    $("sent-context").textContent = "正在等待本轮上下文…";
-    renderInspector();
-    let children;
-    let completed = false;
-    let errorText = "";
+    const { run, request } = cardReadRequest("expandCard", targetId, focus, context, attachments);
+    report(`${backendLabels[request.backend]} 正在补充下级卡片…`);
     try {
-      await readExecution(run, request, (event) => {
-        if (!acceptsRunEvent(run) || (event.requestId != null && event.requestId !== requestId) ||
-            (event.baseRevision != null && event.baseRevision !== request.baseRevision)) return;
-        if (event.type === "context") $("sent-context").textContent = event.text;
-        else if (event.type === "status") report(event.text);
-        else if (event.type === "children") {
-          if (children !== undefined) throw new Error("服务重复返回了下级卡片。");
-          children = event.children ?? null;
-        } else if (event.type === "done") completed = !event.changedFiles?.length;
-        else if (event.type === "error") errorText = event.text;
-      });
+      const children = await readCardResult(run, request, "children", "children", report);
       if (!acceptsRunEvent(run)) return;
-      if (!sameBoardRevision(revisionSnapshot)) throw new Error("展开期间白板已变化，请重试。");
-      if (errorText || !completed || !Array.isArray(children) || children.length < 2 || children.length > 6) {
-        throw new Error(errorText || "服务没有返回完整的下级卡片。");
+      if (!sameBoardRevision(run.revisionSnapshot)) throw new Error("展开期间白板已变化，请重试。");
+      if (!Array.isArray(children) || children.length < 2 || children.length > 6) {
+        throw new Error("服务没有返回完整的下级卡片。");
       }
       const titleKey = (value) => value.trim().normalize("NFKC").toLowerCase();
       const currentTitles = new Map(nodes.map(({ id, title }) => [id, title]));
@@ -5741,11 +5805,13 @@
       const additions = children.map((child, index) => {
         const title = typeof child?.title === "string" ? child.title.trim() : "";
         const summary = typeof child?.summary === "string" ? child.summary.trim() : "";
-        if (!title || Array.from(title).length > 32 || !summary || Array.from(summary).length > 120 || titles.has(titleKey(title))) {
-          throw new Error("下级卡片含重复标题或无效正文，请调整问题后重试。");
+        const followupQuestion = typeof child?.followupQuestion === "string" ? child.followupQuestion.trim() : "";
+        if (!title || Array.from(title).length > 32 || !summary || Array.from(summary).length > 120 ||
+            !followupQuestion || Array.from(followupQuestion).length > 120 || titles.has(titleKey(title))) {
+          throw new Error("下级卡片含重复标题、无效正文或缺少推荐问题，请重试。");
         }
         titles.add(titleKey(title));
-        return { id: ids[index], parentId: targetId, category: "reference", title, summary };
+        return { id: ids[index], parentId: targetId, category: "reference", title, summary, followupQuestion };
       });
       const previous = organization;
       const current = previous.current || {
@@ -5756,9 +5822,10 @@
       const before = visibleRect(targetId);
       const readingBranch = sourceManual && guideRects.has(targetId);
       const restoreSelection = selectedModuleId() === targetId;
+      const retained = items.map((item) => item.id === targetId ? { ...item, followupQuestion: undefined } : item);
       organization = {
         ...previous, previous: previous.current, quickUndo: null, undoAvailable: true,
-        current: { ...current, items: [...items, ...additions] },
+        current: { ...current, items: [...retained, ...additions] },
       };
       const { openedOutlines } = openBranchPath(targetId, true);
       try {
@@ -6430,6 +6497,7 @@
       editWorkbenchCard.focus();
       return;
     }
+    if (old && (title !== old.title || item.summary !== old.summary)) delete item.followupQuestion;
 
     const previous = organization;
     const previousItems = previous.current?.items || previous.rawCards || [];
@@ -6746,6 +6814,8 @@
     showAsk();
     setCardExpansionOpen(id);
     expandCardFocus.focus();
+    if (expandCardFocus.value) renderInspector();
+    else void suggestCardQuestion(id);
   });
   function closeCardExpansion() {
     setCardExpansionOpen(null);
@@ -6763,6 +6833,11 @@
     const focus = expandCardFocus.value.trim();
     const id = selectedModuleId();
     if (focus && id && id === expandCardTarget) void expandSelectedCard(id, focus);
+  });
+  expandCardFocus.addEventListener("input", () => {
+    expandCardDraftEdited = true;
+    $("expand-card-label").textContent = "想了解哪一点？";
+    renderInspector();
   });
   $("ask-close").addEventListener("click", () => {
     showAsk();
