@@ -266,16 +266,26 @@
       const { cardId, requirementId } = entry || {};
       if (typeof cardId !== "string" || !/^E[0-9]{2,8}$/.test(cardId) || !identifier(requirementId) || byCard.has(cardId)) continue;
       const [attachment] = memory.cleanAttachments([entry.attachment]);
+      const evidenceAttachments = memory.cleanAttachments(entry.evidenceAttachments).slice(0, 4);
       const title = field(entry.title, 100);
       const need = field(entry.need, 400);
       const method = field(entry.method, 500);
+      const methodDetails = (Array.isArray(entry.methodDetails) ? entry.methodDetails.slice(0, 8) : []).flatMap((step) => {
+        const title = field(step?.title, 100);
+        const description = field(step?.description, 750);
+        return title && description ? [{ title, description }] : [];
+      });
       const validation = (Array.isArray(entry.validation) ? entry.validation.slice(0, 8) : []).flatMap((test) => {
         const title = field(test?.title, 100);
         const condition = field(test?.condition, 240);
         return identifier(test?.id) && title && condition ? [{ id: test.id, title, condition }] : [];
       });
       if (attachment && title && need && method && validation.length) {
-        byCard.set(cardId, { cardId, requirementId, title, need, method, validation, attachment });
+        byCard.set(cardId, {
+          cardId, requirementId, title, need, method, validation, attachment,
+          ...(methodDetails.length ? { methodDetails } : {}),
+          ...(evidenceAttachments.length ? { evidenceAttachments } : {}),
+        });
       }
     }
     return byCard;
@@ -906,7 +916,10 @@
     const refs = [
       ...ids.flatMap((id) => replies.get(id)?.payload.attachments || []),
       ...(organization.current?.items || []).filter((item) => chosen.has(item.id)).flatMap((item) => item.attachments || []),
-      ...ids.flatMap((id) => cardRequirements.get(id)?.attachment || []),
+      ...ids.flatMap((id) => {
+        const requirement = cardRequirements.get(id);
+        return requirement ? [requirement.attachment, ...(requirement.evidenceAttachments || [])] : [];
+      }),
     ];
     // Keep every valid inherited reference visible so limit checks cannot
     // silently discard the tail when the selection changes.
@@ -1215,9 +1228,8 @@
     for (const id of ids) {
       const entry = cardRequirements.get(id);
       if (!entry) continue;
-      const { cardId, requirementId, title, need, method, validation } = entry;
-      const next = { ...context, requirements: [...(context.requirements || []),
-        { cardId, requirementId, title, need, method, validation }] };
+      const { attachment, evidenceAttachments, ...requirement } = entry;
+      const next = { ...context, requirements: [...(context.requirements || []), requirement] };
       if (contextBytes(next) <= 23 * 1024) context = next;
     }
     if (draftRoot) {
@@ -2934,6 +2946,17 @@
       const paragraph = appendText(section, "p", "", "");
       appendText(paragraph, "strong", "", `${label} · `);
       appendText(paragraph, "span", "", value).dataset.selectPart = "text";
+    }
+    if (requirement.methodDetails?.length) {
+      const details = appendText(section, "details", "requirement-methods", "");
+      appendText(details, "summary", "", `实现细节（${requirement.methodDetails.length} 段）`);
+      const steps = appendText(details, "ol", "", "");
+      for (const { title, description } of requirement.methodDetails) {
+        const step = appendText(steps, "li", "", "");
+        appendText(step, "strong", "", title).dataset.selectPart = "text";
+        appendText(step, "p", "", description).dataset.selectPart = "text";
+      }
+      details.addEventListener("toggle", () => layoutReplies(true));
     }
     const details = appendText(section, "details", "", "");
     appendText(details, "summary", "", `验收场景（${requirement.validation.length} 项）`);

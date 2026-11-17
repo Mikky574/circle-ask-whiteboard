@@ -1119,7 +1119,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .card-requirement { display: grid; gap: 7px; }
 .card-requirement h4, .card-requirement p { margin: 0; }
 .card-requirement h4, .card-requirement strong { font-weight: 680; }
-.card-requirement ul { display: grid; gap: 6px; margin: 6px 0 0; padding-inline-start: 16px; }
+.card-requirement :is(ol, ul) { display: grid; gap: 6px; margin: 6px 0 0; padding-inline-start: 16px; }
 .card-requirement summary { cursor: pointer; }
 .module-fold, .branch-toggle {
   padding: 2px 6px;

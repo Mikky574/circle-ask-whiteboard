@@ -58,6 +58,8 @@ Codex 沿用本机 `codex login`。ZCode 沿用本机 CLI 配置和登录，可�
 
 本机项目快照的 `cardRequirements` 可为已有卡片关联需求。每项用 `cardId` 关联画布卡片，提供 `requirementId`、`title`、`need`、`method`、`validation`（每项为 `id`、`title`、`condition`）及已上传的 `attachment` 引用。白板上查看需求、实现和验收要点，详细说明可从附件打开。选中该卡继续提问时会携带关联说明和附件。
 
+方法较长时，可选填 `methodDetails`，每段填写 `title` 和 `description`。卡片正文中的「实现细节」可展开查看这些段落。对照图或实验记录可用 `evidenceAttachments` 挂在同一需求下，最多四项。
+
 项目资料保存在当前用户主目录下的 `.circle-ask-whiteboard/projects.local.json`，也可用环境变量 `WHITEBOARD_PROJECTS_FILE` 指定清单。清单使用 UTF-8 JSON 数组。每个项目包含 `name`（名称）、`description`（简介）、`category`（类别）和 `path`（本机绝对目录路径）。可用 `aliases` 补充常用叫法、缩写或用途短语。每个项目归入最近的已登记上级目录，编辑清单后刷新总览即可更新。
 
 项目已有独立的本机白板服务时，可在本机清单为该项目设置 `boardUrl`，填写包含本机地址、端口和 `?board=…` 的原白板链接。「打开项目」会访问该服务的原画布。卡片和编辑记录继续在原地址的浏览器存储中读取。

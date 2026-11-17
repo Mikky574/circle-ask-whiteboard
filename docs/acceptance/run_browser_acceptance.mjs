@@ -6155,6 +6155,7 @@ async function testRequirementAttachment() {
     const original = { current: { title: "用户原有画布", items: [root, detail, sibling], collapsedBranches: [] } };
     const documentText = "# REQ-REC-012\n\n现有检测与分类的可验证需求。\n";
     const attachment = { id: "d".repeat(32), name: "REQ-REC-012.md", size: Buffer.byteLength(documentText, "utf8") };
+    const evidence = { id: "e".repeat(32), name: "同框 Resize 对照.png", size: 312 };
     const attachmentPath = "/api/attachments/" + attachment.id;
     const requirement = {
       cardId: detail.id,
@@ -6162,6 +6163,10 @@ async function testRequirementAttachment() {
       title: "图中目标检测与候选分类",
       need: "用户可以查看各个图中目标的识别候选和对应区域。",
       method: "解码后根据手动画框、自动检测或整图确定分类区域。",
+      methodDetails: [
+        { title: "检测输入", description: "等比例缩放到 640，再补灰边。" },
+        { title: "分类输入", description: "从原图裁剪，再等比缩放至 224 并补黑边。" },
+      ],
       validation: [
         { id: "V-REC-012-01", title: "手动画框", condition: "只对用户框出的区域分类。" },
         { id: "V-REC-012-02", title: "无候选框", condition: "检查当前识别入口配置的整图回退。" },
@@ -6171,7 +6176,7 @@ async function testRequirementAttachment() {
       const { projectId } = route.request().postDataJSON();
       const activity = projectId === parentProject.id ? {
         version: 1, id: "project-requirements", projectId, branches: [], events: [],
-        cardRequirements: [{ ...requirement, attachment }],
+        cardRequirements: [{ ...requirement, attachment, evidenceAttachments: [evidence] }],
       } : null;
       return route.fulfill({ json: { activity } });
     });
@@ -6209,10 +6214,16 @@ async function testRequirementAttachment() {
     await panel.getByText(requirement.requirementId, { exact: false }).waitFor();
     await panel.getByText(requirement.need, { exact: true }).waitFor();
     await panel.getByText(requirement.method, { exact: true }).waitFor();
+    const detailedMethod = panel.getByText(requirement.methodDetails[0].description, { exact: true });
+    assert.equal(await detailedMethod.isVisible(), false);
+    await panel.locator("summary", { hasText: "实现细节" }).click();
+    await detailedMethod.waitFor();
+    await panel.locator("summary", { hasText: "实现细节" }).click();
     assert.equal(await panel.getByText(requirement.validation[0].condition, { exact: true }).isVisible(), false);
     await panel.locator("summary", { hasText: "验收场景" }).click();
     await panel.getByText(requirement.validation[0].condition, { exact: true }).waitFor();
     assert.equal(new URL(await link.getAttribute("href"), page.url()).pathname, attachmentPath);
+    assert.equal(await card.getByRole("link", { name: evidence.name, exact: true }).getAttribute("href"), "/api/attachments/" + evidence.id);
     const [documentPage] = await Promise.all([context.waitForEvent("page"), link.click()]);
     await documentPage.waitForURL((url) => url.pathname === attachmentPath);
     assert.equal((await documentPage.locator("body").innerText()).trim(), documentText.trim());
@@ -6242,7 +6253,7 @@ async function testRequirementAttachment() {
     const question = requests.at(-1);
     assert.deepEqual(question.anchor.elementIds, [detail.id]);
     assert.deepEqual(question.project.requirements, [requirement]);
-    assert.deepEqual(question.attachments, [attachment]);
+    assert.deepEqual(question.attachments, [attachment, evidence]);
     assertNoJsErrors(jsErrors);
     record("U65", "PASS", "Linked requirements enrich an existing project card, open the real attachment via its own URL, persist across reload, and travel with scoped questions.");
   } catch (error) { record("U65", "FAIL", safeError(error)); await screenshot("U65-failure", session.page); }
