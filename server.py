@@ -1775,7 +1775,7 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
         if self.path == "/api/local-projects":
             limit = 24 * 1024
         elif self.path == "/api/card-search":
-            limit = 256 * 1024
+            limit = 24 * 1024 * 1024
         elif self.path in ("/api/repo-index", "/api/workbench-activity"):
             limit = 4096
         if len(lengths[0]) > 8 or int(lengths[0]) > limit:
@@ -1798,7 +1798,8 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
         try:
             body = self.rfile.read(int(lengths[0]))
             if self.path == "/api/card-search":
-                self.send_json(200, search_cards(json.loads(body)))
+                result = search_cards(json.loads(body))
+                self.send_json(202 if result["mode"] == "indexing" else 200, result)
                 return
             if self.path == "/api/cancel":
                 self.cancel_request(body)

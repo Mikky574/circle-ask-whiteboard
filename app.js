@@ -60,8 +60,10 @@
   const cardSearchPosition = $("card-search-position");
   const cardSearchPrevious = $("card-search-prev");
   const cardSearchNext = $("card-search-next");
+  const cardSearchLimit = 4096;
   let cardSearchRequest = null;
   let cardSearchMatches = null;
+  let cardSearchWarmup = null;
   const returnOverview = $("return-overview");
   const submitQuestion = $("submit-question");
   const stopAi = $("stop-ai");
@@ -4055,9 +4057,12 @@
       .map((node) => {
         const item = savedItems.get(node.id);
         const details = item?.taskDetails;
+        const answer = replies.get(node.id)?.saved?.answer;
         return {
           ...node,
-          text: [node.text, item?.summary, replies.get(node.id)?.saved?.answer,
+          searchSummary: organization.current && !item?.nativeFace
+            ? node.summary || answer || node.text : item?.summary || answer || node.text,
+          text: [node.text, item?.summary, answer,
             ...(details ? [details.task, ...details.dependencies, ...details.acceptance] : [])].filter(Boolean).join("\n"),
         };
       });
@@ -4109,31 +4114,46 @@
     renderCardSearchNav();
   }
 
-  function searchCardCandidates(query) {
+  function searchCardCandidates() {
     const { byId, searchable } = cardSearchData();
-    let candidates = searchable;
-    if (candidates.length > 64) {
-      const ranked = rankBoardCards(candidates, query).slice(0, 48);
-      const chosen = new Set(ranked.map(({ id }) => id));
-      const rest = candidates.filter(({ id }) => !chosen.has(id));
-      const slots = 64 - ranked.length;
-      const spread = Array.from({ length: slots }, (_, index) => rest[Math.floor(index * rest.length / slots)]);
-      candidates = [...ranked, ...spread];
-    }
-    return candidates.map((node) => ({
+    const ordered = [...searchable].sort((a, b) => a.id.localeCompare(b.id, "en", { numeric: true }));
+    const cards = ordered.slice(0, cardSearchLimit).map((node) => ({
       id: node.id,
       title: excerpt(node.title, 120),
-      summary: excerpt(byId.get(node.id).summary || byId.get(node.id).text || "", 450),
+      summary: excerpt(node.searchSummary || "", 450),
       path: excerpt(cardSearchPath(node.id, byId).slice(0, -1)
         .filter(({ category }) => category !== "archive").map(({ title }) => title).join(" › "), 240),
     }));
+    return { cards, limited: searchable.length > cardSearchLimit };
+  }
+
+  async function warmCardSearch() {
+    if (!cardSearch.open || cardSearchRequest || relayState !== "connected") return;
+    const { cards } = searchCardCandidates();
+    if (cards.length <= 64) return;
+    const body = JSON.stringify({ query: "", cards });
+    const signature = revisionToken(body);
+    if (cardSearchWarmup?.signature === signature) return;
+    cardSearchWarmup?.controller.abort();
+    const controller = new AbortController();
+    cardSearchWarmup = { signature, controller };
+    try {
+      const response = await fetch("/api/card-search", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]),
+        body,
+      });
+      if (!response.ok) throw new Error();
+    } catch {
+      if (cardSearchWarmup?.controller === controller) cardSearchWarmup = null;
+    }
   }
 
   async function locateByQuestion() {
     const query = cardSearchInput.value.trim();
     if (!query || !cardSearch.open || cardSearchRequest) return;
     resetCardSearch();
-    const cards = searchCardCandidates(query);
+    const { cards, limited } = searchCardCandidates();
     if (!cards.length) {
       renderCardSearch();
       cardSearchFeedback.textContent = "当前没有可定位的卡片。";
@@ -4141,31 +4161,43 @@
     }
     const sentRevision = captureBoardRevision();
     const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(105000)]);
+    const body = JSON.stringify({ query, cards });
     cardSearchRequest = controller;
     renderCardSearch();
     try {
-      const response = await fetch("/api/card-search", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]),
-        body: JSON.stringify({ query, cards }),
-      });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result?.text || "本地定位暂不可用。");
-      if (!Array.isArray(result.matches)) throw new Error("本地服务返回的定位结果无效。");
-      if (cardSearchRequest !== controller || !cardSearch.open || cardSearchInput.value.trim() !== query) return;
-      if (!sameBoardRevision(sentRevision)) throw new Error("白板内容已变化，请重新定位。");
+      let result;
+      let interval = 1200;
+      do {
+        const response = await fetch("/api/card-search", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.any([signal, AbortSignal.timeout(20000)]),
+          body,
+        });
+        result = await response.json();
+        if (!response.ok) throw new Error(result?.text || "本地定位暂不可用。");
+        if (!Array.isArray(result.matches)) throw new Error("本地服务返回的定位结果无效。");
+        if (cardSearchRequest !== controller || !cardSearch.open || cardSearchInput.value.trim() !== query) return;
+        if (!sameBoardRevision(sentRevision)) throw new Error("白板内容已变化，请重新定位。");
+        if (result.mode !== "indexing") break;
+        cardSearchFeedback.textContent = "正在建立本地索引…";
+        await new Promise((resolve) => setTimeout(resolve, interval));
+        if (signal.aborted) throw signal.reason;
+        interval = Math.min(interval + 400, 3000);
+      } while (result.mode === "indexing");
       const known = new Set(cards.map(({ id }) => id));
       const ids = [...new Set(result.matches)].filter((id) => known.has(id));
       cardSearchMatches = { ids, query, index: -1, semantic: result.mode === "semantic" };
       cardSearchRequest = null;
       renderCardSearch();
+      if (limited) cardSearchFeedback.textContent += ` 本轮搜索前 ${cardSearchLimit} 张卡片。`;
       if (ids.length) showCardSearchMatch(0);
     } catch (error) {
       if (cardSearchRequest !== controller || !cardSearch.open) return;
       cardSearchRequest = null;
       renderCardSearch();
-      cardSearchFeedback.textContent = error.name === "TimeoutError" ? "本地定位超时，可以重试或按 Enter 搜关键词。" :
-        `${error.message} 可按 Enter 搜关键词。`;
+      cardSearchFeedback.textContent = error.name === "TimeoutError" ? "本地定位超时。可以先查看下方的关键词结果，或重试定位。" :
+        `${error.message} 可以先查看下方的关键词结果。`;
     } finally {
       if (cardSearchRequest === controller) cardSearchRequest = null;
     }
@@ -6245,6 +6277,7 @@
     renderCardSearch();
     cardSearchInput.focus();
     cardSearchInput.select();
+    setTimeout(() => { void warmCardSearch(); }, 0);
   });
   cardSearchInput.addEventListener("input", () => {
     resetCardSearch();

@@ -6387,7 +6387,12 @@ async function testQuestionCardNavigation() {
     };
     const requests = [];
     await page.route("**/api/card-search", async (route) => {
-      requests.push(route.request().postDataJSON());
+      const request = route.request().postDataJSON();
+      if (!request.query) {
+        await route.fulfill({ json: { matches: [], mode: "indexing" } });
+        return;
+      }
+      requests.push(request);
       await route.fulfill({ json: { matches: ["E27", "E07"], mode: "semantic" } });
     });
 
@@ -6425,13 +6430,120 @@ async function testQuestionCardNavigation() {
   finally { await closeSession(session); }
 }
 
+async function testFullBoardQuestionSearch() {
+  const session = await openPage("normal", "repo-manual");
+  let finishIndex;
+  const indexReady = new Promise((resolveIndex) => { finishIndex = resolveIndex; });
+  try {
+    const { page, jsErrors } = session;
+    const card = (id) => page.locator(`#board [data-element-id="${id}"]`);
+    const viewport = page.locator("#viewport");
+    const position = page.locator("#card-search-position");
+    const query = "识别特大原图入口如何收敛像素？";
+    const branch = { id: "E801", parentId: "E800", category: "main", title: "图像缩放路径" };
+    const target = { id: "E802", parentId: branch.id, category: "reference", title: "长边约束",
+      summary: "大图片等比缩小再送入检测器，保持宽高比例。" };
+    const second = { id: "E803", parentId: branch.id, category: "reference", title: "补边尺寸",
+      summary: "分类网络读取正方形画面，等比缩放后补边。" };
+    const archive = { id: "E807", parentId: null, category: "archive", title: "归档设置" };
+    const items = [
+      { id: "E800", parentId: null, category: "main", title: "本地识别链路" },
+      branch,
+      { id: "E804", parentId: branch.id, category: "reference", title: "配置目录" },
+      target,
+      second,
+      { id: "E805", parentId: "E800", category: "main", title: "旧讨论" },
+      archive,
+      // Distractors fill the former keyword shortlist and leave the hidden target between its sampled cards.
+      ...Array.from({ length: 120 }, (_, index) => ({
+        id: `E${900 + index}`, parentId: "E805", category: "reference",
+        title: index < 48 ? `旧讨论 ${index} ${query}` : `配置备忘 ${index}`,
+      })),
+    ];
+    await page.evaluate(({ items, branchId }) => {
+      const key = BoardMemory.storageKeys.organization;
+      const saved = JSON.parse(localStorage.getItem(key));
+      saved.current = { title: "识别项目白板", items, collapsedBranches: [branchId, "E805"] };
+      localStorage.setItem(key, JSON.stringify(saved));
+    }, { items, branchId: branch.id });
+    await page.reload({ waitUntil: "networkidle" });
+
+    const warmRequests = [];
+    const searches = [];
+    await page.route("**/api/card-search", async (route) => {
+      const request = route.request().postDataJSON();
+      if (request.query === "") {
+        warmRequests.push(request);
+        await route.fulfill({ json: { matches: [], mode: "indexing" } });
+      } else {
+        searches.push(request);
+        if (searches.length === 1) {
+          await route.fulfill({ json: { matches: [], mode: "indexing" } });
+        } else {
+          await indexReady;
+          const ids = new Set(request.cards.map(({ id }) => id));
+          await route.fulfill({ json: { matches: [target.id, second.id].filter((id) => ids.has(id)), mode: "semantic" } });
+        }
+      }
+    });
+
+    assert.equal(await card(target.id).isVisible(), false);
+    const warmResponse = page.waitForResponse((response) => response.url().endsWith("/api/card-search") &&
+      response.request().postDataJSON().query === "");
+    await page.locator("#card-search-toggle").click();
+    await warmResponse;
+    assert.equal(warmRequests.length, 1);
+    await page.locator("#card-search-input").fill(query);
+    const firstResponse = page.waitForResponse((response) => response.url().endsWith("/api/card-search") &&
+      response.request().postDataJSON().query === query);
+    await page.locator("#card-search-question").click();
+    assert.equal((await (await firstResponse).json()).mode, "indexing");
+    assert.equal(await position.isVisible(), false, "The camera should wait for the full index");
+    assert.equal(await card(target.id).isVisible(), false);
+    const expectedIds = items.filter(({ category }) => category !== "archive").map(({ id }) => id);
+    for (const request of [warmRequests[0], searches[0]]) {
+      assert.deepEqual(Object.keys(request).sort(), ["cards", "query"]);
+      const ids = new Set(request.cards.map(({ id }) => id));
+      assert.equal(ids.size, request.cards.length, "The index should receive each card only once");
+      assert.ok(expectedIds.every((id) => ids.has(id)), "Every active fixture card should reach the local model");
+      assert.equal(ids.has(archive.id), false);
+      assert.equal(request.cards.find(({ id }) => id === target.id).summary, target.summary);
+    }
+
+    finishIndex();
+    await position.waitFor();
+    assert.equal(await position.textContent(), "1 / 2");
+    assert.equal(await card(target.id).getAttribute("aria-pressed"), "true");
+    const view = await viewport.boundingBox();
+    const item = await card(target.id).boundingBox();
+    assert.ok(view && item);
+    assert.ok(Math.abs(view.x + view.width / 2 - item.x - item.width / 2) < 5);
+    assert.ok(Math.abs(view.y + view.height / 2 - item.y - item.height / 2) < 5);
+
+    await page.keyboard.press("ArrowDown");
+    assert.equal(await position.textContent(), "2 / 2");
+    assert.equal(await card(second.id).getAttribute("aria-pressed"), "true");
+    await page.keyboard.press("ArrowUp");
+    assert.equal(await position.textContent(), "1 / 2");
+    assert.equal(await card(target.id).getAttribute("aria-pressed"), "true");
+    assert.equal(searches.length, 2, "Viewing another ranked result should not search again");
+    assert.equal(warmRequests.length, 1, "Viewing another ranked result should not warm again");
+
+    await page.locator("#return-overview").click();
+    assert.equal(await card(target.id).isVisible(), false);
+    assertNoJsErrors(jsErrors);
+    record("U68", "PASS", "The local model receives all active cards on a long board, finishes indexing before positioning a hidden semantic match, and keeps rank navigation local.");
+  } catch (error) { record("U68", "FAIL", safeError(error)); await screenshot("U68-failure", session.page); }
+  finally { finishIndex(); await closeSession(session); }
+}
+
 try {
   if (!existsSync(EDGE)) throw new Error(`BLOCKED: installed msedge channel not found at ${EDGE}`);
   server = createServer((req, res) => { relay(req, res).catch(() => { if (!res.headersSent) res.writeHead(500); res.end(); }); });
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(0, "127.0.0.1", resolveListen); });
   port = server.address().port;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
-  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62,U63,U64,U65,U66,U67").split(","));
+  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62,U63,U64,U65,U66,U67,U68").split(","));
   if (selected.has("U01")) { console.log("BROWSER_CASE=U01"); await testCapabilities(); }
   if (selected.has("U02")) { console.log("BROWSER_CASE=U02"); await testKeyEphemeral(); }
   if (selected.has("U05-A")) { console.log("BROWSER_CASE=U05-A"); await testStopLateEvents(); }
@@ -6501,6 +6613,7 @@ try {
   if (selected.has("U65")) { console.log("BROWSER_CASE=U65"); await testRequirementAttachment(); }
   if (selected.has("U66")) { console.log("BROWSER_CASE=U66"); await testExpandCardWithFocus(); }
   if (selected.has("U67")) { console.log("BROWSER_CASE=U67"); await testQuestionCardNavigation(); }
+  if (selected.has("U68")) { console.log("BROWSER_CASE=U68"); await testFullBoardQuestionSearch(); }
 } catch (error) {
   record("HARNESS", String(error?.message || "").startsWith("BLOCKED:") ? "BLOCKED" : "FAIL", safeError(error));
 } finally {

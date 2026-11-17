@@ -443,6 +443,24 @@ class CardSearchAcceptanceTests(unittest.TestCase):
         with patch.object(card_search, "semantic_scores", return_value=[0.81, 0.24]):
             self.assertEqual(card_search.search_cards(payload), {"matches": ["E12"], "mode": "semantic"})
 
+    def test_long_board_sends_every_card_to_the_local_ranker(self):
+        cards = [{"id": f"E{index:02}", "title": f"项目条目 {index}", "summary": "", "path": ""}
+                 for index in range(4, 130)]
+        with patch.object(card_search, "semantic_scores", return_value=[0.1] * 125 + [0.81]) as scorer:
+            self.assertEqual(card_search.search_cards({"query": "停电怎样重连", "cards": cards}),
+                             {"matches": ["E129"], "mode": "semantic"})
+        scorer.assert_called_once_with("停电怎样重连", cards)
+
+    def test_indexing_returns_accepted_then_exposes_search_results(self):
+        cards = [{"id": "E12", "title": "事件回放", "summary": "", "path": ""}]
+        with isolated_server() as (port, host), patch.object(card_search, "semantic_scores", side_effect=["indexing", [0.81]]):
+            warm = json.dumps({"query": "", "cards": cards}).encode()
+            status, _, raw = post(port, "/api/card-search", warm, good_headers(host, warm))
+            self.assertEqual((status, json.loads(raw)), (202, {"matches": [], "mode": "indexing"}))
+            body = json.dumps({"query": "如何回放", "cards": cards}).encode()
+            status, _, raw = post(port, "/api/card-search", body, good_headers(host, body))
+            self.assertEqual((status, json.loads(raw)), (200, {"matches": ["E12"], "mode": "semantic"}))
+
 
 class ExplanationAcceptanceTests(unittest.TestCase):
     @staticmethod
