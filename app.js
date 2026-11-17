@@ -1256,12 +1256,16 @@
     const item = items.get(node.id);
     const reply = replies.get(node.id)?.saved;
     const summary = (item && !item.nativeFace ? item.summary : reply?.answer) || node.summary || node.text;
+    const repositoryFiles = detailed ? [...new Set([
+      ...(item?.codePreview ? [item.codePreview.path] : []), ...(item?.repositoryFiles || []),
+    ])].slice(0, 12) : [];
     return {
       id: node.id, title: item && !item.nativeFace ? item.title : node.title,
       summary: excerpt(summary, detailed ? 1200 : 320),
       ...(detailed && item?.taskDetails ? { taskDetails: item.taskDetails } : {}),
       ...(detailed && item?.spec ? { spec: item.spec } : {}),
       ...(node.sources?.length ? { sources: node.sources } : {}),
+      ...(repositoryFiles.length ? { repositoryFiles } : {}),
     };
   }
 
@@ -1284,21 +1288,55 @@
       (reply.saved && !reply.saved.archived && (!reply.saved.delivery || reply.saved.retryPayload)));
   }
 
-  function projectContext(ids = selected.map(({ id }) => id), { question = "", wholeCardIds = [] } = {}) {
+  function projectContext(ids = selected.map(({ id }) => id), { question = "", includeSelectedCards = false } = {}) {
     const nodes = boardForOrganization();
     const drafts = draftMembership(nodes);
     const draftRoot = selectedDraftRoot(ids, drafts);
     const inScope = (id) => !drafts.has(id) || drafts.get(id) === draftRoot;
-    let context = { goal: project.goal, constraints: [...project.constraints],
-      decisions: project.decisions.filter(({ sourceIds }) => sourceIds.every(inScope)) };
+    let context = { goal: project.goal, constraints: [], decisions: [] };
     const items = hierarchyItems(nodes).filter((item) => item.category !== "archive" && !deletedIds.has(item.id) && inScope(item.id));
-    const contextBytes = (value) => new TextEncoder().encode(JSON.stringify(value)).length;
+    const encoder = new TextEncoder();
+    const contextBytes = (value) => encoder.encode(JSON.stringify(value)).length;
+    const add = (field, entry, limit = 23 * 1024) => {
+      const next = { ...context, [field]: [...(context[field] || []), entry] };
+      if (contextBytes(next) > limit) return false;
+      context = next;
+      return true;
+    };
+    const wholeBoardQuestion = question && ids.length === 1 && ids[0] === "board";
+    const savedItems = new Map(items.map((item) => [item.id, item]));
+    const nodesById = new Map(nodes.map((node) => [node.id, node]));
+    const byId = new Map(items.filter(usableContextCard).map(({ id }) => [id, nodesById.get(id)])
+      .filter(([, node]) => node));
+    if (includeSelectedCards) {
+      // The anchor quote marks the focus. Card context also belongs to a partial selection.
+      const selectionBudget = 11 * 1024;
+      for (const id of [...new Set(ids)].filter((id) => id !== "board").slice(0, 8)) {
+        const node = byId.get(id);
+        if (!node) continue;
+        const parent = byId.get(filingParent(node));
+        const card = { ...contextCard(node, savedItems, true), path: boardContextPath(node, byId),
+          ...(parent ? { parent: contextCard(parent, savedItems) } : {}) };
+        if (!add("selectedCards", card, selectionBudget)) {
+          add("selectedCards", { id, title: card.title, summary: excerpt(card.summary, 320), path: card.path.slice(-4),
+            ...(card.sources ? { sources: card.sources } : {}),
+            ...(card.repositoryFiles ? { repositoryFiles: card.repositoryFiles.slice(0, 3) } : {}),
+          }, selectionBudget);
+        }
+      }
+    }
+    const decisions = project.decisions.filter(({ sourceIds }) => sourceIds.every(inScope));
+    const projectMemory = { ...context, constraints: [...project.constraints], decisions };
+    if (contextBytes(projectMemory) <= 23 * 1024) context = projectMemory;
+    else {
+      for (const constraint of project.constraints) add("constraints", constraint);
+      for (const decision of decisions) if (!add("decisions", decision)) break;
+    }
     for (const id of ids) {
       const entry = cardRequirements.get(id);
       if (!entry) continue;
       const { attachment, evidenceAttachments, ...requirement } = entry;
-      const next = { ...context, requirements: [...(context.requirements || []), requirement] };
-      if (contextBytes(next) <= 23 * 1024) context = next;
+      add("requirements", requirement);
     }
     if (draftRoot) {
       const branch = describeDraftBranch(nodes, drafts, draftRoot, ids[0]);
@@ -1332,27 +1370,13 @@
       }
       if (constraintCards.length) context.constraintCards = constraintCards;
     }
-    if (wholeCardIds.length || (question && ids.length === 1 && ids[0] === "board")) {
-      const savedItems = new Map(items.map((item) => [item.id, item]));
-      const nodesById = new Map(nodes.map((node) => [node.id, node]));
-      const scopedNodes = items.filter(usableContextCard).map(({ id }) => nodesById.get(id)).filter(Boolean);
-      const byId = new Map(scopedNodes.map((node) => [node.id, node]));
-      const addCard = (field, card) => {
-        const next = { ...context, [field]: [...(context[field] || []), card] };
-        if (contextBytes(next) <= 23 * 1024) context = next;
-      };
-      for (const id of wholeCardIds.filter((id) => ids.includes(id)).slice(0, 8)) {
-        const node = byId.get(id);
-        if (node) addCard("selectedCards", { ...contextCard(node, savedItems, true), path: boardContextPath(node, byId) });
+    if (wholeBoardQuestion) {
+      const formal = [...byId.values()].filter(({ id }) => !drafts.has(id));
+      for (const node of rankBoardCards(formal, question).slice(0, 8)) {
+        add("relevantCards", { ...contextCard(node, savedItems), path: boardContextPath(node, byId) });
       }
-      if (question && ids.length === 1 && ids[0] === "board") {
-        const formal = scopedNodes.filter(({ id }) => !drafts.has(id));
-        for (const node of rankBoardCards(formal, question).slice(0, 8)) {
-          addCard("relevantCards", { ...contextCard(node, savedItems), path: boardContextPath(node, byId) });
-        }
-        const overview = { ...context, overview: boardOverview(formal) };
-        if (!context.overview && contextBytes(overview) <= 23 * 1024) context = overview;
-      }
+      const overview = { ...context, overview: boardOverview(formal) };
+      if (!context.overview && contextBytes(overview) <= 23 * 1024) context = overview;
     }
     return context;
   }
@@ -3871,7 +3895,7 @@
       requestId, boardId,
       baseRevision: revisionToken(`${JSON.stringify(organization)}\n${JSON.stringify(boardStorageRevision())}`),
       project: projectContext(payload.anchor.elementIds, {
-        question: payload.scope === "independent" ? "" : payload.question, wholeCardIds: payload.anchor.wholeCardIds,
+        question: payload.scope === "independent" ? "" : payload.question, includeSelectedCards: payload.scope !== "independent",
       }),
     };
     lastPayload = { ...request };
@@ -5444,7 +5468,7 @@
     let error = "";
     const request = {
       ...payload, ...target, mode: "ask", scope: "plan", project: projectContext(payload.anchor.elementIds, {
-        question: text, wholeCardIds: payload.anchor.wholeCardIds,
+        question: text, includeSelectedCards: payload.scope !== "independent",
       }),
       requestId, boardId,
       baseRevision: revisionToken(`${JSON.stringify(organization)}\n${JSON.stringify(boardStorageRevision())}`),
@@ -5954,7 +5978,7 @@
       targetId, path, children: children.slice(0, 24).map((item) => describeCard(item, 64)),
       pinned: pinned.slice(0, 12).map((item) => describeCard(item, 150)),
     };
-    const context = projectContext([targetId], { wholeCardIds: [targetId] });
+    const context = projectContext([targetId]);
     const result = { expansion, goal: excerpt(context.goal, 300) };
     const encoder = new TextEncoder();
     for (const key of ["constraints", "decisions", "requirements", "constraintCards"]) {

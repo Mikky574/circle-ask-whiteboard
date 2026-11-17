@@ -1739,6 +1739,9 @@ async function testLassoAnswer() {
   try {
     const { page, jsErrors } = session;
     const title = page.locator('#board [data-element-id="E05"] .organized-title');
+    const summary = page.locator('#board [data-element-id="E05"] .organized-summary');
+    const rootTitle = page.locator('#board [data-element-id="E04"] .organized-title');
+    const rootSummary = page.locator('#board [data-element-id="E04"] .organized-summary');
     const branch = page.locator('#board [data-element-id="E05"] .branch-toggle');
     assert.equal(await branch.getAttribute("aria-expanded"), "false");
     const question = "请解释这一段的实现。";
@@ -1768,9 +1771,21 @@ async function testLassoAnswer() {
         noteBounds.top < view.bottom && noteBounds.bottom > view.top;
     }), true, "The finished note should appear within the whiteboard viewport");
     assert.equal(await note.locator(".thread-question").innerText(), question);
-    assert.deepEqual(requests.at(-1).anchor.elementIds, ["E05"]);
-    assert.equal(requests.at(-1).anchor.quote, await title.innerText());
-    assert.equal(requests.at(-1).mode, "ask");
+    assert.deepEqual(requests.map(({ scope, mode }) => [scope, mode]), [["plan", "ask"], [undefined, "ask"]]);
+    const quotedTitle = await title.innerText();
+    const fullSummary = await summary.innerText();
+    const path = [{ id: "E04", title: await rootTitle.innerText() }, { id: "E05", title: quotedTitle }];
+    const parentSummary = await rootSummary.innerText();
+    for (const request of requests) {
+      assert.deepEqual(request.anchor.elementIds, ["E05"]);
+      assert.equal(request.anchor.quote, quotedTitle);
+      assert.equal(request.anchor.wholeCardIds, undefined);
+      assert.deepEqual(request.anchor.sourceFiles, ["geometry.js", "app.js"]);
+      assert.deepEqual(request.project.selectedCards?.map(({ id }) => id), ["E05"]);
+      assert.equal(request.project.selectedCards[0].summary, fullSummary);
+      assert.deepEqual(request.project.selectedCards[0].path, path);
+      assert.equal(request.project.selectedCards[0].parent?.summary, parentSummary);
+    }
     assert.equal(await branch.getAttribute("aria-expanded"), "false", "An answer should leave the chapter folded");
     const id = await note.getAttribute("data-element-id");
     const earlierAnswer = "此前已保存的执行说明。";
@@ -1788,7 +1803,7 @@ async function testLassoAnswer() {
     assert.equal(await branch.getAttribute("aria-expanded"), "false");
     assert.equal(await page.locator('#board [data-element-id="E06"] .branch-toggle').getAttribute("aria-expanded"), "false");
     assertNoJsErrors(jsErrors);
-    record("U16", "PASS", "A real lasso over a collapsed atlas chapter sends the quoted text and displays the persisted answer after reload.");
+    record("U16", "PASS", "A real title lasso sends its exact quote, full card summary, source references, and ancestor path to planning and answering. The reply persists after reload.");
   } catch (error) { record("U16", "FAIL", safeError(error)); await screenshot("U16-failure", session.page); }
   finally { await closeSession(session); }
 }
@@ -6261,14 +6276,26 @@ async function testRequirementAttachment() {
       return route.fulfill({ contentType: "application/x-ndjson",
         body: [{ type: "answer", text: answer }, { type: "done" }].map((event) => JSON.stringify(event)).join("\n") + "\n" });
     });
-    await askFromCard(page, detail.id, "这项需求如何验收？");
+    await lassoTitle(page, detail.id);
+    await page.locator("#question").fill("这项需求如何验收？");
+    await page.locator("#submit-question").click();
     await page.locator("#board").getByText(reply, { exact: true }).waitFor();
-    const question = requests.at(-1);
-    assert.deepEqual(question.anchor.elementIds, [detail.id]);
-    assert.deepEqual(question.project.requirements, [requirement]);
-    assert.deepEqual(question.attachments, [attachment, evidence]);
+    assert.deepEqual(requests.map(({ scope }) => scope), ["plan", undefined]);
+    for (const request of requests) {
+      assert.deepEqual(request.anchor.elementIds, [detail.id]);
+      assert.equal(request.anchor.quote, detail.title);
+      assert.equal(request.anchor.wholeCardIds, undefined);
+      assert.deepEqual(request.anchor.repositoryFiles, detail.repositoryFiles);
+      assert.deepEqual(request.project.requirements, [requirement]);
+      assert.deepEqual(request.project.selectedCards?.map(({ id }) => id), [detail.id]);
+      const [selectedCard] = request.project.selectedCards;
+      assert.equal(selectedCard.summary, detail.summary);
+      assert.deepEqual(selectedCard.path, [root, detail].map(({ id, title }) => ({ id, title })));
+      assert.deepEqual(selectedCard.repositoryFiles, detail.repositoryFiles);
+    }
+    assert.deepEqual(requests.at(-1).attachments, [attachment, evidence]);
     assertNoJsErrors(jsErrors);
-    record("U65", "PASS", "Linked requirements enrich an existing project card, open the real attachment via its own URL, persist across reload, and travel with scoped questions.");
+    record("U65", "PASS", "Linked requirements and attachments persist across reload. A title lasso sends the exact quote, card context, and project-relative source references with the scoped question.");
   } catch (error) { record("U65", "FAIL", safeError(error)); await screenshot("U65-failure", session.page); }
   finally { await closeSession(session); }
 }
