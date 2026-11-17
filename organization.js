@@ -341,13 +341,11 @@
           lanes.push(neighbor);
         }
       }
-      let rowY = Math.max(...lanes.map((lane) => moduleBottoms[lane])) + chapterGap;
-      for (let start = 0; start < details.length; start += lanes.length) {
-        let bottom = rowY;
-        for (const [slot, child] of details.slice(start, start + lanes.length).entries()) {
-          bottom = Math.max(bottom, placeSubtree(child, 2, laneX(lanes[slot]), rowY));
-        }
-        rowY = bottom + detailGap;
+      const nextTops = lanes.map((lane) => moduleBottoms[lane] + chapterGap);
+      // Advance each lane independently so a tall subtree cannot open a hole in the other lane.
+      for (const child of details) {
+        const slot = nextTops.length === 2 && nextTops[1] < nextTops[0] ? 1 : 0;
+        nextTops[slot] = placeSubtree(child, 2, laneX(lanes[slot]), nextTops[slot]) + detailGap;
       }
     }
     return positions;

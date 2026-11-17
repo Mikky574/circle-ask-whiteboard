@@ -448,13 +448,20 @@
       let bottom = 0;
       for (const [index, branch] of branches.entries()) {
         let offset = index ? bottom + gapY - branch.top : 0;
-        // Align the nearby cards first. Deeper cards only add spacing where they share horizontal space.
+        // Keep sibling heads in order and find the first offset where their full shapes fit.
+        const blocked = [];
         for (const rect of branch.cards) {
           for (const previous of cards) {
             if (rect.x < previous.x + previous.width + 8 && rect.x + rect.width + 8 > previous.x) {
-              offset = Math.max(offset, previous.y + previous.height + gapY - rect.y);
+              const end = previous.y + previous.height + gapY - rect.y;
+              if (end > offset) blocked.push({ start: previous.y - gapY - rect.y - rect.height, end });
             }
           }
+        }
+        blocked.sort((a, b) => a.start - b.start);
+        for (const { start, end } of blocked) {
+          if (start >= offset) break;
+          offset = Math.max(offset, end);
         }
         for (const rect of branch.cards) cards.push({ ...rect, y: rect.y + offset });
         if (!index) top = branch.top + offset;
