@@ -428,18 +428,25 @@
             <button id="canvas-menu-new" type="button" hidden>在此新建卡片</button>
             <button id="canvas-menu-ask-independent" type="button" hidden>在此独立提问</button>
             <button id="canvas-menu-edit" type="button" hidden>编辑卡片</button>
+            <button id="canvas-menu-split" type="button" aria-controls="expand-card-form" hidden>拆分节点…</button>
+            <button id="canvas-menu-organize-branch" type="button" hidden>整理分支</button>
+            <button id="canvas-menu-regenerate-branch" type="button" aria-haspopup="dialog" aria-controls="regenerate-branch-dialog" hidden>重新生成分支…</button>
             <button id="canvas-menu-pin" type="button" hidden>固定卡片</button>
             <button id="canvas-menu-delete" type="button" hidden>删除此卡片</button>
             <button id="canvas-menu-delete-edge" type="button" hidden>删除连线</button>
           </div>
           <div id="expand-card" hidden>
-            <button id="expand-card-open" type="button" aria-label="继续展开选中的卡片" aria-controls="expand-card-form" title="继续展开">+</button>
+            <button id="expand-card-open" type="button" aria-expanded="false" aria-controls="expand-card-form">拆分节点</button>
             <form id="expand-card-form" hidden>
-              <label for="expand-card-focus">展开方向（可选）</label>
+              <div class="expand-card-actions" role="group" aria-label="拆分层级">
+                <button id="expand-card-split" type="button" disabled>拆分模块</button>
+                <button id="expand-card-split-tree" type="button" disabled>多级拆分</button>
+                <button id="expand-card-close" type="button" aria-label="关闭拆分节点">×</button>
+              </div>
+              <label for="expand-card-focus">按方向展开（可选）</label>
               <div class="expand-card-row">
                 <input id="expand-card-focus" maxlength="400" autocomplete="off" placeholder="留空由 AI 选择">
-                <button id="expand-card-submit" type="submit">确定</button>
-                <button id="expand-card-close" type="button" aria-label="关闭展开输入框">×</button>
+                <button id="expand-card-submit" type="submit">生成下级</button>
               </div>
               <p id="expand-card-status" role="status" hidden></p>
             </form>
@@ -516,7 +523,7 @@
         <div class="context-body">
           <section class="selection-section" aria-labelledby="selection-heading">
             <h3 id="selection-heading">选中的内容 <span id="branch-label" hidden></span></h3>
-            <ul id="selection-list" aria-live="polite"><li class="empty-selection">点选卡片，或圈选一段内容。</li></ul>
+            <ul id="selection-list" aria-live="polite"><li class="empty-selection">点选一张卡片可拆分、整理或重新生成。圈选文字可就地提问。</li></ul>
             <p id="status" role="status"></p>
             <div id="draft-branch-actions" class="context-actions" hidden>
               <button id="integrate-draft" type="button" class="tool-button context-action" title="确认草稿已经验收后，为整个分支选择父模块">整合到白板</button>

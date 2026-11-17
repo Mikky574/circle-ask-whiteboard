@@ -759,8 +759,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   color: var(--mint);
 }
 #expand-card button:disabled { opacity: .6; }
-#expand-card-open { width: 30px; padding: 0; font-size: 21px; line-height: 1; }
-#expand-card-open:hover:not(:disabled) { border-color: #4f7160; background: #2b4437; }
+#expand-card-open { padding-inline: 9px; font-size: 12px; white-space: nowrap; }
+#expand-card button:is(:hover, :focus-visible):not(:disabled) { border-color: #4f7160; background: #2b4437; }
 #expand-card-form {
   width: 340px;
   max-width: 100%;
@@ -772,6 +772,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   font-size: 13px;
 }
 #expand-card-form label { display: block; margin-bottom: 7px; }
+.expand-card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 9px; }
+#expand-card-close { margin-left: auto; min-width: 30px; }
 .expand-card-row { display: flex; gap: 6px; }
 #expand-card-focus {
   flex: 1;

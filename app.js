@@ -45,6 +45,8 @@
   const expandCard = $("expand-card");
   const expandCardOpen = $("expand-card-open");
   const expandCardForm = $("expand-card-form");
+  const expandCardSplit = $("expand-card-split");
+  const expandCardSplitTree = $("expand-card-split-tree");
   const expandCardFocus = $("expand-card-focus");
   const expandCardSubmit = $("expand-card-submit");
   const expandCardStatus = $("expand-card-status");
@@ -1423,6 +1425,7 @@
   function setCardExpansionOpen(id) {
     expandCardTarget = id;
     expandCardOpen.hidden = Boolean(id);
+    expandCardOpen.setAttribute("aria-expanded", String(Boolean(id)));
     expandCardForm.hidden = !id;
     expandCardFocus.value = "";
     expandCardStatus.hidden = true;
@@ -1976,6 +1979,9 @@
     organizeBranch.disabled = regenerateBranch.disabled = splitModule.disabled = splitModuleTree.disabled = unavailable || !rootId;
     const selectedAnswer = selectedReply()?.saved;
     splitModuleTree.hidden = Boolean(selectedAnswer && (selectedAnswer.outline || !selectedAnswer.answer));
+    expandCardSplit.disabled = splitModule.disabled;
+    expandCardSplitTree.disabled = splitModuleTree.disabled;
+    expandCardSplitTree.hidden = splitModuleTree.hidden;
     const scope = $("branch-scope");
     scope.hidden = !rootId;
     scope.textContent = rootId ? `范围 ${rootId} · ${subtreeIds(hierarchyItems(nodes), rootId).size - 1} 张下级卡片` : "";
@@ -2066,7 +2072,7 @@
     if (!items.length) {
       const hint = document.createElement("li");
       hint.className = "empty-selection";
-      hint.textContent = "点选卡片，或圈选一段内容。";
+      hint.textContent = "点选一张卡片可拆分、整理或重新生成。圈选文字可就地提问。";
       selectionList.append(hint);
     }
     for (const item of items) {
@@ -6587,6 +6593,12 @@
       (!activeRun || activeRun.protectedCards);
   }
 
+  const canvasBranchCommands = new Map([
+    ["canvas-menu-split", openCardExpansion],
+    ["canvas-menu-organize-branch", () => void organizeSelectedBranch()],
+    ["canvas-menu-regenerate-branch", openBranchRegeneration],
+  ]);
+
   function showCanvasMenu(target, coordinates) {
     if (!canUseCanvasMenu()) return false;
     const edge = mode === "connect" ? target.closest(".connection-hit") : null;
@@ -6604,6 +6616,11 @@
     $("canvas-menu-new").hidden = Boolean(activeRun || element || edge);
     $("canvas-menu-ask-independent").hidden = Boolean(activeRun || element || edge);
     $("canvas-menu-edit").hidden = Boolean(activeRun) || !editableCard(id);
+    for (const command of canvasBranchCommands.keys()) {
+      const button = $(command);
+      button.hidden = Boolean(activeRun || edge || !element);
+      button.disabled = sourceChanged || !relayAvailable;
+    }
     $("canvas-menu-pin").hidden = Boolean(activeRun) || !element;
     $("canvas-menu-pin").textContent = pinnedIds.has(id) ? "取消固定" : "固定卡片";
     const remove = $("canvas-menu-delete");
@@ -6682,6 +6699,10 @@
         if (mode === "connect" || mode === "pin") setMode("select");
         chooseElement(element);
         openCardEditor(item);
+      } else if (canvasBranchCommands.has(action)) {
+        if (mode === "connect" || mode === "pin") setMode("select");
+        chooseElement(element);
+        canvasBranchCommands.get(action)();
       } else if (action === "canvas-menu-pin") {
         togglePin(element);
         element.focus({ preventScroll: true });
@@ -6863,7 +6884,7 @@
   const regenerateOpinion = $("regenerate-branch-opinion");
   let regenerateTarget = null;
   const regenerateDrafts = new Map();
-  regenerateBranch.addEventListener("click", () => {
+  function openBranchRegeneration() {
     const id = selectedModuleId();
     if (!id || regenerateBranch.disabled) return;
     const nodes = boardForOrganization();
@@ -6875,7 +6896,8 @@
     regenerateTarget = id;
     regenerateOpinion.value = regenerateDrafts.get(id) || "";
     regenerateDialog.showModal();
-  });
+  }
+  regenerateBranch.addEventListener("click", openBranchRegeneration);
   $("cancel-regenerate-branch").addEventListener("click", () => regenerateDialog.close());
   $("regenerate-branch-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -7065,13 +7087,21 @@
     showAsk(true);
     question.focus();
   });
-  expandCardOpen.addEventListener("click", () => {
+  function openCardExpansion() {
     const id = selectedModuleId();
-    if (!id || activeRun) return;
+    if (!id || expandCardOpen.disabled) return;
     showAsk();
     setCardExpansionOpen(id);
     expandCardFocus.focus();
-  });
+  }
+  expandCardOpen.addEventListener("click", openCardExpansion);
+  for (const [button, depth] of [[expandCardSplit, 1], [expandCardSplitTree, 2]]) {
+    button.addEventListener("click", () => {
+      if (!expandCardTarget || expandCardTarget !== selectedModuleId()) return;
+      setCardExpansionOpen(null);
+      void splitSelectedModule(depth);
+    });
+  }
   function closeCardExpansion() {
     setCardExpansionOpen(null);
     expandCardOpen.focus();

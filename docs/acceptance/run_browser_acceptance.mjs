@@ -3904,7 +3904,9 @@ async function testRegenerateSelectedBranch() {
       JSON.parse(localStorage.getItem("whiteboard.codex.repo-manual.organization.v1")));
     const requests = [];
     let responseKind = "";
+    let modelRequests = 0;
     await page.route("**/api/codex", async (route) => {
+      modelRequests += 1;
       const request = route.request().postDataJSON();
       const events = [];
       if (request.scope === "explain") {
@@ -3971,13 +3973,24 @@ async function testRegenerateSelectedBranch() {
     const before = await read();
     const beforeRects = await visibleCardRects(page);
     const scope = new Set(["A01", "A02", "A03", "A04", "E90"]);
-    const send = async (kind) => {
+    const send = async (kind, fromMenu = false) => {
       responseKind = kind;
       const response = page.waitForResponse((candidate) =>
         new URL(candidate.url()).pathname === "/api/codex" && candidate.request().method() === "POST");
-      await regenerate.click();
+      const beforeOpen = modelRequests;
+      if (fromMenu) {
+        await page.locator("#fit").click();
+        await card("E04").press("Enter");
+        await card("A01").locator(".thread-answer").click({ button: "right" });
+        assert.equal(await page.locator("#canvas-menu-organize-branch").isVisible(), true);
+        await page.locator("#canvas-menu-regenerate-branch").click();
+        assert.equal(await card("A01").getAttribute("aria-pressed"), "true");
+      } else {
+        await regenerate.click();
+      }
       await page.locator("#regenerate-branch-dialog[open]").waitFor();
       assert.match(await page.locator("#regenerate-branch-scope").innerText(), /A01.*4 张下级/);
+      assert.equal(modelRequests, beforeOpen, "Opening the regeneration dialog must not send a request");
       await page.locator("#regenerate-branch-opinion").fill(opinion);
       await page.locator("#confirm-regenerate-branch").click();
       await response;
@@ -4001,7 +4014,7 @@ async function testRegenerateSelectedBranch() {
       assert.deepEqual(await readManualNotes(page), beforeNotes, `${rejected} must leave native source notes untouched`);
     }
     await checkFailure(invalidBranch);
-    await send("complete");
+    await send("complete", true);
     await card("A01").locator(".thread-answer").filter({ hasText: correctedSummary("A01") }).waitFor();
     assert.equal(await page.locator("#execution-trace-preview").isVisible(), false);
     for (const request of requests) {
@@ -6296,12 +6309,22 @@ async function testExpandCardWithFocus() {
       { title: "小于和等于阈值", summary: "分别用阈值减一字节和等于阈值的文件验证允许提交。" },
       { title: "超过阈值一字节", summary: "预期阻止发送请求并告知上限。" },
     ];
+    const splitSections = [
+      { title: "核对允许的文件类型", text: "用允许列表判断附件的类型。" },
+      { title: "提示不支持的类型", text: "拒绝附件并保留用户输入。" },
+    ];
+    const treeSections = [
+      { title: "附件校验路径", text: "先检查类型，再检查文件大小。", parentIndex: null },
+      { title: "验收边界输入", text: "用边界值检查文件大小提示。", parentIndex: 0 },
+    ];
     const requests = [];
     await page.route("**/api/codex", async (route) => {
       const request = route.request().postDataJSON();
       requests.push(request);
-      const targetId = request.project.expansion.targetId;
-      const result = { type: "children", children: targetId === target.id ? children : grandchildren };
+      const result = request.scope === "explain"
+        ? { type: "explanation", explanation: { summary: "按上传规则拆分验证步骤。",
+          sections: request.minimumDepth === 2 ? treeSections : splitSections } }
+        : { type: "children", children: request.project.expansion.targetId === target.id ? children : grandchildren };
       await route.fulfill({ contentType: "application/x-ndjson; charset=utf-8",
         body: [result, { type: "done" }].map((event) => JSON.stringify(event)).join("\n") + "\n" });
     });
@@ -6312,11 +6335,14 @@ async function testExpandCardWithFocus() {
     const confirm = page.locator("#expand-card-submit");
     assert.equal(await expand.isVisible(), false);
     await card(target.id).locator(".organized-title").click();
+    assert.match(await expand.innerText(), /拆分节点/);
+    assert.equal(await expand.getAttribute("aria-expanded"), "false");
     await expand.click();
     await form.waitFor();
+    assert.equal(await expand.getAttribute("aria-expanded"), "true");
     assert.equal(await input.inputValue(), "", "An older saved recommendation should not fill the form");
     assert.equal(requests.length, 0, "Opening the form should not call a model");
-    assert.equal(await confirm.innerText(), "确定");
+    assert.equal(await confirm.innerText(), "生成下级");
     await confirm.click();
 
     const expectChildren = async (parentId, expected) => {
@@ -6365,8 +6391,34 @@ async function testExpandCardWithFocus() {
     assert.equal(requests[1].question, focus);
     assert.deepEqual(requests[1].anchor.elementIds, [generated.id]);
     assert.deepEqual(requests[1].project.expansion.path.slice(-2).map(({ id }) => id), [target.id, generated.id]);
+
+    await page.locator("#stop-ai").waitFor({ state: "hidden" });
+    await page.locator("#fit").click();
+    await card(generated.id).press("Enter");
+    await card(existing.id).locator(".organized-title").click({ button: "right" });
+    await page.locator("#canvas-menu-split").click();
+    await form.waitFor();
+    assert.equal(await card(existing.id).getAttribute("aria-pressed"), "true", "The context menu should retarget the chosen card");
+    assert.equal(requests.length, 2, "Opening split options from the context menu should not call a model");
+    await page.locator("#expand-card-split").click();
+    await page.getByText(splitSections[0].title, { exact: true }).waitFor();
+    assert.equal(requests.length, 3);
+    assert.equal(requests[2].scope, "explain");
+    assert.equal(requests[2].minimumDepth, undefined);
+    assert.deepEqual(requests[2].anchor.elementIds, [existing.id]);
+
+    await page.locator("#stop-ai").waitFor({ state: "hidden" });
+    await card(target.id).press("Enter");
+    await expand.click();
+    assert.equal(requests.length, 3);
+    await page.locator("#expand-card-split-tree").click();
+    await page.getByText(treeSections[0].title, { exact: true }).waitFor();
+    assert.equal(requests.length, 4);
+    assert.equal(requests[3].scope, "explain");
+    assert.equal(requests[3].minimumDepth, 2);
+    assert.deepEqual(requests[3].anchor.elementIds, [target.id]);
     assertNoJsErrors(jsErrors);
-    record("U66", "PASS", "Opening a card's expansion form makes no request. Blank confirmation sends one expansion, and a typed focus on a generated card persists a second level beneath it.");
+    record("U66", "PASS", "The visible card action and context menu open the same split form locally. Guided expansion persists two levels, and direct and multi-level splits call the model once on the chosen card.");
   } catch (error) { record("U66", "FAIL", safeError(error)); await screenshot("U66-failure", session.page); }
   finally { await closeSession(session); }
 }
