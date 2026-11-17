@@ -321,6 +321,13 @@
                     <input id="card-search-input" type="search" maxlength="400" placeholder="输入关键词或描述你想找的内容" autocomplete="off" spellcheck="false" enterkeyhint="search">
                     <button id="card-search-question" type="button" class="tool-button" title="在本地查找相关卡片，快捷键 Shift+Enter">按问题定位</button>
                   </form>
+                  <label class="card-search-engine" for="card-search-engine">
+                    匹配方式
+                    <select id="card-search-engine">
+                      <option value="bge">BGE 本地语义</option>
+                      <option value="jev">OpenJev 本地重排</option>
+                    </select>
+                  </label>
                   <p id="card-search-status" role="status"></p>
                   <ul id="card-search-results" aria-label="卡片搜索结果"></ul>
                 </div>

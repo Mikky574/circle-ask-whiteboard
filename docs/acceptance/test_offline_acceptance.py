@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 
 import api_backend
 import card_search
+import jev_decision
 import server
 import zcode_backend
 import zcode_workspace
@@ -460,6 +461,51 @@ class CardSearchAcceptanceTests(unittest.TestCase):
             body = json.dumps({"query": "如何回放", "cards": cards}).encode()
             status, _, raw = post(port, "/api/card-search", body, good_headers(host, body))
             self.assertEqual((status, json.loads(raw)), (200, {"matches": ["E12"], "mode": "semantic"}))
+
+    def test_openjev_reranks_only_first_eight_local_candidates(self):
+        cards = [{"id": f"E{index:02}", "title": f"项目条目 {index}", "summary": "摘要", "path": ""}
+                 for index in range(4, 16)]
+        scores = {card["id"]: 0.2 if index == 0 else 0.5 for index, card in enumerate(cards[:8])}
+        scores["E11"] = 0.91
+        body = json.dumps({"engine": "jev", "query": "测试问题", "cards": cards}).encode()
+        with isolated_server() as (port, host), patch.object(card_search, "semantic_scores", return_value=[0.81] * 12), \
+             patch.object(card_search, "relevance", return_value=scores) as relevance:
+            status, _, raw = post(port, "/api/card-search", body, good_headers(host, body))
+            result = json.loads(raw)
+            self.assertEqual(status, 200)
+            self.assertEqual(result, {"matches": ["E11", "E05", "E06", "E07", "E08", "E09", "E10"],
+                                      "mode": "semantic", "engine": "jev"})
+            relevance.assert_called_once_with("测试问题", cards[:8])
+
+    def test_openjev_reports_fallback_but_exact_id_skips_decision(self):
+        cards = [{"id": "E12", "title": "事件回放", "summary": "", "path": ""}]
+        with patch.object(card_search, "semantic_scores", return_value=[0.81]), \
+             patch.object(card_search, "relevance", return_value=None) as relevance:
+            exact = card_search.search_cards({"engine": "jev", "query": "e12", "cards": cards})
+            relevance.assert_not_called()
+            self.assertEqual(exact, {"matches": ["E12"], "mode": "semantic", "engine": "bge"})
+            fallback = card_search.search_cards({"engine": "jev", "query": "如何回放", "cards": cards})
+            self.assertEqual(fallback, {**exact, "engineUnavailable": True})
+
+    def test_openjev_transport_sends_typed_questions_to_fixed_loopback(self):
+        card = {"id": "E12", "title": "事件回放", "summary": "断点持久化", "path": "运行时"}
+        with patch.object(jev_decision, "HTTPConnection") as client:
+            connection = client.return_value
+            response = connection.getresponse.return_value
+            response.status = 200
+            response.read.return_value = b'{"answers":{"E12":{"type":"noul","noul":0.91}}}'
+            self.assertEqual(jev_decision.relevance("怎么恢复？", [card]), {"E12": 0.91})
+            client.assert_called_once_with("127.0.0.1", 8793, timeout=6)
+            method, path, body, headers = connection.request.call_args.args
+            self.assertEqual((method, path, headers), ("POST", "/v1/systemone", {"Content-Type": "application/json"}))
+            request = json.loads(body)
+            self.assertEqual((request["model"], request["state"]), ("laya-1.0", "怎么恢复？"))
+            self.assertEqual(request["questions"]["E12"]["type"], "noul")
+            self.assertIn("断点持久化", request["questions"]["E12"]["instructions"])
+            response.read.return_value = b'{"answers":{"E12":{"type":"noul","noul":true}}}'
+            self.assertIsNone(jev_decision.relevance("怎么恢复？", [card]))
+            response.status = 302
+            self.assertIsNone(jev_decision.relevance("怎么恢复？", [card]))
 
 
 class ExplanationAcceptanceTests(unittest.TestCase):

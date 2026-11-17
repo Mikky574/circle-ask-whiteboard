@@ -55,6 +55,7 @@
   const cardSearchInput = $("card-search-input");
   const cardSearchResults = $("card-search-results");
   const cardSearchQuestion = $("card-search-question");
+  const cardSearchEngine = $("card-search-engine");
   const cardSearchFeedback = $("card-search-status");
   const cardSearchNav = $("card-search-nav");
   const cardSearchPosition = $("card-search-position");
@@ -4081,8 +4082,9 @@
     const matches = smart ? ranked : ranked.slice(0, 8);
     if (cardSearchRequest) cardSearchFeedback.textContent = "正在本地匹配卡片…";
     else if (smart) {
-      const method = smart.semantic ? "本地语义匹配" : "本地关键词匹配";
+      const method = smart.engine === "jev" ? "OpenJev 本地重排" : smart.semantic ? "本地语义匹配" : "本地关键词匹配";
       cardSearchFeedback.textContent = matches.length ? `${method}找到 ${matches.length} 张卡片。` : `${method}没有找到相关卡片。`;
+      if (smart.engineUnavailable) cardSearchFeedback.textContent += " OpenJev 暂不可用。";
     } else if (!matches.length) cardSearchFeedback.textContent = "没有找到匹配的卡片。";
     else if (ranked.length > matches.length) cardSearchFeedback.textContent = `找到 ${ranked.length} 张卡片，显示前 ${matches.length} 张。`;
     for (const { id, title } of matches) {
@@ -4103,6 +4105,8 @@
     cardSearchNav.hidden = !match?.ids.length || match.index < 0;
     if (cardSearchNav.hidden) return;
     cardSearchPosition.textContent = `${match.index + 1} / ${match.ids.length}`;
+    cardSearchPosition.title = match.engineUnavailable ? "OpenJev 暂不可用，显示本地匹配结果" :
+      match.engine === "jev" ? "OpenJev 本地重排" : match.semantic ? "BGE 本地语义匹配" : "本地关键词匹配";
     cardSearchPrevious.disabled = match.index === 0;
     cardSearchNext.disabled = match.index === match.ids.length - 1;
   }
@@ -4162,7 +4166,7 @@
     const sentRevision = captureBoardRevision();
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(105000)]);
-    const body = JSON.stringify({ query, cards });
+    const body = JSON.stringify({ query, cards, ...(cardSearchEngine.value === "jev" ? { engine: "jev" } : {}) });
     cardSearchRequest = controller;
     renderCardSearch();
     try {
@@ -4187,7 +4191,8 @@
       } while (result.mode === "indexing");
       const known = new Set(cards.map(({ id }) => id));
       const ids = [...new Set(result.matches)].filter((id) => known.has(id));
-      cardSearchMatches = { ids, query, index: -1, semantic: result.mode === "semantic" };
+      cardSearchMatches = { ids, query, index: -1, semantic: result.mode === "semantic",
+        engine: result.engine, engineUnavailable: result.engineUnavailable === true };
       cardSearchRequest = null;
       renderCardSearch();
       if (limited) cardSearchFeedback.textContent += ` 本轮搜索前 ${cardSearchLimit} 张卡片。`;
@@ -4209,6 +4214,7 @@
     if (!id || !locateCard(id, true)) return;
     match.index = index;
     renderCardSearchNav();
+    if (match.engineUnavailable) status("OpenJev 暂不可用，已定位到本地匹配结果。");
     cardSearchPosition.focus({ preventScroll: true });
   }
 
@@ -6280,6 +6286,10 @@
     setTimeout(() => { void warmCardSearch(); }, 0);
   });
   cardSearchInput.addEventListener("input", () => {
+    resetCardSearch();
+    renderCardSearch();
+  });
+  cardSearchEngine.addEventListener("change", () => {
     resetCardSearch();
     renderCardSearch();
   });

@@ -554,6 +554,22 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   background: #284337;
   color: var(--mint);
 }
+.card-search-engine {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 7px 3px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+#card-search-engine {
+  min-height: 28px;
+  border: 1px solid #46584f;
+  border-radius: 6px;
+  padding-inline: 6px;
+  color: inherit;
+  background: #141c19;
+}
 #card-search-status { margin: 0; color: var(--muted); font-size: 12px; }
 #card-search-status:not(:empty) { margin: 6px 3px 0; }
 #card-search-results:empty { display: none; }

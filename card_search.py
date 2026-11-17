@@ -12,9 +12,12 @@ import sqlite3
 from threading import Lock
 import unicodedata
 
+from jev_decision import relevance
+
 
 MAX_CARDS = 4096
 MAX_MATCHES = 12
+DECISION_CANDIDATES = 8
 INLINE_CARDS = 64
 VECTOR_BYTES = 512 * 4
 CARD_ID = re.compile(r"[AE][0-9]{2,8}")
@@ -201,8 +204,11 @@ def semantic_scores(query, cards):
 
 
 def search_cards(payload):
-    if not isinstance(payload, dict) or set(payload) != {"query", "cards"}:
+    if not isinstance(payload, dict) or set(payload) not in ({"query", "cards"}, {"query", "cards", "engine"}):
         raise ValueError("请提交搜索问题和候选卡片。")
+    engine = payload.get("engine")
+    if "engine" in payload and engine not in ("bge", "jev"):
+        raise ValueError("搜索引擎无效。")
     query = checked_text(payload["query"], 512)
     cards = payload["cards"]
     if not isinstance(cards, list) or not 1 <= len(cards) <= MAX_CARDS:
@@ -239,4 +245,23 @@ def search_cards(payload):
         elif semantic is None and term_score > 0:
             ranked.append((term_score, card["id"]))
     ranked.sort(key=lambda match: match[0], reverse=True)
-    return {"matches": [card_id for _, card_id in ranked[:MAX_MATCHES]], "mode": mode}
+    matches = [card_id for _, card_id in ranked[:MAX_MATCHES]]
+    result = {"matches": matches, "mode": mode}
+    if engine != "jev":
+        return result
+
+    result["engine"] = "bge" if semantic is not None else "lexical"
+    if not matches or matches[0] == exact_id:
+        return result
+
+    by_id = {card["id"]: card for card in cleaned}
+    shortlist = matches[:DECISION_CANDIDATES]
+    scores = relevance(query, [by_id[card_id] for card_id in shortlist])
+    if scores is None:
+        result["engineUnavailable"] = True
+        return result
+
+    shortlisted = [card_id for card_id in shortlist if scores[card_id] >= 0.35]
+    result["matches"] = sorted(shortlisted, key=scores.get, reverse=True)
+    result["engine"] = "jev"
+    return result

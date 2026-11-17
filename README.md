@@ -113,3 +113,5 @@ Codex 或 ZCode 运行时，右侧 **执行过程** 会实时显示工具步骤�
 点 **按问题定位** 会在本机对照问题、标题、摘要和祖先标题，折叠下级也参与匹配。普通关键词定位可直接使用。启用语义匹配时，在运行白板的 Python 环境安装 `numpy onnxruntime tokenizers`，将 [BGE-small-zh-v1.5 ONNX](https://huggingface.co/Xenova/bge-small-zh-v1.5/tree/main/onnx) 的 `model_int8.onnx` 保存为 `model.onnx`，并把同一版本的 [tokenizer.json](https://huggingface.co/Xenova/bge-small-zh-v1.5/blob/main/tokenizer.json) 放在同一目录。默认目录为用户目录下的 `.circle-ask-whiteboard/models/bge-small-zh-v1.5`，也可用 `WHITEBOARD_SEARCH_MODEL_DIR` 指定。运行时只读本地文件，缺少权重或依赖时使用本机词项匹配。
 
 按问题定位最多索引当前白板的 4096 张有效卡片，显示最多 12 条匹配。长白板打开搜卡时会在后台建立索引。向量缓存保存在用户目录下的 `.circle-ask-whiteboard/search-vectors.sqlite3`，刷新和重启可复用。卡片内容或模型变更后会更新对应索引。定位和浏览结果仅使用本机 CPU。
+
+可在搜卡里选择 **OpenJev 本地重排**。先由现有索引召回候选，再把问题与最多 8 张候选卡的简短内容发给本机 `127.0.0.1:8793/v1/systemone`。运行 [OpenJev](https://github.com/razorback16/openjev) 的 Laya 后端时，可用 `OPENJEV_LAYA_MODEL` 指定 [Laya Multilingual](https://huggingface.co/convaiinnovations/laya-multilingual) 的本地权重目录，调用模型名为 `laya-1.0`。输入卡片编号会直接定位。若本地决策服务不可用，界面显示原有匹配结果并提示。
