@@ -1354,6 +1354,7 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .context-header h2 { margin: 0 0 10px; font-size: 16px; font-weight: 680; }
 .context-primary-actions { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 6px; }
 .context-primary-actions .tool-button { min-width: 0; min-height: 33px; padding-inline: 5px; font-size: 12px; }
+.adaptive-reorder-action { grid-column: 1 / -1; }
 .context-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .context-run-actions:not(:has(button:not([hidden]))) { display: none; }
 .context-action { padding-inline: 9px; border-color: #496354; background: #25372d; color: #dcece1; }

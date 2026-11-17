@@ -79,6 +79,7 @@
   const draftAttachments = [];
   const memory = window.BoardMemory;
   const organizationEngine = window.BoardOrganization;
+  const adaptiveLayout = window.BoardGeometry.layoutAdaptive;
   let repositoryPath = memory.activeBoardInfo?.repositoryPath || "";
   let onRepositoryChange = () => {};
   let allowWorkspaceNavigation = () => true;
@@ -199,10 +200,12 @@
   const splitModule = $("split-module");
   const splitModuleTree = $("split-module-tree");
   const quickReorder = $("quick-reorder");
+  const adaptiveReorder = $("adaptive-reorder");
   const undoOrganization = $("undo-organization");
   const organizationOpinion = $("organization-opinion");
   const boardRect = { x: 0, y: 0, width: 1050, height: 700 };
   let contentBounds = { ...boardRect };
+  let visibleCardBounds = boardRect;
   const noteSize = { width: 300, height: 156 };
   const branchSize = { width: 420, height: 244 };
   const segmenter = new Intl.Segmenter("zh", { granularity: "grapheme" });
@@ -229,7 +232,7 @@
   let organizedRects = new Map();
   let guideRects = new Map();
   let guideOverviewBounds = null;
-  let focusProjectGuide = Boolean(organization.current?.projectGuide);
+  let focusProjectGuide = Boolean(organization.current?.projectGuide) && organization.quickMode !== "adaptive";
   const searchOpenBranches = new Set();
   let rawRects = new Map();
   let cardBoxes = [];
@@ -1512,7 +1515,8 @@
   }
 
   function fit(view = focusProjectGuide && guideRects.size
-    ? guideOverviewBounds || unionRects([...guideRects.values()]) : contentBounds) {
+    ? guideOverviewBounds || unionRects([...guideRects.values()])
+    : hasAdaptiveLayout() ? visibleCardBounds : contentBounds) {
     const { clientWidth: width, clientHeight: height } = viewport;
     if (!width || !height) return;
     scale = Math.max(0.15, Math.min(1.15, (width - 48) / view.width, (height - 48) / view.height));
@@ -1980,6 +1984,9 @@
     quickReorder.title = (quickRoots.length
       ? `重排 ${quickRoots.join("、")} 及其下级，父卡保持原位。`
       : "重排整张白板。") + "每次点击切换紧凑树形、横向展开、双侧展开";
+    adaptiveReorder.disabled = !adaptiveLayout || quickReorder.disabled;
+    adaptiveReorder.textContent = quickRoots.length ? "四向快速重排选中分支" : "四向快速重排整张白板";
+    adaptiveReorder.title = quickRoots.length ? "在父卡周围重新排布可见下级" : "根据当前画布宽高重新排布可见分支";
     $("install-project-template").disabled = $("restore-project-template").disabled =
       $("restore-project-guide").disabled = Boolean(activeRun || deleting || storageStale);
     const rawLinkUndo = !organization.current && organization.rawLinkUndo;
@@ -2089,12 +2096,19 @@
   function togglePin(element) {
     const id = element.dataset.elementId;
     const pinned = !pinnedIds.has(id);
+    const pinRect = pinned && hasAdaptiveLayout() ? visibleRect(id) : null;
     if (pinned) pinnedIds.add(id);
     else pinnedIds.delete(id);
+    if (pinRect) {
+      const positions = organization.current?.positions || organization.rawPositions;
+      const { x, y, width } = pinRect;
+      positions[id] = { x, y, width };
+    }
     element.classList.toggle("board-pinned", pinned);
     setMode("select");
     if (organization.current) layoutOrganized();
-    const stored = persist();
+    const placementStored = !pinRect || saveOrganization();
+    const stored = persist() && placementStored;
     status((pinned ? `已固定 ${id}。再次整理时会优先保留在主干。` : `已取消固定 ${id}。`) +
       (stored ? "" : " 浏览器存储不可用。"));
   }
@@ -2574,6 +2588,22 @@
     return edges;
   }
 
+  function facingAxis(parent, child) {
+    const horizontalGap = Math.max(child.x - parent.x - parent.width, parent.x - child.x - child.width);
+    const verticalGap = Math.max(child.y - parent.y - parent.height, parent.y - child.y - child.height);
+    return horizontalGap > verticalGap ? "x" : "y";
+  }
+
+  function groupConnection(groups, parentId, parent, childId, child, axis) {
+    const key = `${parentId}:${axis}`;
+    if (!groups.has(key)) groups.set(key, { parent, children: [], axis });
+    groups.get(key).children.push({ id: childId, rect: child });
+  }
+
+  function orthogonalPath(points) {
+    return `M${points.map(([x, y]) => `${x},${y}`).join(" L")}`;
+  }
+
   function drawOrganizedConnections(items, placements, settings, guideLevels) {
     const layer = $("connections");
     layer.replaceChildren();
@@ -2596,40 +2626,42 @@
       const child = placements.get(item.id);
       const parent = placements.get(parentId);
       if (!child || !parent) continue;
-      const directional = isDirectionalQuickMode(quickModeFor(parentId, byId));
+      const mode = quickModeFor(parentId, byId);
+      const directional = isDirectionalQuickMode(mode);
+      const adaptive = mode === "adaptive" && !item.inlineAnnotation;
       const guideLevel = guideLevels.get(item.id);
       const guideEdge = guideLevel > 0 && guideLevels.has(parentId);
-      edges.push({ item, parentId, parent, child, directional, guideLevel, guideEdge });
-      const bundle = directional || guideLevel === 1 || (!guideEdge && connectedTrunk);
+      const axis = adaptive ? facingAxis(parent, child) : directional || (horizontal && !guideEdge) ? "x" : "y";
+      edges.push({ item, parentId, parent, child, directional, adaptive, axis, guideLevel, guideEdge });
+      const bundle = adaptive || directional || guideLevel === 1 || (!guideEdge && connectedTrunk);
       if (bundle && !item.inlineAnnotation) {
-        if (!groups.has(parentId)) {
-          groups.set(parentId, { parent, children: [], axis: directional || (horizontal && !guideEdge) ? "x" : "y" });
-        }
-        groups.get(parentId).children.push({ id: item.id, rect: child });
+        groupConnection(groups, parentId, parent, item.id, child, axis);
       }
     }
     const bundledEdges = drawConnectionBundles(groups, rectangles);
     const guideRails = [];
-    for (const { item, parentId, parent, child, directional, guideLevel, guideEdge } of edges) {
+    for (const { item, parentId, parent, child, directional, adaptive, axis, guideLevel, guideEdge } of edges) {
       const bundle = bundledEdges.get(item.id);
       if (bundle) {
         const line = drawEdge(bundle.d, guideEdge ? "guide-connection" : "organization-branch", parentId, item.id, bundle.hit);
         if (guideLevel === 1) line.classList.add("guide-connection--primary");
         continue;
       }
-      if (guideEdge) {
-        const points = guideConnectionPoints(parent, child, rectangles, guideLevel, directional,
-          guideRails.filter((rail) => rail.parentId !== parentId));
+      if (guideEdge || adaptive) {
+        const otherRails = guideRails.filter((rail) => rail.parentId !== parentId);
+        const points = adaptive
+          ? routeAroundCards(parent, child, rectangles, axis, null, otherRails)
+          : guideConnectionPoints(parent, child, rectangles, guideLevel, directional, otherRails);
         let path;
         if (points) {
-          path = `M${points.map(([x, y]) => `${x},${y}`).join(" L")}`;
+          path = orthogonalPath(points);
           for (const rail of orthogonalSegments(points)) guideRails.push({ ...rail, parentId });
         } else {
           const start = edgePoint(parent, { x: child.x + child.width / 2, y: child.y + child.height / 2 });
           const end = edgePoint(child, start);
           path = `M${start.x},${start.y} L${end.x},${end.y}`;
         }
-        const line = drawEdge(path, "guide-connection", parentId, item.id);
+        const line = drawEdge(path, guideEdge ? "guide-connection" : "organization-branch", parentId, item.id);
         if (guideLevel === 1) line.classList.add("guide-connection--primary");
         continue;
       }
@@ -2767,7 +2799,8 @@
   }
 
   function updateContentBounds(rectangles) {
-    contentBounds = unionRects([boardRect, ...rectangles]);
+    visibleCardBounds = rectangles.length ? unionRects(rectangles) : boardRect;
+    contentBounds = unionRects([boardRect, visibleCardBounds]);
     for (const id of ["overlay", "note-overlay"]) {
       const layer = $(id);
       layer.style.left = `${contentBounds.x}px`;
@@ -2878,7 +2911,7 @@
     const fixedIds = [...before.keys(), ...pinnedIds];
     const preset = quickModeFor(id, new Map(items.map((item) => [item.id, item])));
     const moves = preset
-      ? organizationEngine.reflowQuickBranch(items, rects, id, preset, { fixedIds, allowMirror: true })
+      ? reflowQuickBranch(items, rects, id, preset, fixedIds, true)
       : organizationEngine.reflowBranch(items, rects, id, {
         columns: viewport.clientWidth >= 600 ? 2 : 1, fixedIds, below: false,
       });
@@ -2990,6 +3023,7 @@
     const parents = new Map(visibleItems.map((item) => [item.id, organizationEngine.parentOf(item, byId)]));
     const quickMode = organization.quickMode;
     const directional = isDirectionalQuickMode(quickMode);
+    const graphLayout = directional || quickMode === "adaptive";
     const followsAnswer = ({ id, sectionOf }) => sectionOf && sectionOf === parents.get(id);
     const local = new Set(visibleItems.filter((item) => item.category !== "archive" && item.id !== guide?.rootId &&
       replies.has(item.id) && (item.nativeFace || !planned.has(item.id)) &&
@@ -3006,27 +3040,27 @@
     const regularItems = layoutItems.filter((item) => !guideLevels.has(item.id));
     const settings = organization.current.layout;
     const positions = gesture?.drag?.positions || organization.current.positions;
-    const computeLayout = (sizes) => directional
-      ? organizationEngine.directionalLayout(layoutItems, sizes, guide, quickMode)
+    const computeLayout = (sizes) => graphLayout
+      ? organizationEngine.directionalLayout(layoutItems, sizes, guide, directional ? quickMode : "balanced")
       : new Map([...organizationEngine.layout(regularItems, sizes, settings),
         ...organizationEngine.guideLayout(layoutItems, sizes, guide, settings)]);
     const widths = computeLayout(null);
     const sizes = new Map();
     for (const [id, rect] of widths) {
       const manual = positions[id];
-      if (directional && followsAnswer(byId.get(id))) {
+      if (graphLayout && followsAnswer(byId.get(id))) {
         sizes.set(id, measureDiscussion(replies.get(id), manual));
         continue;
       }
       const element = elements.get(id);
       const width = manual?.width ?? rect.width;
       element.style.width = `${width}px`;
-      sizes.set(id, { width: directional ? width : rect.width, height: element.offsetHeight });
+      sizes.set(id, { width: graphLayout ? width : rect.width, height: element.offsetHeight });
     }
     const placements = computeLayout(sizes);
     guideRects = new Map([...placements].filter(([id]) => guideLevels.has(id)));
     organizationEngine.applyManualLayout(placements, layoutItems, positions,
-      settings.density === "compact", directional ? undefined : guideRects);
+      settings.density === "compact" && quickMode !== "adaptive", graphLayout ? undefined : guideRects);
     for (const { id } of discussions) {
       sizes.set(id, measureDiscussion(replies.get(id), positions[id]));
     }
@@ -3050,7 +3084,7 @@
       guideOverviewBounds = overviewRects.length ? unionRects(overviewRects) : null;
     }
     drawOrganizedConnections(visibleItems, placements, directional ? { ...settings, flow: "horizontal" } : settings, guideLevels);
-    if (directional) $("organization-labels").replaceChildren();
+    if (graphLayout) $("organization-labels").replaceChildren();
     else renderOrganizationLabels(new Map(regularItems.map(({ id }) => [id, placements.get(id)]).filter(([, rect]) => rect)),
       regularItems, settings);
     const moved = placements.size !== organizedRects.size || Array.from(placements).some(([id, rect]) => {
@@ -3273,7 +3307,8 @@
     }
     const compact = organization.rawCompact;
     const directional = isDirectionalQuickMode(organization.quickMode);
-    const packed = compact && !directional ? compactCardRows(visibleCards) : null;
+    const graphLayout = directional || organization.quickMode === "adaptive";
+    const packed = compact && !graphLayout ? compactCardRows(visibleCards) : null;
     for (const card of visibleCards) {
       const { id, ...rect } = card;
       rawRects.set(id, packed?.get(id) || rect);
@@ -3284,10 +3319,10 @@
     const discussions = items.filter(({ id }) => visibleReplies.has(id));
     const baseItems = items.filter(({ id }) => !visibleReplies.has(id));
     const sizes = new Map([...visibleReplies].map(([id, reply]) => [id, measureDiscussion(reply, positions[id])]));
-    if (directional) {
+    if (graphLayout) {
       for (const [id, rect] of rawRects) sizes.set(id, { ...rect, width: positions[id]?.width ?? rect.width });
-      rawRects = organizationEngine.directionalLayout(items, sizes, null, organization.quickMode);
-      organizationEngine.applyManualLayout(rawRects, items, positions, true);
+      rawRects = organizationEngine.directionalLayout(items, sizes, null, directional ? organization.quickMode : "balanced");
+      organizationEngine.applyManualLayout(rawRects, items, positions, directional);
     } else {
       organizationEngine.applyManualLayout(rawRects, baseItems, positions, compact);
       placeDiscussions(discussions, rawRects, sizes, positions, compact);
@@ -3295,7 +3330,7 @@
     const branchMoves = applyQuickBranchLayouts(items, rawRects, positions);
     for (const card of [...cards, ...manualCards]) {
       const id = card.dataset.elementId;
-      if (rawRects.has(id) && (card.dataset.generatedModule || directional || packed || positions[id] || branchMoves.has(id))) {
+      if (rawRects.has(id) && (card.dataset.generatedModule || graphLayout || packed || positions[id] || branchMoves.has(id))) {
         placeElement(card, rawRects.get(id));
       }
     }
@@ -3330,11 +3365,16 @@
     }
     const byId = new Map(items.map((item) => [item.id, item]));
     const sectionGroups = new Map();
-    for (const { id, parentId, sectionOf } of discussions) {
+    for (const { id, parentId, sectionOf, inlineAnnotation } of items) {
       const parent = rawRects.get(parentId);
-      if (!parent || sectionOf !== parentId || !isDirectionalQuickMode(quickModeFor(parentId, byId))) continue;
-      if (!sectionGroups.has(parentId)) sectionGroups.set(parentId, { parent, children: [], axis: "x" });
-      sectionGroups.get(parentId).children.push({ id, rect: rawRects.get(id) });
+      if (!parent) continue;
+      const mode = quickModeFor(parentId, byId);
+      const child = rawRects.get(id);
+      if (mode === "adaptive" && !inlineAnnotation) {
+        groupConnection(sectionGroups, parentId, parent, id, child, facingAxis(parent, child));
+      } else if (sectionOf === parentId && isDirectionalQuickMode(mode)) {
+        groupConnection(sectionGroups, parentId, parent, id, child, "x");
+      }
     }
     const rectangles = [...rawRects.values()];
     const bundledSections = drawConnectionBundles(sectionGroups, rectangles);
@@ -3343,11 +3383,16 @@
       for (const parentId of rawLinkParents(childId)) {
         const parent = rawRects.get(parentId);
         if (!parent) continue;
-        if (byId.get(childId)?.parentId === parentId && sectionGroups.has(parentId) && reply?.saved?.sectionOf === parentId) {
+        const item = byId.get(childId);
+        const mode = quickModeFor(parentId, byId);
+        const adaptive = item?.parentId === parentId && mode === "adaptive" && !item.inlineAnnotation;
+        const section = item?.parentId === parentId && reply?.saved?.sectionOf === parentId && isDirectionalQuickMode(mode);
+        if (adaptive || section) {
           const bundle = bundledSections.get(childId);
-          const route = bundle?.d || routeAcrossCards(parent, child, rectangles);
+          const points = adaptive && !bundle ? routeAroundCards(parent, child, rectangles, facingAxis(parent, child), null, []) : null;
+          const route = bundle?.d || (points ? orthogonalPath(points) : routeAcrossCards(parent, child, rectangles));
           if (route) {
-            drawEdge(route, "reply-connection", parentId, childId, bundle?.hit);
+            drawEdge(route, reply ? "reply-connection" : "organization-branch", parentId, childId, bundle?.hit);
             continue;
           }
         }
@@ -4310,8 +4355,8 @@
     renderInspector();
   }
 
-  function reorderQuickly() {
-    if (gesture || !organizationEngine) return;
+  function reorderQuickly(requestedMode = null) {
+    if (gesture || !organizationEngine || (requestedMode === "adaptive" && !adaptiveLayout)) return;
     const result = $("organization-status");
     const { current } = organization;
     const visible = current ? organizedRects : rawRects;
@@ -4322,7 +4367,7 @@
     const revision = prepareLayoutChange();
     if (!revision) return;
     const before = current ? current.positions : organization.rawPositions;
-    const presets = Object.keys(organizationEngine.quickLayouts);
+    const presets = Object.keys(organizationEngine.quickLayouts).filter((mode) => mode !== "adaptive");
     const nextPreset = (mode) => presets[(presets.indexOf(mode) + 1) % presets.length];
     const items = hierarchyItems(boardForOrganization());
     const scopes = quickReorderRoots().map((id) => ({ id, ids: subtreeIds(items, id) }));
@@ -4349,6 +4394,10 @@
       const modes = Object.fromEntries(Object.entries(organization.branchQuickModes || {}).filter(([id]) => !ids.has(id)));
       const visibleParents = new Set(items.filter((item) => visible.has(item.id)).map((item) => item.parentId));
       for (const { id } of roots) {
+        if (requestedMode) {
+          modes[id] = requestedMode;
+          continue;
+        }
         const previous = organization.branchQuickModes?.[id];
         const leafSections = items.filter((item) => item.parentId === id && visible.has(item.id) &&
           !pinnedIds.has(item.id) && !visibleParents.has(item.id) && replies.get(item.id)?.saved?.sectionOf === id);
@@ -4378,7 +4427,13 @@
     const alreadyCompact = (current ? current.layout.density === "compact" : organization.rawCompact) &&
       !current?.branchLayouts?.length && Object.keys(positions).length === Object.keys(before).length;
     const currentMode = organization.quickMode || (alreadyCompact ? "compact" : "");
-    const nextMode = nextPreset(currentMode);
+    const nextMode = requestedMode || nextPreset(currentMode);
+    if (nextMode === "adaptive") {
+      for (const id of pinnedIds) {
+        const rect = visible.get(id);
+        if (rect) positions[id] = { x: rect.x, y: rect.y, width: rect.width };
+      }
+    }
     if (current) {
       current.layout = { ...current.layout, density: "compact" };
       current.positions = positions;
@@ -4390,7 +4445,10 @@
     organization.quickMode = nextMode;
     delete organization.branchQuickModes;
     for (const reply of replies.values()) reply.layoutOffset = null;
-    if (sourceManual && current?.projectGuide) {
+    if (nextMode === "adaptive") {
+      focusProjectGuide = false;
+      refreshViewLayout(true);
+    } else if (sourceManual && current?.projectGuide) {
       refreshViewLayout(false);
       if (currentMode || autoFit || scale < 0.65) {
         focusProjectGuide = true;
@@ -4497,21 +4555,46 @@
     return mode === "horizontal" || mode === "balanced";
   }
 
+  function hasAdaptiveLayout() {
+    return organization.quickMode === "adaptive" || Object.values(organization.branchQuickModes || {}).includes("adaptive");
+  }
+
+  function reflowAdaptive(items, rects, roots, fixedIds) {
+    if (!adaptiveLayout) return new Map();
+    const byId = new Map(items.map((item) => [item.id, item]));
+    const visible = items.filter(({ id }) => rects.has(id)).map((item) => {
+      const parentId = organizationEngine.parentOf(item, byId);
+      return { id: item.id, parentId: rects.has(parentId) ? parentId : null };
+    });
+    const anchors = roots || visible.filter(({ parentId }) => !parentId).map(({ id }) => id);
+    return adaptiveLayout(visible, rects, anchors, {
+      fixedIds: [...fixedIds, ...pinnedIds, ...(roots || [])],
+      viewport: { width: Math.max(1, viewport.clientWidth - 48), height: Math.max(1, viewport.clientHeight - 48) },
+    });
+  }
+
+  function reflowQuickBranch(items, rects, id, mode, fixedIds, allowMirror = false) {
+    return mode === "adaptive"
+      ? reflowAdaptive(items, rects, [id], fixedIds)
+      : organizationEngine.reflowQuickBranch(items, rects, id, mode, { fixedIds, allowMirror });
+  }
+
   function applyQuickBranchLayouts(items, placements, positions) {
     const moved = new Set();
     const fixedIds = Object.keys(positions);
+    const apply = (moves) => {
+      for (const [id, rect] of moves) {
+        Object.assign(placements.get(id), rect);
+        moved.add(id);
+      }
+    };
+    if (organization.quickMode === "adaptive") apply(reflowAdaptive(items, placements, null, fixedIds));
     const roots = Object.entries(organization.branchQuickModes || {})
       .filter(([id]) => placements.has(id))
       .map(([id, mode]) => ({ id, mode, size: subtreeIds(items, id).size }))
       .sort((a, b) => b.size - a.size);
     for (const { id, mode } of roots) {
-      const moves = organizationEngine.reflowQuickBranch(items, placements, id, mode, {
-        fixedIds,
-      });
-      for (const [child, rect] of moves) {
-        Object.assign(placements.get(child), rect);
-        moved.add(child);
-      }
+      apply(reflowQuickBranch(items, placements, id, mode, fixedIds));
     }
     return moved;
   }
@@ -6345,7 +6428,7 @@
     cardSearch.open = false;
     applySelection([]);
     refreshViewLayout(false);
-    focusProjectGuide = Boolean(organization.current?.projectGuide);
+    focusProjectGuide = Boolean(organization.current?.projectGuide) && organization.quickMode !== "adaptive";
     fit();
     $("card-search-toggle").focus({ preventScroll: true });
     returnOverview.hidden = true;
@@ -6812,7 +6895,8 @@
   });
   splitModule.addEventListener("click", () => void splitSelectedModule());
   splitModuleTree.addEventListener("click", () => void splitSelectedModule(2));
-  quickReorder.addEventListener("click", reorderQuickly);
+  quickReorder.addEventListener("click", () => reorderQuickly());
+  adaptiveReorder.addEventListener("click", () => reorderQuickly("adaptive"));
   const templatePanel = $("project-template");
   const installTemplate = $("install-project-template");
   const restoreTemplate = $("restore-project-template");

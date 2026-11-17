@@ -390,6 +390,30 @@
     return positions;
   }
 
+  function staggeredColumns(sections, gapY) {
+    const farOffset = Math.max(...sections.filter((_, index) => index % 2 === 0).map(({ width }) => width)) + gapY;
+    const slots = [];
+    let nearBottom = -gapY;
+    let farBottom = -Infinity;
+    for (let index = 0; index < sections.length; index += 2) {
+      const near = sections[index];
+      const far = sections[index + 1];
+      let nearY = nearBottom + gapY;
+      if (far) {
+        // Place the outer card's connector port in the gap after the inner card.
+        const port = Math.max(nearY + near.height + gapY / 2, farBottom + gapY + far.height / 2);
+        nearY = port - gapY / 2 - near.height;
+        const farY = port - far.height / 2;
+        slots.push({ card: far, offset: farOffset, y: farY });
+        farBottom = farY + far.height;
+      }
+      slots.push({ card: near, offset: 0, y: nearY });
+      nearBottom = nearY + near.height;
+    }
+    const top = Math.min(...slots.map(({ y }) => y));
+    return { slots, top, height: Math.max(nearBottom, farBottom) - top };
+  }
+
   function layoutBranches(nodes, core, compact = false, { twoSided = true, sectionColumns = false } = {}) {
     const gapX = compact ? 52 : 88;
     const gapY = compact ? 22 : 36;
@@ -403,29 +427,6 @@
       else roots.push(item);
       byId.set(node.id, item);
     }
-    function sectionGrid(sections) {
-      const farOffset = Math.max(...sections.filter((_, index) => index % 2 === 0).map(({ width }) => width)) + gapY;
-      const slots = [];
-      let nearBottom = -gapY;
-      let farBottom = -Infinity;
-      for (let index = 0; index < sections.length; index += 2) {
-        const near = sections[index];
-        const far = sections[index + 1];
-        let nearY = nearBottom + gapY;
-        if (far) {
-          // Place the outer card's connector port in the gap after the inner card.
-          const port = Math.max(nearY + near.height + gapY / 2, farBottom + gapY + far.height / 2);
-          nearY = port - gapY / 2 - near.height;
-          const farY = port - far.height / 2;
-          slots.push({ card: far, offset: farOffset, y: farY });
-          farBottom = farY + far.height;
-        }
-        slots.push({ card: near, offset: 0, y: nearY });
-        nearBottom = nearY + near.height;
-      }
-      const top = Math.min(...slots.map(({ y }) => y));
-      return { slots, top, height: Math.max(nearBottom, farBottom) - top };
-    }
 
     function groupSections(items) {
       if (!sectionColumns) return items;
@@ -438,7 +439,7 @@
       return items.flatMap((item) => {
         const sections = sectionsByAnswer.get(item.sectionOf);
         if (!sections || sections.length < sectionColumnThreshold || item.children.length) return [item];
-        return item === sections[0] ? [sectionGrid(sections)] : [];
+        return item === sections[0] ? [staggeredColumns(sections, gapY)] : [];
       });
     }
 
@@ -509,8 +510,260 @@
     return result;
   }
 
+  const layoutAdaptive = (() => {
+    const cardGap = 26;
+    const parentGap = 52;
+    const directions = ["north", "west", "south", "east"];
+    const defaultViewport = { width: 1182, height: 755 };
+
+    const right = (rect) => rect.x + rect.width;
+    const bottom = (rect) => rect.y + rect.height;
+
+    function bounds(rects) {
+      const x = Math.min(...rects.map((rect) => rect.x));
+      const y = Math.min(...rects.map((rect) => rect.y));
+      return {
+        x, y,
+        width: Math.max(...rects.map(right)) - x,
+        height: Math.max(...rects.map(bottom)) - y,
+      };
+    }
+
+    function overlaps(a, b, gap) {
+      return a.x < right(b) + gap && right(a) + gap > b.x &&
+        a.y < bottom(b) + gap && bottom(a) + gap > b.y;
+    }
+
+    function translate(rect, x, y) {
+      return { ...rect, x: rect.x + x, y: rect.y + y };
+    }
+
+    function fit(rect, viewport) {
+      return Math.min(viewport.width / rect.width, viewport.height / rect.height);
+    }
+
+    function railBounds(children, parent, side) {
+      const row = side === "north" || side === "south";
+      const parallel = row ? "width" : "height";
+      const perpendicular = row ? "height" : "width";
+      const length = children.reduce((sum, child) => sum + child.bounds[parallel], 0) +
+        cardGap * (children.length - 1);
+      const depth = Math.max(...children.map((child) => child.bounds[perpendicular]));
+      if (row) {
+        const y = side === "north" ? parent.y - parentGap - depth : bottom(parent) + parentGap;
+        return { x: -length / 2, y, width: length, height: depth };
+      }
+      const x = side === "west" ? parent.x - parentGap - depth : right(parent) + parentGap;
+      return { x, y: -length / 2, width: depth, height: length };
+    }
+
+    function railCards({ children, side, bounds: rail, cards: columns }) {
+      if (columns) return columns;
+      const row = side === "north" || side === "south";
+      let cursor = row ? rail.x : rail.y;
+      const cards = [];
+      for (const child of children) {
+        const block = child.bounds;
+        const x = row ? cursor : side === "west" ? right(rail) - block.width : rail.x;
+        const y = row ? (side === "north" ? bottom(rail) - block.height : rail.y) : cursor;
+        for (const card of child.cards) {
+          cards.push({ id: card.id, rect: translate(card.rect, x - block.x, y - block.y) });
+        }
+        cursor += (row ? block.width : block.height) + cardGap;
+      }
+      return cards;
+    }
+
+    function leafColumns(children, parent, side) {
+      if (side === "north" || side === "south" || children.length < sectionColumnThreshold ||
+        children.some((child) => child.cards.length !== 1)) return null;
+      const leaves = children.map(({ cards: [{ id, rect }] }) => ({ id, ...rect }));
+      const { slots, top, height } = staggeredColumns(leaves, cardGap);
+      const cards = slots.map(({ card, offset, y }) => {
+        const x = side === "west" ? parent.x - parentGap - card.width - offset : right(parent) + parentGap + offset;
+        return { id: card.id, rect: { x, y: y - top - height / 2, width: card.width, height: card.height } };
+      });
+      return { side, cards, bounds: bounds(cards.map(({ rect }) => rect)) };
+    }
+
+    function planCandidates(parent, children, viewport) {
+      // Try every boundary for ordinary branches. Sample large ones to bound the split search.
+      const intervals = Math.min(children.length, 18);
+      const cuts = [0];
+      for (let index = 1; index <= intervals; index++) {
+        cuts.push(Math.round(index * children.length / intervals));
+      }
+      const allRails = directions.map((side) => cuts.map((from, start) =>
+        cuts.map((to, end) => {
+          if (end <= start) return null;
+          const band = children.slice(from, to);
+          return { side, children: band, bounds: railBounds(band, parent, side), columns: leafColumns(band, parent, side) };
+        })));
+
+      const last = cuts.length - 1;
+      const plans = [];
+      function consider(rails) {
+        if (rails.some((rail, index) => rails.slice(index + 1)
+          .some((other) => overlaps(rail.bounds, other.bounds, cardGap)))) return;
+        const extent = bounds([parent, ...rails.map((rail) => rail.bounds)]);
+        plans.push({ rails, bounds: extent, fit: fit(extent, viewport) });
+      }
+      for (let a = 0; a <= last; a++) {
+        for (let b = a; b <= last; b++) {
+          for (let c = b; c <= last; c++) {
+            const rails = [allRails[0][0][a], allRails[1][a][b], allRails[2][b][c],
+              allRails[3][c][last]].filter(Boolean);
+            consider(rails);
+            for (const [index, rail] of rails.entries()) {
+              if (rail.columns) consider(rails.with(index, rail.columns));
+            }
+          }
+        }
+      }
+      return plans.sort((a, b) => b.fit - a.fit ||
+        a.bounds.width * a.bounds.height - b.bounds.width * b.bounds.height);
+    }
+
+    function materialize(id, rect, plan) {
+      return { bounds: plan.bounds, cards: [{ id, rect }, ...plan.rails.flatMap(railCards)] };
+    }
+
+    function closestFree(block, x, y, occupied) {
+      const queue = [];
+      const seen = new Set();
+      function enqueue(left, top) {
+        const key = `${left},${top}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        queue.push({ x: left, y: top, distance: (left - x) ** 2 + (top - y) ** 2 });
+      }
+      enqueue(x, y);
+      for (let attempt = 0; queue.length && attempt < 128; attempt++) {
+        queue.sort((a, b) => a.distance - b.distance);
+        const offset = queue.shift();
+        let collision;
+        for (const { rect } of block.cards) {
+          const placed = translate(rect, offset.x, offset.y);
+          const obstacle = occupied.find((other) => overlaps(placed, other, cardGap));
+          if (obstacle) {
+            collision = { rect, obstacle };
+            break;
+          }
+        }
+        if (!collision) return offset;
+        const { rect, obstacle } = collision;
+        enqueue(obstacle.x - cardGap - right(rect), offset.y);
+        enqueue(right(obstacle) + cardGap - rect.x, offset.y);
+        enqueue(offset.x, obstacle.y - cardGap - bottom(rect));
+        enqueue(offset.x, bottom(obstacle) + cardGap - rect.y);
+      }
+      // The canvas is unbounded. Always leave a collision-free placement when the nearby search fills.
+      return { x: Math.max(...occupied.map(right)) + cardGap - block.bounds.x, y };
+    }
+
+    function layout(nodes, rects, roots, { fixedIds = [], viewport = defaultViewport } = {}) {
+      const measuredViewport = {
+        width: viewport.width > 0 ? viewport.width : defaultViewport.width,
+        height: viewport.height > 0 ? viewport.height : defaultViewport.height,
+      };
+      const byId = new Map(nodes.filter(({ id }) => rects.has(id)).map((node) => [node.id, node]));
+      const childrenById = new Map();
+      for (const { id, parentId } of byId.values()) {
+        if (parentId === id || !byId.has(parentId)) continue;
+        if (!childrenById.has(parentId)) childrenById.set(parentId, []);
+        childrenById.get(parentId).push(id);
+      }
+      const scope = new Set(roots.filter((id) => byId.has(id)));
+      for (const id of scope) {
+        for (const child of childrenById.get(id) || []) scope.add(child);
+      }
+      const fixed = new Set(fixedIds);
+      const movable = new Set([...scope].filter((id) => !fixed.has(id)));
+      const occupied = [...rects].filter(([id]) => !movable.has(id)).map(([, rect]) => rect);
+      const result = new Map();
+      const visited = new Set();
+
+      function build(id) {
+        visited.add(id);
+        const { width, height } = rects.get(id);
+        const rect = { x: -width / 2, y: -height / 2, width, height };
+        const children = (childrenById.get(id) || []).filter((child) => movable.has(child))
+          .flatMap((child) => {
+            if (visited.has(child)) return [];
+            const subtree = build(child);
+            const plan = subtree.plans[0];
+            return [{
+              ...materialize(child, subtree.rect, plan), chainLength: subtree.chainLength, heading: plan.rails[0]?.side,
+            }];
+          });
+        const chainLength = children.length === 0 ? 1 :
+          children.length === 1 && children[0].chainLength ? children[0].chainLength + 1 : 0;
+        const plans = planCandidates(rect, children, measuredViewport);
+        if (chainLength >= 3 && chainLength <= 6) {
+          // Continue the same short chain in one direction, while retaining alternatives around fixed cards.
+          const continuing = plans.findIndex((plan) => plan.rails[0]?.side === children[0].heading);
+          if (continuing > 0) plans.unshift(...plans.splice(continuing, 1));
+        }
+        return { rect, children, plans, chainLength };
+      }
+
+      function store(block, x, y) {
+        for (const { id, rect } of block.cards) {
+          if (!movable.has(id)) continue;
+          const placed = translate(rect, x, y);
+          result.set(id, placed);
+          occupied.push(placed);
+        }
+      }
+
+      function place(id) {
+        const original = rects.get(id);
+        const x = original.x + original.width / 2;
+        const y = original.y + original.height / 2;
+        const { rect, children, plans } = build(id);
+        for (const plan of plans) {
+          const block = materialize(id, rect, plan);
+          if (block.cards.every((card) => !movable.has(card.id) ||
+            !occupied.some((other) => overlaps(translate(card.rect, x, y), other, cardGap)))) {
+            store(block, x, y);
+            return;
+          }
+        }
+        if (movable.has(id)) {
+          const block = materialize(id, rect, plans[0]);
+          const offset = closestFree(block, x, y, occupied);
+          store(block, offset.x, offset.y);
+          return;
+        }
+
+        // A fixed card cannot move with its children. Fit each branch around it and the obstacles.
+        for (const child of children) {
+          const placements = directions.map((side) => {
+            const rail = railBounds([child], rect, side);
+            const offset = closestFree(child, x + rail.x - child.bounds.x, y + rail.y - child.bounds.y, occupied);
+            const distance = (offset.x - x) ** 2 + (offset.y - y) ** 2;
+            return { ...offset, distance };
+          });
+          const best = placements.reduce((first, next) => next.distance < first.distance ? next : first);
+          store(child, best.x, best.y);
+        }
+      }
+
+      for (const id of scope) {
+        if (fixed.has(id) || !scope.has(byId.get(id).parentId)) place(id);
+      }
+      // A stale cyclic parent link can leave a scoped card without a component root.
+      for (const id of movable) {
+        if (!result.has(id)) place(id);
+      }
+      return result;
+    }
+    return layout;
+  })();
+
   const geometry = { scenePoint, bounds, contains, intersectsShape, isLasso, placeNote, placeNoteGroup,
-    routeAcrossCards, orthogonalSegments, routeAroundCards, sharedBranchRoutes, compactCardRows, layoutBranches, sectionColumnThreshold };
+    routeAcrossCards, orthogonalSegments, routeAroundCards, sharedBranchRoutes, compactCardRows, layoutBranches,
+    sectionColumnThreshold, layoutAdaptive };
   if (typeof window !== 'undefined') window.BoardGeometry = geometry;
   if (typeof module !== 'undefined') module.exports = geometry;
 })();

@@ -9,7 +9,7 @@
   const flows = new Set(["columns", "vertical", "horizontal"]);
   const sides = new Set(["auto", "left", "right"]);
   const spacing = { compact: [12, 26], normal: [18, 36], spacious: [26, 56] };
-  const quickLayouts = { compact: "紧凑树形", horizontal: "横向展开", balanced: "双侧展开" };
+  const quickLayouts = { compact: "紧凑树形", horizontal: "横向展开", balanced: "双侧展开", adaptive: "四向紧凑" };
   const validQuickMode = (mode) => typeof mode === "string" && Object.hasOwn(quickLayouts, mode);
 
   function cleanBranchQuickModes(value) {

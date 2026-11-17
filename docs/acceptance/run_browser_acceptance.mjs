@@ -6537,13 +6537,116 @@ async function testFullBoardQuestionSearch() {
   finally { finishIndex(); await closeSession(session); }
 }
 
+async function testAdaptiveReorder() {
+  const session = await openPage("normal", "repo-manual");
+  try {
+    const { page, jsErrors } = session;
+    const card = (id) => page.locator(`#board [data-element-id="${id}"]`);
+    const readState = () => page.evaluate(() => JSON.parse(localStorage.getItem(window.BoardMemory.storageKeys.organization)));
+    const modelRequests = telemetry.requests.length;
+    const items = [
+      ["E04", null, 4], ["E05", "E04", 4], ["E09", "E04", 6], ["E14", "E04", 4], ["E19", "E04", 4], ["E24", "E04", 5],
+      ["E10", "E09", 6], ["E11", "E09", 7], ["E12", "E09", 10], ["E13", "E09", 6],
+      ...Array.from({ length: 7 }, (_, i) => [`E${29 + i}`, "E12", 5 + i % 3]), ["E36", "E05", 2],
+    ].map(([id, parentId, length]) => ({ id, parentId, category: "main", title: `测试卡片 ${id}`,
+      summary: "验证卡片正文使用不同长度，检查分支的空间和连线。".repeat(length) }));
+    await page.evaluate((items) => {
+      const { memory, organization } = window.BoardMemory.storageKeys;
+      const saved = JSON.parse(localStorage.getItem(organization));
+      saved.quickMode = "balanced";
+      saved.branchQuickModes = {};
+      Object.assign(saved.current, { items, collapsedBranches: ["E05"], positions: { E36: { x: 10000, y: -10000 } } });
+      localStorage.setItem(organization, JSON.stringify(saved));
+      const board = JSON.parse(localStorage.getItem(memory));
+      board.pinnedIds = [];
+      localStorage.setItem(memory, JSON.stringify(board));
+    }, items);
+    await page.reload();
+    await card("E35").waitFor();
+    const initial = await readState();
+    const original = await visibleCardRects(page);
+    assert.equal(Object.keys(original).length, 17);
+    const zoom = async () => Number.parseInt(await page.locator("#zoom-value").textContent(), 10);
+    await page.locator("#fit").click();
+    const originalZoom = await zoom();
+    const adaptiveAction = page.locator("#adaptive-reorder");
+    await adaptiveAction.click();
+    const arranged = await visibleCardRects(page);
+    const newZoom = await zoom();
+    assert.equal((await readState()).quickMode, "adaptive");
+    assert.deepEqual((await readState()).current.items, initial.current.items);
+    assert.deepEqual((await readState()).current.collapsedBranches, ["E05"]);
+    assert.ok(newZoom > originalZoom, "Fitting the rearranged board should increase visual zoom");
+    const { width, height } = await page.locator("#viewport").evaluate((element) => ({ width: element.clientWidth, height: element.clientHeight }));
+    const visible = Object.values(arranged);
+    const spanX = Math.max(...visible.map(({ x, width }) => x + width)) - Math.min(...visible.map(({ x }) => x));
+    const spanY = Math.max(...visible.map(({ y, height }) => y + height)) - Math.min(...visible.map(({ y }) => y));
+    const fit = Math.max(0.15, Math.min(1.15, (width - 48) / spanX, (height - 48) / spanY));
+    assert.equal(newZoom, Math.round(fit * 100), "Camera fit should use visible card bounds");
+    for (const [index, rect] of visible.entries()) {
+      assert.ok(visible.slice(index + 1).every((other) => cardGap(rect, other) > 0), "Adaptive cards should not overlap");
+    }
+    const expected = items.filter(({ id, parentId }) => arranged[id] && arranged[parentId]).map(({ id, parentId }) => `${parentId}>${id}`).sort();
+    const edges = await page.locator("#connections > path[data-parent-id][data-child-id]").evaluateAll((paths, cards) =>
+      paths.map((path) => {
+        const { parentId, childId } = path.dataset;
+        const length = path.getTotalLength();
+        let crossed = null;
+        const obstacles = Object.entries(cards).filter(([id]) => id !== parentId && id !== childId);
+        for (let distance = 2; distance < length && !crossed; distance += 3) {
+          const { x, y } = path.getPointAtLength(distance);
+          crossed = obstacles.find(([, rect]) => x > rect.x + 2 && x < rect.x + rect.width - 2 &&
+            y > rect.y + 2 && y < rect.y + rect.height - 2)?.[0] || null;
+        }
+        const start = path.getPointAtLength(0);
+        const end = path.getPointAtLength(length);
+        return { parentId, childId, crossed, start: { x: start.x, y: start.y }, end: { x: end.x, y: end.y } };
+      }), arranged);
+    assert.deepEqual(edges.map(({ parentId, childId }) => `${parentId}>${childId}`).sort(), expected);
+    for (const { parentId, childId, start, end, crossed } of edges) {
+      assert.equal(crossed, null, `Adaptive path ${parentId} → ${childId} crosses ${crossed}`);
+      assertCardOnEdge(start, arranged[parentId], "Adaptive path starts on its recorded parent");
+      assertCardOnEdge(end, arranged[childId], "Adaptive path ends on its recorded child");
+    }
+    await page.reload();
+    await card("E35").waitFor();
+    assert.deepEqual(await visibleCardRects(page), arranged);
+    await page.locator("#undo-organization").click();
+    assert.deepEqual(await visibleCardRects(page), original);
+
+    await page.locator("#pin-mode").click();
+    await card("E35").press("Enter");
+    const beforeScope = await visibleCardRects(page);
+    await card("E12").press("Enter");
+    await adaptiveAction.click();
+    const scoped = await visibleCardRects(page);
+    const scopedState = await readState();
+    assert.equal(scopedState.quickMode, "balanced");
+    assert.equal(scopedState.branchQuickModes?.E12, "adaptive");
+    assert.deepEqual(scopedState.current.items, initial.current.items);
+    assert.notDeepEqual(scoped.E29, beforeScope.E29, "Scoped adaptive layout should move a descendant");
+    for (const [id, rect] of Object.entries(beforeScope).filter(([id]) => id === "E35" || items.find((item) => item.id === id).parentId !== "E12")) {
+      assert.deepEqual(scoped[id], rect, `Scoped adaptive layout moved fixed card ${id}`);
+    }
+    await page.reload();
+    await card("E35").waitFor();
+    assert.deepEqual(await visibleCardRects(page), scoped);
+    await page.locator("#undo-organization").click();
+    assert.deepEqual(await visibleCardRects(page), beforeScope);
+    assert.equal(telemetry.requests.length, modelRequests, "Adaptive reorder is local");
+    assertNoJsErrors(jsErrors);
+    record("U69", "PASS", "Adaptive reorder fits visible cards, preserves parent paths, fits a selected subtree around fixed cards, and supports reload and undo.", { originalZoom, newZoom });
+  } catch (error) { record("U69", "FAIL", safeError(error)); await screenshot("U69-failure", session.page); }
+  finally { await closeSession(session); }
+}
+
 try {
   if (!existsSync(EDGE)) throw new Error(`BLOCKED: installed msedge channel not found at ${EDGE}`);
   server = createServer((req, res) => { relay(req, res).catch(() => { if (!res.headersSent) res.writeHead(500); res.end(); }); });
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(0, "127.0.0.1", resolveListen); });
   port = server.address().port;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
-  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62,U63,U64,U65,U66,U67,U68").split(","));
+  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62,U63,U64,U65,U66,U67,U68,U69").split(","));
   if (selected.has("U01")) { console.log("BROWSER_CASE=U01"); await testCapabilities(); }
   if (selected.has("U02")) { console.log("BROWSER_CASE=U02"); await testKeyEphemeral(); }
   if (selected.has("U05-A")) { console.log("BROWSER_CASE=U05-A"); await testStopLateEvents(); }
@@ -6614,6 +6717,7 @@ try {
   if (selected.has("U66")) { console.log("BROWSER_CASE=U66"); await testExpandCardWithFocus(); }
   if (selected.has("U67")) { console.log("BROWSER_CASE=U67"); await testQuestionCardNavigation(); }
   if (selected.has("U68")) { console.log("BROWSER_CASE=U68"); await testFullBoardQuestionSearch(); }
+  if (selected.has("U69")) { console.log("BROWSER_CASE=U69"); await testAdaptiveReorder(); }
 } catch (error) {
   record("HARNESS", String(error?.message || "").startsWith("BLOCKED:") ? "BLOCKED" : "FAIL", safeError(error));
 } finally {
