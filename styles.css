@@ -531,6 +531,12 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   background: #1e2d25;
   box-shadow: 0 8px 24px #0a150fbd;
 }
+#card-search-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
 #card-search-input {
   width: 100%;
   min-height: 35px;
@@ -543,6 +549,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   font-size: 13px;
 }
 #card-search-input::placeholder { color: #a1b3a7; }
+#card-search-question {
+  border-color: #496b57;
+  background: #284337;
+  color: var(--mint);
+}
 #card-search-status { margin: 0; color: var(--muted); font-size: 12px; }
 #card-search-status:not(:empty) { margin: 6px 3px 0; }
 #card-search-results:empty { display: none; }
@@ -567,9 +578,26 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   text-align: start;
   overflow-wrap: anywhere;
 }
-.card-search-result:is(:hover, :focus-visible) { background: #2b3c33; }
+.card-search-result:is(:hover, :focus-visible, [aria-current="true"]) { background: #2b3c33; }
 .card-search-title { font-size: 13px; font-weight: 650; }
 .card-search-path { color: #a9bbaf; font-size: 11px; }
+#card-search-nav {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  border: 1px solid #34453e;
+  border-radius: 8px;
+  color: var(--mint);
+  background: #141c19;
+}
+#card-search-nav button { min-height: 31px; padding-inline: 6px; }
+#card-search-position {
+  min-width: 4ch;
+  font-size: 11px;
+  text-align: center;
+  white-space: nowrap;
+}
+#card-search-position:focus-visible { outline: 1px solid var(--teal, #81b69c); }
 #zoom-value {
   min-width: 43px;
   text-align: center;
@@ -715,7 +743,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   color: var(--mint);
 }
 #expand-card button:disabled { opacity: .6; }
-#expand-card-open { width: 32px; padding: 0; font-size: 22px; line-height: 1; }
+#expand-card-open { width: 30px; padding: 0; font-size: 21px; line-height: 1; }
+#expand-card-open:hover:not(:disabled) { border-color: #4f7160; background: #2b4437; }
 #expand-card-form {
   width: 340px;
   max-width: 100%;

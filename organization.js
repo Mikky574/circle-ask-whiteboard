@@ -118,14 +118,12 @@
       const taskDetails = cleanTaskDetails(item.taskDetails);
       const spec = cleanSpec(item.spec);
       const codePreview = cleanCodePreview(item.codePreview);
-      const followupQuestion = text(item.followupQuestion, 120);
       byId.set(id, {
         id,
         category: categories.has(item.category) ? item.category : "reference",
         parentId: sourceId(item.parentId),
         title: text(item.title, 100) || id,
         summary: text(item.summary, 800),
-        ...(followupQuestion ? { followupQuestion } : {}),
         ...(sources ? { sources } : {}),
         ...(repositoryFiles.length ? { repositoryFiles } : {}),
         ...(attachments.length ? { attachments } : {}),

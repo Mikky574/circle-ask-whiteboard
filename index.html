@@ -318,12 +318,18 @@
                 <div id="card-search-panel" role="search" aria-label="白板卡片搜索">
                   <form id="card-search-form">
                     <label class="visually-hidden" for="card-search-input">搜索卡片</label>
-                    <input id="card-search-input" type="search" placeholder="搜标题、编号或源码符号" autocomplete="off" spellcheck="false" enterkeyhint="search">
+                    <input id="card-search-input" type="search" maxlength="400" placeholder="输入关键词或描述你想找的内容" autocomplete="off" spellcheck="false" enterkeyhint="search">
+                    <button id="card-search-question" type="button" class="tool-button" title="在本地查找相关卡片，快捷键 Shift+Enter">按问题定位</button>
                   </form>
                   <p id="card-search-status" role="status"></p>
                   <ul id="card-search-results" aria-label="卡片搜索结果"></ul>
                 </div>
               </details>
+              <div id="card-search-nav" role="group" aria-label="按匹配顺序浏览卡片" hidden>
+                <button id="card-search-prev" type="button" class="tool-button" title="上一个匹配（↑）" aria-label="上一个匹配">↑</button>
+                <span id="card-search-position" role="status" tabindex="-1"></span>
+                <button id="card-search-next" type="button" class="tool-button" title="下一个匹配（↓）" aria-label="下一个匹配">↓</button>
+              </div>
               <button id="return-overview" type="button" class="tool-button" hidden>
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M8 5 3 10l5 5m-5-5h9a4 4 0 0 1 4 4"/></svg>
                 回到总览
@@ -422,9 +428,9 @@
           <div id="expand-card" hidden>
             <button id="expand-card-open" type="button" aria-label="继续展开选中的卡片" aria-controls="expand-card-form" title="继续展开">+</button>
             <form id="expand-card-form" hidden>
-              <label id="expand-card-label" for="expand-card-focus">想了解哪一点？</label>
+              <label for="expand-card-focus">展开方向（可选）</label>
               <div class="expand-card-row">
-                <input id="expand-card-focus" maxlength="400" required autocomplete="off" placeholder="输入你想了解的内容">
+                <input id="expand-card-focus" maxlength="400" autocomplete="off" placeholder="留空由 AI 选择">
                 <button id="expand-card-submit" type="submit">确定</button>
                 <button id="expand-card-close" type="button" aria-label="关闭展开输入框">×</button>
               </div>

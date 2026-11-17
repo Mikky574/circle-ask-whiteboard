@@ -28,6 +28,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import api_backend
+import card_search
 import server
 import zcode_backend
 import zcode_workspace
@@ -350,15 +351,9 @@ class CardExpansionAcceptanceTests(unittest.TestCase):
     @staticmethod
     def candidate():
         return {"children": [
-            {"title": "校验备份格式", "summary": "待查证：恢复前是否拒绝格式错误的备份？",
-             "followupQuestion": "入口用哪些字段判断备份格式无效？"},
-            {"title": "验证失败时保留数据", "summary": "用损坏备份触发恢复失败，并比较失败前后的现有数据。",
-             "followupQuestion": "对比恢复失败前后的数据，应该检查哪些字段？"},
+            {"title": "校验备份格式", "summary": "待查证：恢复前是否拒绝格式错误的备份？"},
+            {"title": "验证失败时保留数据", "summary": "用损坏备份触发恢复失败，并比较失败前后的现有数据。"},
         ]}
-
-    @classmethod
-    def suggestion_request(cls):
-        return {**cls.request_body(), "scope": "suggestCardQuestion", "question": "判断值得继续了解的一个问题。"}
 
     def test_api_receives_path_pins_and_question_without_board_tools(self):
         request = self.request_body()
@@ -373,56 +368,80 @@ class CardExpansionAcceptanceTests(unittest.TestCase):
         self.assertEqual(events[3]["changedFiles"], [])
         self.assertIsNone(api.call_args.kwargs["board_tools"])
         self.assertEqual(set(api.call_args.args[4]["properties"]["children"]["items"]["required"]),
-                         {"title", "summary", "followupQuestion"})
+                         {"title", "summary"})
         for phrase in (request["question"], "优先保护用户数据。", "备份入口", "flag what needs a source check"):
             self.assertIn(phrase, api.call_args.args[2])
         self.assertNotIn(TEST_ONLY_KEY, raw.decode())
         parsed = server.backend_request_from_body(body, server.parse_request(body))
         self.assertEqual((parsed.intent, parsed.permissions), ("expandCard", ()))
 
-    def test_api_recommends_one_question_without_creating_children(self):
-        request = self.suggestion_request()
-        result = {"question": "备份损坏后，恢复入口怎么保证不会覆盖现有数据？"}
+    def test_api_expands_a_blank_confirmation_directly(self):
+        request = {**self.request_body(), "question": ""}
+        result = self.candidate()
         body = json.dumps(request).encode()
         with isolated_server() as (port, host), patch.object(server, "run_api", return_value=json.dumps(result)) as api:
             status, _, raw = post(port, "/api/codex", body, good_headers(host, body))
         events = [json.loads(line) for line in raw.splitlines()]
         self.assertEqual(status, 200)
-        self.assertEqual([event["type"] for event in events], ["status", "context", "suggestion", "done"])
-        self.assertEqual(events[2]["question"], result["question"])
+        self.assertEqual([event["type"] for event in events], ["status", "context", "children", "done"])
+        self.assertEqual(events[2]["children"], result["children"])
+        self.assertEqual(api.call_count, 1)
         self.assertEqual(events[3]["changedFiles"], [])
         self.assertIsNone(api.call_args.kwargs["board_tools"])
-        self.assertEqual(api.call_args.args[4]["required"], ["question"])
-        for phrase in ("数据恢复", "备份入口", "优先保护用户数据。"):
+        self.assertEqual(api.call_args.args[4]["required"], ["children"])
+        for phrase in ("most useful unresolved detail", "Generate the new cards immediately", "数据恢复", "备份入口",
+                       "优先保护用户数据。"):
             self.assertIn(phrase, api.call_args.args[2])
         self.assertNotIn(TEST_ONLY_KEY, raw.decode())
         parsed = server.backend_request_from_body(body, server.parse_request(body))
-        self.assertEqual((parsed.intent, parsed.permissions), ("suggestCardQuestion", ()))
+        self.assertEqual((parsed.intent, parsed.question, parsed.permissions), ("expandCard", "", ()))
 
     def test_request_rejects_nonmatching_tree_and_write_scope(self):
         expansion = self.request_body()["project"]["expansion"]
         invalid_project = {"expansion": {**expansion, "children": [{**expansion["children"][0], "parentId": "E04"}]}}
-        for request in (self.request_body(), self.suggestion_request()):
-            for update in ({"project": invalid_project}, {"anchor": {"elementIds": ["E04"]}}, {"mode": "edit"},
-                           {"board": board_snapshot()}, {"minimumDepth": 2}):
-                with self.subTest(scope=request["scope"], update=update), self.assertRaises(ValueError):
-                    server.parse_request(json.dumps({**request, **update}).encode())
+        request = self.request_body()
+        for update in ({"project": invalid_project}, {"anchor": {"elementIds": ["E04"]}}, {"mode": "edit"},
+                       {"board": board_snapshot()}, {"minimumDepth": 2}):
+            with self.subTest(scope=request["scope"], update=update), self.assertRaises(ValueError):
+                server.parse_request(json.dumps({**request, **update}).encode())
 
     def test_candidate_rejects_reparenting_duplicate_and_invalid_card_lengths(self):
         context = server.parse_request(json.dumps(self.request_body()).encode())[2]
         first, second = self.candidate()["children"]
         for children in ([first], [{**first, "parentIndex": None}, second], [{**first, "title": "备份入口"}, second],
                          [first, {**second, "summary": "详" * 121}], [first, {**second, "title": "查" * 33}],
-                         [first, {key: value for key, value in second.items() if key != "followupQuestion"}],
-                         [first, {**second, "followupQuestion": " "}], [first, {**second, "followupQuestion": "问" * 121}]):
+                         [first, {"title": second["title"]}], [first, {**second, "summary": ""}]):
             with self.subTest(children=children), self.assertRaises(ValueError):
                 server.structured_candidate(json.dumps({"children": children}), context)
 
-    def test_recommendation_rejects_blank_overlong_and_unexpected_fields(self):
-        context = server.parse_request(json.dumps(self.suggestion_request()).encode())[2]
-        for result in ({"question": " "}, {"question": "问" * 121}, {"question": "备份怎么恢复？", "children": []}):
-            with self.subTest(result=result), self.assertRaises(ValueError):
-                server.structured_candidate(json.dumps(result), context)
+    def test_blank_question_is_only_valid_for_card_expansion(self):
+        request = {**self.request_body(), "scope": "board", "question": " "}
+        with self.assertRaises(ValueError):
+            server.parse_request(json.dumps(request).encode())
+
+
+class CardSearchAcceptanceTests(unittest.TestCase):
+    def test_offline_search_http_boundary_and_lexical_ranking(self):
+        cards = [
+            {"id": "E12", "title": "检测框还原", "summary": "去掉补边，换算回原图坐标。", "path": "识别流程"},
+            {"id": "E14", "title": "分类图像", "summary": "裁图后把像素转换成张量。", "path": "识别流程"},
+        ]
+        body = json.dumps({"query": "检测框怎么换回坐标？", "cards": cards}).encode()
+        with isolated_server() as (port, host), patch.object(card_search, "semantic_scores", return_value=None):
+            status, _, raw = post(port, "/api/card-search", body, good_headers(host, body))
+            self.assertEqual((status, json.loads(raw)), (200, {"matches": ["E12"], "mode": "lexical"}))
+            foreign = {**good_headers(host, body), "Origin": "https://outside.example"}
+            self.assertEqual(post(port, "/api/card-search", body, foreign)[0], 403)
+            invalid = json.dumps({"query": "坐标", "cards": [cards[0], cards[0]]}).encode()
+            self.assertEqual(post(port, "/api/card-search", invalid, good_headers(host, invalid))[0], 400)
+
+    def test_offline_semantic_ranking_can_find_a_card_without_a_keyword_match(self):
+        payload = {"query": "停电会怎样", "cards": [
+            {"id": "E12", "title": "事件传输断线恢复", "summary": "断点持久化后可重连。", "path": ""},
+            {"id": "E14", "title": "分类图像", "summary": "裁图后把像素转换成张量。", "path": ""},
+        ]}
+        with patch.object(card_search, "semantic_scores", return_value=[0.81, 0.24]):
+            self.assertEqual(card_search.search_cards(payload), {"matches": ["E12"], "mode": "semantic"})
 
 
 class ExplanationAcceptanceTests(unittest.TestCase):
@@ -874,7 +893,6 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
         children = DecompositionAcceptanceTests.children()
         expansion_fields = CardExpansionAcceptanceTests.request_body()
         expansion = CardExpansionAcceptanceTests.candidate()
-        suggestion_fields = CardExpansionAcceptanceTests.suggestion_request()
         filing = {
             "orphans": [{"id": "E04", "title": "Unfiled", "summary": "Detached"}],
             "parents": [{"id": "E01", "parentId": None, "title": "Root", "summary": "Overview"}],
@@ -886,8 +904,6 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
              {"children": children}, {"children": [{**children[0], "title": "盘点键名"}]}),
             ("expandCard", {key: expansion_fields[key] for key in ("scope", "anchor", "project")}, "children",
              expansion, {"children": expansion["children"][:1]}),
-            ("suggestCardQuestion", {key: suggestion_fields[key] for key in ("scope", "anchor", "project")}, "suggestion",
-             {"question": "怎样验证坏备份没有修改现有数据？"}, {"question": ""}),
             ("organizeBranch", {key: node_fields[key] for key in ("scope", "board", "branchRootId")}, "branch",
              branch, invalid_branch),
             ("regenerate", {key: node_fields[key] for key in ("scope", "board", "branchRootId")} | {"branchIntent": "regenerate"},
@@ -911,8 +927,6 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
             self.assertEqual(json.loads(result["text"]), expected)
         elif kind == "children":
             self.assertEqual(result["children"], expected["children"])
-        elif kind == "suggestion":
-            self.assertEqual(result["question"], expected["question"])
         else:
             self.assertEqual(result[kind], expected)
         self.assertEqual(events[-1]["type"], "done")

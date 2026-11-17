@@ -54,6 +54,14 @@
   const cardSearch = $("card-search");
   const cardSearchInput = $("card-search-input");
   const cardSearchResults = $("card-search-results");
+  const cardSearchQuestion = $("card-search-question");
+  const cardSearchFeedback = $("card-search-status");
+  const cardSearchNav = $("card-search-nav");
+  const cardSearchPosition = $("card-search-position");
+  const cardSearchPrevious = $("card-search-prev");
+  const cardSearchNext = $("card-search-next");
+  let cardSearchRequest = null;
+  let cardSearchMatches = null;
   const returnOverview = $("return-overview");
   const submitQuestion = $("submit-question");
   const stopAi = $("stop-ai");
@@ -240,8 +248,6 @@
   let repoIndex = null;
   let askAt = null;
   let expandCardTarget = null;
-  let expandCardDraftEdited = false;
-  const cardQuestionCache = new Map();
   let mode = "select";
   let connectionSource = null;
   let selectedConnection = null;
@@ -1358,38 +1364,63 @@
 
   function positionCardExpansion() {
     const id = selectedModuleId();
-    const rect = id && visibleRect(id);
-    const left = rect && offsetX + rect.x * scale;
-    const top = rect && offsetY + rect.y * scale;
-    const right = rect && left + rect.width * scale;
-    const bottom = rect && top + rect.height * scale;
-    const width = viewport.clientWidth;
-    const height = viewport.clientHeight;
-    expandCard.hidden = !rect || mode === "connect" || mode === "pin" || !askComposer.hidden ||
-      right <= 0 || left >= width || bottom <= 0 || top >= height;
+    const rect = id ? visibleRect(id) : null;
+    if (!rect || mode === "connect" || mode === "pin" || !askComposer.hidden) {
+      expandCard.hidden = true;
+      return;
+    }
+    const { clientWidth: width, clientHeight: height } = viewport;
+    const left = offsetX + rect.x * scale;
+    const top = offsetY + rect.y * scale;
+    const right = left + rect.width * scale;
+    const bottom = top + rect.height * scale;
+    expandCard.hidden = right <= 0 || left >= width || bottom <= 0 || top >= height;
     if (expandCard.hidden) return;
+
     const gap = 8;
-    const x = (left + right - expandCard.offsetWidth) / 2;
-    const y = bottom + gap + expandCard.offsetHeight <= height
-      ? bottom + gap : top - gap - expandCard.offsetHeight;
-    expandCard.style.left = `${Math.max(gap, Math.min(x, width - expandCard.offsetWidth - gap))}px`;
-    expandCard.style.top = `${Math.max(gap, Math.min(y, height - expandCard.offsetHeight - gap))}px`;
+    const { offsetWidth: popupWidth, offsetHeight: popupHeight } = expandCard;
+    const placements = [
+      [right - popupWidth, bottom + gap],
+      [right + gap, bottom - popupHeight],
+      [right - popupWidth, top - gap - popupHeight],
+      [left - gap - popupWidth, bottom - popupHeight],
+    ];
+    const toolbar = askPopover.hidden ? null : {
+      left: askPopover.offsetLeft,
+      top: askPopover.offsetTop,
+      right: askPopover.offsetLeft + askPopover.offsetWidth,
+      bottom: askPopover.offsetTop + askPopover.offsetHeight,
+    };
+    if (toolbar) placements.push(
+      [right - popupWidth, toolbar.bottom + gap],
+      [right - popupWidth, toolbar.top - gap - popupHeight],
+      [toolbar.right + gap, bottom - popupHeight],
+      [toolbar.left - gap - popupWidth, bottom - popupHeight],
+    );
+    const candidates = placements.map(([x, y]) => [
+      Math.max(gap, Math.min(x, width - popupWidth - gap)),
+      Math.max(gap, Math.min(y, height - popupHeight - gap)),
+    ]);
+    const clearOf = ([x, y], area) => !area || x + popupWidth + gap <= area.left ||
+      x >= area.right + gap || y + popupHeight + gap <= area.top || y >= area.bottom + gap;
+    const available = candidates.filter((placement) => clearOf(placement, toolbar));
+    const position = available.find((placement) => clearOf(placement, { left, top, right, bottom })) || available[0];
+    if (!position) {
+      expandCard.hidden = true;
+      return;
+    }
+    expandCard.style.left = `${position[0]}px`;
+    expandCard.style.top = `${position[1]}px`;
   }
 
   function setCardExpansionOpen(id) {
     expandCardTarget = id;
-    expandCardDraftEdited = false;
     expandCardOpen.hidden = Boolean(id);
     expandCardForm.hidden = !id;
-    setCardExpansionQuestion(organization.current?.items.find((item) => item.id === id)?.followupQuestion || "");
+    expandCardFocus.value = "";
     expandCardStatus.hidden = true;
     expandCardStatus.textContent = "";
     positionCardExpansion();
-  }
-
-  function setCardExpansionQuestion(value) {
-    expandCardFocus.value = value;
-    $("expand-card-label").textContent = value ? "AI 推荐的问题" : "想了解哪一点？";
   }
 
   function cardExpansionStatus(id, message) {
@@ -1496,6 +1527,15 @@
       offsetX = viewport.clientWidth / 2 - (rect.x + rect.width / 2) * scale;
     }
     renderCamera();
+  }
+
+  function focusCard(rect) {
+    const { clientWidth: width, clientHeight: height } = viewport;
+    if (!width || !height) return;
+    const readingScale = Math.max(0.8, scale);
+    scale = Math.max(0.15, Math.min(readingScale, (width - 48) / rect.width, (height - 48) / rect.height));
+    panCamera(width / 2 - (rect.x + rect.width / 2) * scale,
+      height / 2 - (rect.y + rect.height / 2) * scale);
   }
 
   function focusDiscussion(note, source) {
@@ -1891,7 +1931,7 @@
     const unavailable = Boolean(activeRun || deleting || sourceChanged || storageStale || !relayAvailable);
     expandCardOpen.disabled = unavailable;
     expandCardFocus.readOnly = Boolean(activeRun?.expandCard);
-    expandCardSubmit.disabled = unavailable || !expandCardFocus.value.trim();
+    expandCardSubmit.disabled = unavailable;
     const preparing = preparingQuestion();
     moveSelection.disabled = preparing || deleting || storageStale || activeRun?.mode === "organize";
     question.readOnly = preparing;
@@ -2070,6 +2110,8 @@
   }
 
   const canvasControls = "#ask-popover, #expand-card, #canvas-menu, button, summary, input, textarea, select, a[href], [contenteditable]:not([contenteditable='false'])";
+  let lastCardTap = null;
+  let doubleClickedCard = null;
 
   function startGesture(event) {
     if (gesture || connectionDrag || ![0, 1].includes(event.button)) return;
@@ -2216,6 +2258,10 @@
     if (!cancelled) moveGesture(event);
     const finished = gesture;
     gesture = null;
+    const tapped = !cancelled && !finished.moved && !finished.temporaryPan && !finished.grip && !finished.additive &&
+      (mode === "pan" || mode === "select") ? finished.item?.dataset.elementId : null;
+    doubleClickedCard = tapped && tapped === lastCardTap ? tapped : null;
+    lastCardTap = tapped;
     viewport.classList.remove("is-panning", "is-moving-cards");
     if (finished.drag && finished.moved) {
       const { before, targets, frame, fromSelection } = finished.drag;
@@ -4000,12 +4046,7 @@
     return [...path].reverse();
   }
 
-  function renderCardSearch() {
-    const query = cardSearchInput.value.trim();
-    const feedback = $("card-search-status");
-    cardSearchResults.replaceChildren();
-    feedback.textContent = "";
-    if (!query) return;
+  function cardSearchData() {
     const nodes = boardForOrganization();
     const byId = new Map(nodes.map((node) => [node.id, node]));
     const savedItems = new Map((organization.current?.items || organization.rawCards || []).map((item) => [item.id, item]));
@@ -4020,14 +4061,31 @@
             ...(details ? [details.task, ...details.dependencies, ...details.acceptance] : [])].filter(Boolean).join("\n"),
         };
       });
-    const matches = rankBoardCards(searchable, query);
-    feedback.textContent = matches.length ? (matches.length > 8 ? `找到 ${matches.length} 张卡片，显示前 8 张。` : "") :
-      "没有找到匹配的卡片。";
-    for (const { id, title } of matches.slice(0, 8)) {
+    return { byId, searchable };
+  }
+
+  function renderCardSearch() {
+    const query = cardSearchInput.value.trim();
+    const smart = cardSearchMatches?.query === query ? cardSearchMatches : null;
+    cardSearchQuestion.disabled = !query || Boolean(cardSearchRequest);
+    cardSearchResults.replaceChildren();
+    cardSearchFeedback.textContent = "";
+    if (!query) return;
+    const { byId, searchable } = cardSearchData();
+    const ranked = smart ? smart.ids.map((id) => byId.get(id)).filter(Boolean) : rankBoardCards(searchable, query);
+    const matches = smart ? ranked : ranked.slice(0, 8);
+    if (cardSearchRequest) cardSearchFeedback.textContent = "正在本地匹配卡片…";
+    else if (smart) {
+      const method = smart.semantic ? "本地语义匹配" : "本地关键词匹配";
+      cardSearchFeedback.textContent = matches.length ? `${method}找到 ${matches.length} 张卡片。` : `${method}没有找到相关卡片。`;
+    } else if (!matches.length) cardSearchFeedback.textContent = "没有找到匹配的卡片。";
+    else if (ranked.length > matches.length) cardSearchFeedback.textContent = `找到 ${ranked.length} 张卡片，显示前 ${matches.length} 张。`;
+    for (const { id, title } of matches) {
       const row = appendText(cardSearchResults, "li", "", "");
       const button = appendText(row, "button", "card-search-result", "");
       button.type = "button";
       button.dataset.cardId = id;
+      if (id === smart?.ids[smart.index]) button.setAttribute("aria-current", "true");
       appendText(button, "span", "card-search-title", `${id} · ${title}`);
       const ancestors = cardSearchPath(id, byId).slice(0, -1).filter(({ category }) => category !== "archive");
       if (ancestors.length) appendText(button, "span", "card-search-path",
@@ -4035,13 +4093,100 @@
     }
   }
 
-  function locateCard(id) {
-    if (gesture || connectionDrag || preparingQuestion()) return;
+  function renderCardSearchNav() {
+    const match = cardSearchMatches;
+    cardSearchNav.hidden = !match?.ids.length || match.index < 0;
+    if (cardSearchNav.hidden) return;
+    cardSearchPosition.textContent = `${match.index + 1} / ${match.ids.length}`;
+    cardSearchPrevious.disabled = match.index === 0;
+    cardSearchNext.disabled = match.index === match.ids.length - 1;
+  }
+
+  function resetCardSearch() {
+    cardSearchRequest?.abort();
+    cardSearchRequest = null;
+    cardSearchMatches = null;
+    renderCardSearchNav();
+  }
+
+  function searchCardCandidates(query) {
+    const { byId, searchable } = cardSearchData();
+    let candidates = searchable;
+    if (candidates.length > 64) {
+      const ranked = rankBoardCards(candidates, query).slice(0, 48);
+      const chosen = new Set(ranked.map(({ id }) => id));
+      const rest = candidates.filter(({ id }) => !chosen.has(id));
+      const slots = 64 - ranked.length;
+      const spread = Array.from({ length: slots }, (_, index) => rest[Math.floor(index * rest.length / slots)]);
+      candidates = [...ranked, ...spread];
+    }
+    return candidates.map((node) => ({
+      id: node.id,
+      title: excerpt(node.title, 120),
+      summary: excerpt(byId.get(node.id).summary || byId.get(node.id).text || "", 450),
+      path: excerpt(cardSearchPath(node.id, byId).slice(0, -1)
+        .filter(({ category }) => category !== "archive").map(({ title }) => title).join(" › "), 240),
+    }));
+  }
+
+  async function locateByQuestion() {
+    const query = cardSearchInput.value.trim();
+    if (!query || !cardSearch.open || cardSearchRequest) return;
+    resetCardSearch();
+    const cards = searchCardCandidates(query);
+    if (!cards.length) {
+      renderCardSearch();
+      cardSearchFeedback.textContent = "当前没有可定位的卡片。";
+      return;
+    }
+    const sentRevision = captureBoardRevision();
+    const controller = new AbortController();
+    cardSearchRequest = controller;
+    renderCardSearch();
+    try {
+      const response = await fetch("/api/card-search", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]),
+        body: JSON.stringify({ query, cards }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result?.text || "本地定位暂不可用。");
+      if (!Array.isArray(result.matches)) throw new Error("本地服务返回的定位结果无效。");
+      if (cardSearchRequest !== controller || !cardSearch.open || cardSearchInput.value.trim() !== query) return;
+      if (!sameBoardRevision(sentRevision)) throw new Error("白板内容已变化，请重新定位。");
+      const known = new Set(cards.map(({ id }) => id));
+      const ids = [...new Set(result.matches)].filter((id) => known.has(id));
+      cardSearchMatches = { ids, query, index: -1, semantic: result.mode === "semantic" };
+      cardSearchRequest = null;
+      renderCardSearch();
+      if (ids.length) showCardSearchMatch(0);
+    } catch (error) {
+      if (cardSearchRequest !== controller || !cardSearch.open) return;
+      cardSearchRequest = null;
+      renderCardSearch();
+      cardSearchFeedback.textContent = error.name === "TimeoutError" ? "本地定位超时，可以重试或按 Enter 搜关键词。" :
+        `${error.message} 可按 Enter 搜关键词。`;
+    } finally {
+      if (cardSearchRequest === controller) cardSearchRequest = null;
+    }
+  }
+
+  function showCardSearchMatch(index) {
+    const match = cardSearchMatches;
+    const id = match?.ids[index];
+    if (!id || !locateCard(id, true)) return;
+    match.index = index;
+    renderCardSearchNav();
+    cardSearchPosition.focus({ preventScroll: true });
+  }
+
+  function locateCard(id, ranked = false) {
+    if (gesture || connectionDrag || preparingQuestion()) return false;
     const nodes = new Map(boardForOrganization().map((node) => [node.id, node]));
     const node = nodes.get(id);
     if (!node || node.category === "archive" || replies.get(id)?.saved?.archived) {
       renderCardSearch();
-      return;
+      return false;
     }
     const previous = [...searchOpenBranches];
     const collapsed = new Set(savedCollapsedBranches());
@@ -4057,15 +4202,17 @@
       for (const previousId of previous) searchOpenBranches.add(previousId);
       refreshViewLayout(false);
       $("card-search-status").textContent = "这张卡片暂时无法定位。";
-      return;
+      return false;
     }
     cardSearch.open = false;
     returnOverview.hidden = false;
     focusProjectGuide = false;
     if (mode !== "select") setMode("select");
-    focusBranch(rect);
+    if (ranked) focusCard(rect);
+    else focusBranch(rect);
     chooseElement(element);
-    askOpen.focus({ preventScroll: true });
+    if (!ranked) askOpen.focus({ preventScroll: true });
+    return true;
   }
 
   function availableModuleIds(nodes, limit = Math.min(8, 64 - nodes.length)) {
@@ -4564,7 +4711,6 @@
       const item = { ...old, ...update, parentId: update.id === rootId ? old.parentId : update.parentId };
       if (replies.has(item.id) && (old.nativeFace || regenerate)) item.localContent = true;
       if (!replies.has(item.id)) delete item.nativeFace;
-      if (item.title !== old.title || item.summary !== old.summary) delete item.followupQuestion;
       if (old.taskDetails) item.taskDetails = { ...old.taskDetails, task: excerpt(update.summary, 500) };
       if (old.spec) item.spec = specAfterContentChange(old, item);
       return [item.id, item];
@@ -5695,83 +5841,6 @@
     return result;
   }
 
-  function cardReadRequest(scope, targetId, focus, context, attachments = []) {
-    const payload = getPayload(focus);
-    const target = connectionTarget();
-    const requestId = newRequestId();
-    const revisionSnapshot = captureBoardRevision();
-    const expand = scope === "expandCard";
-    const run = { controller: new AbortController(), mode: expand ? "organize" : "ask",
-      expandCard: expand, target, requestId, revisionSnapshot };
-    const request = {
-      ...payload, ...target, mode: "ask", scope, requestId, project: context,
-      anchor: { ...payload.anchor, wholeCardIds: [targetId] },
-      baseRevision: revisionToken(`${revisionSnapshot.organization}\n${JSON.stringify(revisionSnapshot.storage)}`),
-      ...(attachments.length ? { attachments } : {}),
-    };
-    activeRun = run;
-    $("sent-context").textContent = "正在等待本轮上下文…";
-    renderInspector();
-    return { run, request };
-  }
-
-  async function readCardResult(run, request, resultType, field, report) {
-    let result;
-    let completed = false;
-    let errorText = "";
-    await readExecution(run, request, (event) => {
-      if (!acceptsRunEvent(run) || (event.requestId != null && event.requestId !== request.requestId) ||
-          (event.baseRevision != null && event.baseRevision !== request.baseRevision)) return;
-      if (event.type === "context") $("sent-context").textContent = event.text;
-      else if (event.type === "status") report?.(event.text);
-      else if (event.type === resultType) {
-        if (result !== undefined) throw new Error("服务重复返回了结果，请重试。");
-        result = event[field] ?? null;
-      } else if (event.type === "done") completed = !event.changedFiles?.length;
-      else if (event.type === "error") errorText = event.text;
-    });
-    if (!acceptsRunEvent(run)) return;
-    if (errorText || !completed || result == null) throw new Error(errorText || "服务没有返回完整结果。");
-    return result;
-  }
-
-  async function suggestCardQuestion(id) {
-    if (activeRun || gesture || deletionPreparing || sourceChanged || storageStale || !relayAvailable ||
-        !memory.storageIsCurrent()) return;
-    const nodes = boardForOrganization();
-    const context = cardExpansionContext(id, hierarchyItems(nodes), nodes);
-    if (!context.expansion.path.length) return;
-    const signature = JSON.stringify(context);
-    const cached = cardQuestionCache.get(id);
-    if (cached?.signature === signature) {
-      setCardExpansionQuestion(cached.question);
-      renderInspector();
-      return;
-    }
-    const { run, request } = cardReadRequest("suggestCardQuestion", id, "判断这张卡最值得继续了解的一个问题。", context);
-    cardExpansionStatus(id, "正在根据卡片内容推荐问题…");
-    try {
-      const result = await readCardResult(run, request, "suggestion", "question");
-      if (!acceptsRunEvent(run)) return;
-      const suggestion = typeof result === "string" ? result.trim() : "";
-      if (!suggestion || Array.from(suggestion).length > 120 || !sameBoardRevision(run.revisionSnapshot)) {
-        throw new Error("没有取得适用的推荐问题。");
-      }
-      cardQuestionCache.set(id, { signature, question: suggestion });
-      if (expandCardTarget === id && !expandCardDraftEdited) setCardExpansionQuestion(suggestion);
-      cardExpansionStatus(id, "");
-    } catch (error) {
-      if (acceptsRunEvent(run)) cardExpansionStatus(id, `推荐未完成，可以自己输入。 ${error.message}`);
-    } finally {
-      if (run.stopping) await run.stopPromise;
-      if (activeRun === run) {
-        if (run.stopping) cardExpansionStatus(id, "已停止推荐，可以自己输入。");
-        activeRun = null;
-      }
-      renderInspector();
-    }
-  }
-
   async function expandSelectedCard(targetId, focus) {
     if (activeRun || gesture || deletionPreparing || sourceChanged || storageStale || !relayAvailable ||
         !memory.storageIsCurrent()) return;
@@ -5788,14 +5857,41 @@
       report("关联附件超过本轮上限，暂时无法展开。");
       return;
     }
-    const { run, request } = cardReadRequest("expandCard", targetId, focus, context, attachments);
+    const payload = getPayload(focus);
+    const target = connectionTarget();
+    const requestId = newRequestId();
+    const revisionSnapshot = captureBoardRevision();
+    const run = { controller: new AbortController(), mode: "organize",
+      expandCard: true, target, requestId, revisionSnapshot };
+    const request = {
+      ...payload, ...target, mode: "ask", scope: "expandCard", requestId, project: context,
+      anchor: { ...payload.anchor, wholeCardIds: [targetId] },
+      baseRevision: revisionToken(`${revisionSnapshot.organization}\n${JSON.stringify(revisionSnapshot.storage)}`),
+      ...(attachments.length ? { attachments } : {}),
+    };
+    activeRun = run;
+    $("sent-context").textContent = "正在等待本轮上下文…";
+    renderInspector();
     report(`${backendLabels[request.backend]} 正在补充下级卡片…`);
+    let children;
+    let completed = false;
+    let errorText = "";
     try {
-      const children = await readCardResult(run, request, "children", "children", report);
+      await readExecution(run, request, (event) => {
+        if (!acceptsRunEvent(run) || (event.requestId != null && event.requestId !== requestId) ||
+            (event.baseRevision != null && event.baseRevision !== request.baseRevision)) return;
+        if (event.type === "context") $("sent-context").textContent = event.text;
+        else if (event.type === "status") report(event.text);
+        else if (event.type === "children") {
+          if (children !== undefined) throw new Error("服务重复返回了结果，请重试。");
+          children = event.children ?? null;
+        } else if (event.type === "done") completed = !event.changedFiles?.length;
+        else if (event.type === "error") errorText = event.text;
+      });
       if (!acceptsRunEvent(run)) return;
       if (!sameBoardRevision(run.revisionSnapshot)) throw new Error("展开期间白板已变化，请重试。");
-      if (!Array.isArray(children) || children.length < 2 || children.length > 6) {
-        throw new Error("服务没有返回完整的下级卡片。");
+      if (errorText || !completed || !Array.isArray(children) || children.length < 2 || children.length > 6) {
+        throw new Error(errorText || "服务没有返回完整的下级卡片。");
       }
       const titleKey = (value) => value.trim().normalize("NFKC").toLowerCase();
       const currentTitles = new Map(nodes.map(({ id, title }) => [id, title]));
@@ -5805,13 +5901,12 @@
       const additions = children.map((child, index) => {
         const title = typeof child?.title === "string" ? child.title.trim() : "";
         const summary = typeof child?.summary === "string" ? child.summary.trim() : "";
-        const followupQuestion = typeof child?.followupQuestion === "string" ? child.followupQuestion.trim() : "";
         if (!title || Array.from(title).length > 32 || !summary || Array.from(summary).length > 120 ||
-            !followupQuestion || Array.from(followupQuestion).length > 120 || titles.has(titleKey(title))) {
-          throw new Error("下级卡片含重复标题、无效正文或缺少推荐问题，请重试。");
+            titles.has(titleKey(title))) {
+          throw new Error("下级卡片含重复标题或无效正文，请调整问题后重试。");
         }
         titles.add(titleKey(title));
-        return { id: ids[index], parentId: targetId, category: "reference", title, summary, followupQuestion };
+        return { id: ids[index], parentId: targetId, category: "reference", title, summary };
       });
       const previous = organization;
       const current = previous.current || {
@@ -5822,10 +5917,9 @@
       const before = visibleRect(targetId);
       const readingBranch = sourceManual && guideRects.has(targetId);
       const restoreSelection = selectedModuleId() === targetId;
-      const retained = items.map((item) => item.id === targetId ? { ...item, followupQuestion: undefined } : item);
       organization = {
         ...previous, previous: previous.current, quickUndo: null, undoAvailable: true,
-        current: { ...current, items: [...retained, ...additions] },
+        current: { ...current, items: [...items, ...additions] },
       };
       const { openedOutlines } = openBranchPath(targetId, true);
       try {
@@ -6025,6 +6119,20 @@
       renderConnectionControls();
     }
   });
+  viewport.addEventListener("dblclick", (event) => {
+    if (event.defaultPrevented || event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey ||
+        event.altKey || mode === "pin" || mode === "connect" || gesture || connectionDrag ||
+        canvasSpace || preparingQuestion()) return;
+    // Pointer capture keeps board gestures responsive and can retarget the mouse event to the viewport.
+    const target = event.target === viewport ? document.elementFromPoint(event.clientX, event.clientY) : event.target;
+    if (!target || target.closest(canvasControls)) return;
+    const card = target.closest("[data-element-id]:not([aria-busy='true'])");
+    const rect = card && visibleRect(card.dataset.elementId);
+    if (!rect || !board.contains(card) || card.dataset.elementId !== doubleClickedCard) return;
+    event.preventDefault();
+    if (selectedModuleId() !== card.dataset.elementId) chooseElement(card);
+    focusCard(rect);
+  });
   viewport.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.target.closest(canvasControls)) return;
     if (event.key === "Escape" && gesture?.drag) {
@@ -6129,27 +6237,52 @@
     fit();
   });
   cardSearch.addEventListener("toggle", () => {
-    if (!cardSearch.open) return;
+    if (!cardSearch.open) {
+      cardSearchRequest?.abort();
+      cardSearchRequest = null;
+      return;
+    }
     renderCardSearch();
     cardSearchInput.focus();
     cardSearchInput.select();
   });
-  cardSearchInput.addEventListener("input", renderCardSearch);
+  cardSearchInput.addEventListener("input", () => {
+    resetCardSearch();
+    renderCardSearch();
+  });
+  cardSearchQuestion.addEventListener("click", () => { void locateByQuestion(); });
   $("card-search-form").addEventListener("submit", (event) => {
     event.preventDefault();
+    if (cardSearchRequest) return;
     const match = cardSearchResults.querySelector("button");
-    if (match) locateCard(match.dataset.cardId);
+    const query = cardSearchInput.value.trim();
+    if (cardSearchMatches?.query === query && cardSearchMatches.ids.length) showCardSearchMatch(0);
+    else if (!match || /[?？]$|^(我想(?:知道|了解|找)|如何|怎么|哪里|为什么|哪张卡)/u.test(query)) void locateByQuestion();
+    else locateCard(match.dataset.cardId);
   });
   cardSearchResults.addEventListener("click", (event) => {
     const match = event.target.closest("button[data-card-id]");
-    if (match) locateCard(match.dataset.cardId);
+    if (!match) return;
+    const index = cardSearchMatches?.ids.indexOf(match.dataset.cardId) ?? -1;
+    if (index >= 0) showCardSearchMatch(index);
+    else locateCard(match.dataset.cardId);
+  });
+  cardSearchPrevious.addEventListener("click", () => showCardSearchMatch(cardSearchMatches?.index - 1));
+  cardSearchNext.addEventListener("click", () => showCardSearchMatch(cardSearchMatches?.index + 1));
+  cardSearchNav.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    showCardSearchMatch(cardSearchMatches?.index + (event.key === "ArrowUp" ? -1 : 1));
   });
   cardSearch.addEventListener("keydown", (event) => {
-    if (!cardSearch.open) return;
+    if (!cardSearch.open || event.isComposing) return;
     if (event.key === "Escape") {
       event.preventDefault();
       cardSearch.open = false;
       $("card-search-toggle").focus();
+    } else if (event.key === "Enter" && event.shiftKey && event.target === cardSearchInput) {
+      event.preventDefault();
+      void locateByQuestion();
     } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       const results = [...cardSearchResults.querySelectorAll("button")];
       const current = results.indexOf(event.target);
@@ -6164,6 +6297,7 @@
   });
   returnOverview.addEventListener("click", () => {
     if (gesture || connectionDrag || preparingQuestion()) return;
+    resetCardSearch();
     searchOpenBranches.clear();
     cardSearch.open = false;
     applySelection([]);
@@ -6497,7 +6631,6 @@
       editWorkbenchCard.focus();
       return;
     }
-    if (old && (title !== old.title || item.summary !== old.summary)) delete item.followupQuestion;
 
     const previous = organization;
     const previousItems = previous.current?.items || previous.rawCards || [];
@@ -6814,8 +6947,6 @@
     showAsk();
     setCardExpansionOpen(id);
     expandCardFocus.focus();
-    if (expandCardFocus.value) renderInspector();
-    else void suggestCardQuestion(id);
   });
   function closeCardExpansion() {
     setCardExpansionOpen(null);
@@ -6832,12 +6963,7 @@
     event.preventDefault();
     const focus = expandCardFocus.value.trim();
     const id = selectedModuleId();
-    if (focus && id && id === expandCardTarget) void expandSelectedCard(id, focus);
-  });
-  expandCardFocus.addEventListener("input", () => {
-    expandCardDraftEdited = true;
-    $("expand-card-label").textContent = "想了解哪一点？";
-    renderInspector();
+    if (id && id === expandCardTarget) void expandSelectedCard(id, focus);
   });
   $("ask-close").addEventListener("click", () => {
     showAsk();

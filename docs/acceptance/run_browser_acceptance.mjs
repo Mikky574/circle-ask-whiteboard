@@ -6266,7 +6266,8 @@ async function testExpandCardWithFocus() {
     const { page, jsErrors } = session;
     const card = (id) => page.locator(`#board [data-element-id="${id}"]`);
     const target = { id: "E72", parentId: "E71", category: "reference",
-      title: "上传校验", summary: "上传前检查附件，失败时提示用户。", folded: false };
+      title: "上传校验", summary: "上传前检查附件，失败时提示用户。", folded: false,
+      followupQuestion: "旧版保存的问题，不应填入方向输入框。" };
     const existing = { id: "E73", parentId: target.id, category: "reference",
       title: "文件类型", summary: "按允许的 MIME 类型检查。", folded: false };
     const items = [
@@ -6286,60 +6287,35 @@ async function testExpandCardWithFocus() {
     await chooseApi(page);
     assert.ok(await card("E71").evaluate((element) => element.classList.contains("board-pinned")));
 
-    const focus = "文件大小怎么拦截，超限后怎样重试？";
-    const delayedFocus = "根据选定的附件类型，在哪里读取文件类型？";
+    const focus = "测试文件大小边界时，哪三个输入能覆盖阈值判断？";
     const children = [
-      { title: "大小拦截", summary: "读取文件字节数，超过阈值就停止上传。",
-        followupQuestion: "测试文件大小边界时，哪三个输入能覆盖阈值判断？" },
-      { title: "超限后重试", summary: "用较小的文件替换超限附件，再提交。",
-        followupQuestion: "超限后替换文件时，怎样验证原来有效的附件还在？" },
+      { title: "大小拦截", summary: "读取文件字节数，超过阈值就停止上传。" },
+      { title: "超限后重试", summary: "用较小的文件替换超限附件，再提交。" },
     ];
     const grandchildren = [
-      { title: "小于和等于阈值", summary: "分别用阈值减一字节和等于阈值的文件验证允许提交。",
-        followupQuestion: "如何构造精确等于字节阈值的测试文件？" },
-      { title: "超过阈值一字节", summary: "预期阻止发送请求并告知上限。",
-        followupQuestion: "怎样断言超限行为没有发起上传请求？" },
+      { title: "小于和等于阈值", summary: "分别用阈值减一字节和等于阈值的文件验证允许提交。" },
+      { title: "超过阈值一字节", summary: "预期阻止发送请求并告知上限。" },
     ];
     const requests = [];
-    let releaseSuggestion;
-    const waitToSuggest = new Promise((resolve) => { releaseSuggestion = resolve; });
-    let delayedSettled;
-    const waitForDelayedSuggestion = new Promise((resolve) => { delayedSettled = resolve; });
     await page.route("**/api/codex", async (route) => {
       const request = route.request().postDataJSON();
       requests.push(request);
       const targetId = request.project.expansion.targetId;
-      const delayed = request.scope === "suggestCardQuestion" && targetId === existing.id;
-      if (delayed) await waitToSuggest;
-      const result = request.scope === "suggestCardQuestion"
-        ? { type: "suggestion", question: delayed ? delayedFocus : focus }
-        : { type: "children", children: targetId === target.id ? children : grandchildren };
-      try {
-        await route.fulfill({ contentType: "application/x-ndjson; charset=utf-8",
-          body: [result, { type: "done" }].map((event) => JSON.stringify(event)).join("\n") + "\n" });
-      } finally {
-        if (delayed) delayedSettled();
-      }
+      const result = { type: "children", children: targetId === target.id ? children : grandchildren };
+      await route.fulfill({ contentType: "application/x-ndjson; charset=utf-8",
+        body: [result, { type: "done" }].map((event) => JSON.stringify(event)).join("\n") + "\n" });
     });
 
     const expand = page.locator("#expand-card-open");
     const form = page.locator("#expand-card-form");
     const input = page.locator("#expand-card-focus");
     const confirm = page.locator("#expand-card-submit");
-    const waitForQuestion = (question) =>
-      page.waitForFunction((value) => document.querySelector("#expand-card-focus")?.value === value, question);
     assert.equal(await expand.isVisible(), false);
     await card(target.id).locator(".organized-title").click();
     await expand.click();
     await form.waitFor();
-    await waitForQuestion(focus);
-    assert.equal(requests.length, 1, "Opening the form for an older card should only ask for a suggestion");
-    const [suggestion] = requests;
-    assert.equal(suggestion.backend, "api");
-    assert.equal(suggestion.scope, "suggestCardQuestion");
-    assert.equal(suggestion.mode, "ask");
-    assert.deepEqual(suggestion.anchor.elementIds, [target.id]);
-    assert.equal(suggestion.project.expansion.targetId, target.id);
+    assert.equal(await input.inputValue(), "", "An older saved recommendation should not fill the form");
+    assert.equal(requests.length, 0, "Opening the form should not call a model");
     assert.equal(await confirm.innerText(), "确定");
     await confirm.click();
 
@@ -6350,20 +6326,21 @@ async function testExpandCardWithFocus() {
       const saved = await page.evaluate(() =>
         JSON.parse(localStorage.getItem(BoardMemory.storageKeys.organization)).current.items);
       const direct = saved.filter((item) => item.parentId === parentId);
-      assert.deepEqual(direct.map(({ title, summary, followupQuestion }) => ({ title, summary, followupQuestion })),
-        expected.map(({ title, summary, followupQuestion }) => ({ title, summary, followupQuestion })));
+      assert.deepEqual(direct.map(({ title, summary }) => ({ title, summary })),
+        expected.map(({ title, summary }) => ({ title, summary })));
+      assert.ok(direct.every((item) => !Object.hasOwn(item, "followupQuestion")));
       for (const item of direct) {
         await connectionPath(page, parentId, item.id).waitFor({ state: "attached" });
       }
       return direct;
     };
     await expectChildren(target.id, [existing, ...children]);
-    assert.equal(requests.length, 2, "Confirming the suggestion should send one scoped expansion request");
-    const [, request] = requests;
+    assert.equal(requests.length, 1, "Confirming a blank field should send one scoped expansion request");
+    const [request] = requests;
     assert.equal(request.backend, "api");
     assert.equal(request.scope, "expandCard");
     assert.equal(request.mode, "ask");
-    assert.equal(request.question, focus);
+    assert.equal(request.question, "");
     assert.deepEqual(request.anchor.elementIds, [target.id]);
     const expansion = request.project.expansion;
     assert.equal(expansion.targetId, target.id);
@@ -6374,34 +6351,77 @@ async function testExpandCardWithFocus() {
       [[existing.id, target.id, existing.title]]);
     await page.reload({ waitUntil: "networkidle" });
     const [, generated] = await expectChildren(target.id, [existing, ...children]);
-    assert.equal(requests.length, 2, "Reload should restore saved children without a new request");
+    assert.equal(requests.length, 1, "Reload should restore saved children without a new request");
     await chooseApi(page);
     await card(generated.id).locator(".organized-title").click();
     await expand.click();
-    await waitForQuestion(children[0].followupQuestion);
-    assert.equal(requests.length, 2, "A generated child's stored question should be ready without another request");
+    assert.equal(await input.inputValue(), "", "A generated child should also start with a blank field");
+    await input.fill(focus);
+    assert.equal(requests.length, 1, "Typing a focus should not call a model");
     await confirm.click();
     await expectChildren(generated.id, grandchildren);
-    assert.equal(requests[2].scope, "expandCard");
-    assert.equal(requests[2].question, children[0].followupQuestion);
-    assert.deepEqual(requests[2].anchor.elementIds, [generated.id]);
-    assert.deepEqual(requests[2].project.expansion.path.slice(-2).map(({ id }) => id), [target.id, generated.id]);
-
-    await card(existing.id).locator(".organized-title").click();
-    const delayedRequest = page.waitForRequest((request) => request.url().includes("/api/codex") &&
-      request.postDataJSON()?.scope === "suggestCardQuestion");
-    await expand.click();
-    await delayedRequest;
-    const editedFocus = "拖入多个文件时，逐个还是一起校验？";
-    await input.fill(editedFocus);
-    releaseSuggestion();
-    await waitForDelayedSuggestion;
-    await page.waitForLoadState("networkidle");
-    assert.equal(await input.inputValue(), editedFocus, "A late suggestion must preserve the user's typed question");
-    assert.equal(requests.length, 4, "Opening and editing a recommendation should never submit it automatically");
+    assert.equal(requests.length, 2);
+    assert.equal(requests[1].scope, "expandCard");
+    assert.equal(requests[1].question, focus);
+    assert.deepEqual(requests[1].anchor.elementIds, [generated.id]);
+    assert.deepEqual(requests[1].project.expansion.path.slice(-2).map(({ id }) => id), [target.id, generated.id]);
     assertNoJsErrors(jsErrors);
-    record("U66", "PASS", "A legacy card gets a model recommendation without expanding automatically. Generated cards restore their saved follow-up after reload and confirm into the correct child. A late suggestion preserves typed input.");
+    record("U66", "PASS", "Opening a card's expansion form makes no request. Blank confirmation sends one expansion, and a typed focus on a generated card persists a second level beneath it.");
   } catch (error) { record("U66", "FAIL", safeError(error)); await screenshot("U66-failure", session.page); }
+  finally { await closeSession(session); }
+}
+
+async function testQuestionCardNavigation() {
+  const session = await openPage("normal", "repo-manual");
+  try {
+    const { page, jsErrors } = session;
+    const card = (id) => page.locator(`#board [data-element-id="${id}"]`);
+    const position = page.locator("#card-search-position");
+    const viewport = page.locator("#viewport");
+    const centered = async (id) => {
+      const view = await viewport.boundingBox();
+      const item = await card(id).boundingBox();
+      assert.ok(view && item);
+      assert.ok(Math.abs(view.x + view.width / 2 - item.x - item.width / 2) < 5);
+      assert.ok(Math.abs(view.y + view.height / 2 - item.y - item.height / 2) < 5);
+    };
+    const requests = [];
+    await page.route("**/api/card-search", async (route) => {
+      requests.push(route.request().postDataJSON());
+      await route.fulfill({ json: { matches: ["E27", "E07"], mode: "semantic" } });
+    });
+
+    assert.equal(await card("E27").isVisible(), false);
+    const query = "模型的回答怎样分段更新到页面？";
+    await page.locator("#card-search-toggle").click();
+    await page.locator("#card-search-input").fill(query);
+    await page.locator("#card-search-question").click();
+    await position.waitFor();
+    assert.equal(await position.textContent(), "1 / 2");
+    assert.equal(requests.length, 1);
+    assert.deepEqual(Object.keys(requests[0]).sort(), ["cards", "query"]);
+    assert.equal(requests[0].query, query);
+    const eventStream = requests[0].cards.find(({ id }) => id === "E27");
+    assert.ok(eventStream);
+    assert.match(eventStream.summary, /NDJSON/);
+    assert.ok(eventStream.path);
+    assert.equal(await card("E27").getAttribute("aria-pressed"), "true");
+    await centered("E27");
+
+    await page.keyboard.press("ArrowDown");
+    assert.equal(await position.textContent(), "2 / 2");
+    assert.equal(await card("E07").getAttribute("aria-pressed"), "true");
+    await centered("E07");
+    await page.locator("#card-search-prev").click();
+    assert.equal(await position.textContent(), "1 / 2");
+    assert.equal(await requests.length, 1);
+
+    await page.locator("#return-overview").click();
+    assert.equal(await card("E27").isVisible(), false);
+    assert.equal(await page.locator("#card-search-nav").isVisible(), false);
+    assertNoJsErrors(jsErrors);
+    record("U67", "PASS", "The local question search receives only the query and current-board cards, reveals the first folded match centered, navigates by rank with buttons and arrows, and returns to the original folds.");
+  } catch (error) { record("U67", "FAIL", safeError(error)); await screenshot("U67-failure", session.page); }
   finally { await closeSession(session); }
 }
 
@@ -6411,7 +6431,7 @@ try {
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(0, "127.0.0.1", resolveListen); });
   port = server.address().port;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
-  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62,U63,U64,U65,U66").split(","));
+  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62,U63,U64,U65,U66,U67").split(","));
   if (selected.has("U01")) { console.log("BROWSER_CASE=U01"); await testCapabilities(); }
   if (selected.has("U02")) { console.log("BROWSER_CASE=U02"); await testKeyEphemeral(); }
   if (selected.has("U05-A")) { console.log("BROWSER_CASE=U05-A"); await testStopLateEvents(); }
@@ -6480,6 +6500,7 @@ try {
   if (selected.has("U64")) { console.log("BROWSER_CASE=U64"); await testRegisteredProjectIntroduction(); }
   if (selected.has("U65")) { console.log("BROWSER_CASE=U65"); await testRequirementAttachment(); }
   if (selected.has("U66")) { console.log("BROWSER_CASE=U66"); await testExpandCardWithFocus(); }
+  if (selected.has("U67")) { console.log("BROWSER_CASE=U67"); await testQuestionCardNavigation(); }
 } catch (error) {
   record("HARNESS", String(error?.message || "").startsWith("BLOCKED:") ? "BLOCKED" : "FAIL", safeError(error));
 } finally {
