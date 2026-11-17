@@ -216,6 +216,9 @@
       ...(rawLinkUndo ? { rawLinkUndo } : {}),
       quickUndo,
       appliedGuideId: typeof value?.appliedGuideId === "string" ? value.appliedGuideId.slice(0, 80) : "",
+      ...(Array.isArray(value?.appliedCardAdditions) ? { appliedCardAdditions: [...new Set(
+        value.appliedCardAdditions.filter((id) => typeof id === "string" && /^[a-z0-9-]{1,80}$/.test(id))
+      )].slice(-128) } : {}),
     };
   }
 

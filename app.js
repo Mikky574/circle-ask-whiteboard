@@ -41,6 +41,12 @@
   const selectionList = $("selection-list");
   const question = $("question");
   const askPopover = $("ask-popover");
+  const expandCard = $("expand-card");
+  const expandCardOpen = $("expand-card-open");
+  const expandCardForm = $("expand-card-form");
+  const expandCardFocus = $("expand-card-focus");
+  const expandCardSubmit = $("expand-card-submit");
+  const expandCardStatus = $("expand-card-status");
   const canvasMenu = $("canvas-menu");
   const askOpen = $("ask-open");
   const moveSelection = $("move-selection");
@@ -93,6 +99,7 @@
   let registeredProject = null;
   let initialActivity = null;
   let cardRequirements = new Map();
+  let projectCardAdditions = [];
   if (projectViews) {
     try {
       if (!registeredBoard) throw new Error("这个项目链接无效。");
@@ -113,6 +120,7 @@
         showProjectContext(details, "canvas");
         const activity = await window.WorkbenchActivity.load(projectId);
         cardRequirements = readCardRequirements(activity?.cardRequirements);
+        if (Array.isArray(activity?.cardAdditions)) projectCardAdditions = activity.cardAdditions.slice(0, 12);
         if (isEmptyProjectCanvas(organizationEngine.load(), memory.load())) {
           const untouched = Object.values(memory.storageKeys).every((key) => localStorage.getItem(key) === null);
           if (activity?.initialBoard || untouched) initialActivity = activity;
@@ -203,6 +211,7 @@
       if (organizationEngine.save(next)) organization = next;
     }
   }
+  installProjectCardAdditions();
   if (customBoard && !organization.current && !organization.rawCards?.length) {
     organization.current = organizationEngine.clean({ title: memory.activeBoardInfo.title, items: [] });
   }
@@ -230,6 +239,7 @@
   let lastPayload = null;
   let repoIndex = null;
   let askAt = null;
+  let expandCardTarget = null;
   let mode = "select";
   let connectionSource = null;
   let selectedConnection = null;
@@ -311,6 +321,47 @@
     return { ...plan, projectGuide: { rootId, x: 64, y: 100 },
       collapsedBranches: plan.collapsedBranches.filter((id) => id !== rootId && parents.has(id)),
     };
+  }
+
+  function installProjectCardAdditions() {
+    if (!organization.current || !projectCardAdditions.length) return;
+    const items = new Map(organization.current.items.map((item) => [item.id, item]));
+    const occupied = new Set([...items.keys(), ...pinnedIds, ...deletedIds,
+      ...(organization.previous?.items || []).map(({ id }) => id),
+      ...(organization.rawCards || []).map(({ id }) => id),
+      ...project.decisions.flatMap(({ sourceIds }) => sourceIds)]);
+    const applied = new Set(organization.appliedCardAdditions);
+    const collapsed = new Set(organization.current.collapsedBranches);
+    const previousCount = applied.size;
+    let nextNumber = 4;
+    for (const addition of projectCardAdditions) {
+      const { id, parentId, parentTitle, cards: children } = addition || {};
+      const parent = items.get(parentId);
+      if (typeof id !== "string" || !/^[a-z0-9-]{1,80}$/.test(id) || applied.has(id) ||
+          !parent || parent.title !== parentTitle || parent.category === "archive" ||
+          deletedIds.has(parentId) || !Array.isArray(children)) continue;
+      const titles = new Set([...items.values()].filter((item) => item.parentId === parentId)
+        .map((item) => item.title.trim().normalize("NFKC").toLowerCase()));
+      const existing = titles.size;
+      for (const child of children.slice(0, 24)) {
+        if (typeof child?.title !== "string" || typeof child?.summary !== "string" ||
+            !child.title.trim() || !child.summary.trim()) continue;
+        const key = child.title.trim().normalize("NFKC").toLowerCase();
+        if (titles.has(key)) continue;
+        titles.add(key);
+        let childId;
+        do childId = `E${String(nextNumber++).padStart(2, "0")}`; while (occupied.has(childId));
+        occupied.add(childId);
+        items.set(childId, { id: childId, parentId, category: "reference", title: child.title,
+          summary: child.summary, repositoryFiles: child.sources });
+      }
+      if (!existing && titles.size) collapsed.add(parentId);
+      applied.add(id);
+    }
+    if (applied.size === previousCount) return;
+    const next = { ...organization, appliedCardAdditions: [...applied],
+      current: organizationEngine.clean({ ...organization.current, items: [...items.values()], collapsedBranches: [...collapsed] }) };
+    if (organizationEngine.save(next)) organization = next;
   }
 
   function showProjectContext({ project, ancestors, children }, view) {
@@ -1300,6 +1351,37 @@
     }
     $("zoom-value").textContent = `${Math.round(scale * 100)}%`;
     positionAsk();
+    positionCardExpansion();
+  }
+
+  function positionCardExpansion() {
+    const id = selectedModuleId();
+    const rect = id && visibleRect(id);
+    const left = rect && offsetX + rect.x * scale;
+    const top = rect && offsetY + rect.y * scale;
+    const right = rect && left + rect.width * scale;
+    const bottom = rect && top + rect.height * scale;
+    const width = viewport.clientWidth;
+    const height = viewport.clientHeight;
+    expandCard.hidden = !rect || mode === "connect" || mode === "pin" || !askComposer.hidden ||
+      right <= 0 || left >= width || bottom <= 0 || top >= height;
+    if (expandCard.hidden) return;
+    const gap = 8;
+    const x = (left + right - expandCard.offsetWidth) / 2;
+    const y = bottom + gap + expandCard.offsetHeight <= height
+      ? bottom + gap : top - gap - expandCard.offsetHeight;
+    expandCard.style.left = `${Math.max(gap, Math.min(x, width - expandCard.offsetWidth - gap))}px`;
+    expandCard.style.top = `${Math.max(gap, Math.min(y, height - expandCard.offsetHeight - gap))}px`;
+  }
+
+  function setCardExpansionOpen(id) {
+    expandCardTarget = id;
+    expandCardOpen.hidden = Boolean(id);
+    expandCardForm.hidden = !id;
+    expandCardFocus.value = "";
+    expandCardStatus.hidden = true;
+    expandCardStatus.textContent = "";
+    positionCardExpansion();
   }
 
   function panCamera(x, y) {
@@ -1377,6 +1459,7 @@
       moveSelection.setAttribute("aria-label", `移动选中的 ${count} 张卡片`);
     }
     positionAsk();
+    positionCardExpansion();
   }
 
   function fit(view = focusProjectGuide && guideRects.size
@@ -1791,6 +1874,9 @@
     $("repair-delete").hidden = !pendingRepair;
     $("repair-delete").disabled = Boolean(activeRun || deleting);
     const unavailable = Boolean(activeRun || deleting || sourceChanged || storageStale || !relayAvailable);
+    expandCardOpen.disabled = unavailable;
+    expandCardFocus.readOnly = Boolean(activeRun?.expandCard);
+    expandCardSubmit.disabled = unavailable;
     const preparing = preparingQuestion();
     moveSelection.disabled = preparing || deleting || storageStale || activeRun?.mode === "organize";
     question.readOnly = preparing;
@@ -1893,6 +1979,7 @@
       askFeedback();
     }
     selected = items;
+    if (expandCardTarget && selectedModuleId() !== expandCardTarget) setCardExpansionOpen(null);
     $("ask-title").textContent = items[0]?.independent ? "独立提问" : "想做什么？";
     lastPayload = null;
     question.value = "";
@@ -1967,7 +2054,7 @@
     status("已切换到移动模式，可拖动任一选中卡片。");
   }
 
-  const canvasControls = "#ask-popover, #canvas-menu, button, summary, input, textarea, select, a[href], [contenteditable]:not([contenteditable='false'])";
+  const canvasControls = "#ask-popover, #expand-card, #canvas-menu, button, summary, input, textarea, select, a[href], [contenteditable]:not([contenteditable='false'])";
 
   function startGesture(event) {
     if (gesture || connectionDrag || ![0, 1].includes(event.button)) return;
@@ -2939,7 +3026,7 @@
     }
   }
 
-  function renderCardRequirement(body, requirement) {
+  function renderCardRequirement(body, requirement, id) {
     const section = appendText(body, "section", "card-requirement", "");
     appendText(section, "h4", "", `${requirement.requirementId} · ${requirement.title}`).dataset.selectPart = "text";
     for (const [label, value] of [["需求", requirement.need], ["实现方法", requirement.method]]) {
@@ -2947,7 +3034,9 @@
       appendText(paragraph, "strong", "", `${label} · `);
       appendText(paragraph, "span", "", value).dataset.selectPart = "text";
     }
-    if (requirement.methodDetails?.length) {
+    const detailsInChildren = projectCardAdditions.some((addition) => addition?.parentId === id &&
+      organization.appliedCardAdditions?.includes(addition.id));
+    if (requirement.methodDetails?.length && !detailsInChildren) {
       const details = appendText(section, "details", "requirement-methods", "");
       appendText(details, "summary", "", `实现细节（${requirement.methodDetails.length} 段）`);
       const steps = appendText(details, "ol", "", "");
@@ -3021,7 +3110,7 @@
       }
       const body = appendText(face, "div", "organized-body", "");
       const requirement = cardRequirements.get(item.id);
-      if (requirement) renderCardRequirement(body, requirement);
+      if (requirement) renderCardRequirement(body, requirement, item.id);
       else if (item.taskDetails) renderTaskDetails(body, item.taskDetails);
       else if (item.summary) appendText(body, "p", "organized-summary", item.summary).dataset.selectPart = "text";
       if (item.spec?.runner) appendText(body, "p", "organized-evidence", item.spec.runner);
@@ -5549,6 +5638,161 @@
     return context;
   }
 
+  function cardExpansionContext(targetId, items, nodes) {
+    const drafts = draftMembership(nodes);
+    const draftRoot = drafts.get(targetId);
+    const activeItems = items.filter((item) => !deletedIds.has(item.id) && item.category !== "archive");
+    const byId = new Map(activeItems.map((item) => [item.id, item]));
+    const details = new Map(nodes.map((node) => [node.id, node]));
+    const describeCard = (item, limit) => {
+      const node = details.get(item.id);
+      return {
+        id: item.id, parentId: item.parentId || null, pinned: pinnedIds.has(item.id),
+        title: node?.title || item.title,
+        summary: excerpt(node?.summary || node?.text || item.summary || "", limit),
+      };
+    };
+    const path = [];
+    const seen = new Set();
+    for (let item = byId.get(targetId); item && !seen.has(item.id) && path.length < 12; item = byId.get(item.parentId)) {
+      seen.add(item.id);
+      path.unshift(describeCard(item, item.id === targetId ? 400 : 140));
+    }
+    const children = activeItems.filter((item) => item.parentId === targetId);
+    const nearby = new Set([...path.map(({ id }) => id), ...children.map(({ id }) => id)]);
+    const related = (item) => nearby.has(item.id) || seen.has(item.parentId);
+    const pinned = activeItems.filter((item) => pinnedIds.has(item.id) &&
+        (!drafts.has(item.id) || drafts.get(item.id) === draftRoot))
+      .sort((left, right) => Number(related(right)) - Number(related(left)));
+    const expansion = {
+      targetId, path, children: children.slice(0, 24).map((item) => describeCard(item, 64)),
+      pinned: pinned.slice(0, 12).map((item) => describeCard(item, 150)),
+    };
+    const context = projectContext([targetId], { wholeCardIds: [targetId] });
+    const result = { expansion, goal: excerpt(context.goal, 300) };
+    const encoder = new TextEncoder();
+    for (const key of ["constraints", "decisions", "requirements", "constraintCards"]) {
+      if (context[key]?.length && encoder.encode(JSON.stringify({ ...result, [key]: context[key] })).length < 23_000) {
+        result[key] = context[key];
+      }
+    }
+    return result;
+  }
+
+  async function expandSelectedCard(targetId, focus) {
+    if (activeRun || gesture || deletionPreparing || sourceChanged || storageStale || !relayAvailable ||
+        !memory.storageIsCurrent()) return;
+    const report = (message) => {
+      status(message);
+      if (expandCardTarget !== targetId) return;
+      expandCardStatus.textContent = message;
+      expandCardStatus.hidden = false;
+      positionCardExpansion();
+    };
+    const nodes = boardForOrganization();
+    const items = hierarchyItems(nodes);
+    const context = cardExpansionContext(targetId, items, nodes);
+    if (!context.expansion.path.length) return;
+    const attachments = inheritedAttachments([targetId]);
+    if (attachmentCount(attachments) > attachmentLimit) {
+      report("关联附件超过本轮上限，暂时无法展开。");
+      return;
+    }
+    const payload = getPayload(focus);
+    const target = connectionTarget();
+    const requestId = newRequestId();
+    const revisionSnapshot = captureBoardRevision();
+    const run = { controller: new AbortController(), mode: "organize", expandCard: true, target, requestId, revisionSnapshot };
+    const request = {
+      ...payload, ...target, mode: "ask", scope: "expandCard", requestId, project: context,
+      anchor: { ...payload.anchor, wholeCardIds: [targetId] },
+      baseRevision: revisionToken(`${revisionSnapshot.organization}\n${JSON.stringify(revisionSnapshot.storage)}`),
+      ...(attachments.length ? { attachments } : {}),
+    };
+    activeRun = run;
+    report(`${backendLabels[target.backend]} 正在补充下级卡片…`);
+    $("sent-context").textContent = "正在等待本轮上下文…";
+    renderInspector();
+    let children;
+    let completed = false;
+    let errorText = "";
+    try {
+      await readExecution(run, request, (event) => {
+        if (!acceptsRunEvent(run) || (event.requestId != null && event.requestId !== requestId) ||
+            (event.baseRevision != null && event.baseRevision !== request.baseRevision)) return;
+        if (event.type === "context") $("sent-context").textContent = event.text;
+        else if (event.type === "status") report(event.text);
+        else if (event.type === "children") {
+          if (children !== undefined) throw new Error("服务重复返回了下级卡片。");
+          children = event.children ?? null;
+        } else if (event.type === "done") completed = !event.changedFiles?.length;
+        else if (event.type === "error") errorText = event.text;
+      });
+      if (!acceptsRunEvent(run)) return;
+      if (!sameBoardRevision(revisionSnapshot)) throw new Error("展开期间白板已变化，请重试。");
+      if (errorText || !completed || !Array.isArray(children) || children.length < 2 || children.length > 6) {
+        throw new Error(errorText || "服务没有返回完整的下级卡片。");
+      }
+      const titleKey = (value) => value.trim().normalize("NFKC").toLowerCase();
+      const currentTitles = new Map(nodes.map(({ id, title }) => [id, title]));
+      const titles = new Set(items.filter((item) => item.id === targetId || item.parentId === targetId)
+        .map((item) => titleKey(currentTitles.get(item.id) || item.title)));
+      const ids = availableModuleIds(nodes, children.length);
+      const additions = children.map((child, index) => {
+        const title = typeof child?.title === "string" ? child.title.trim() : "";
+        const summary = typeof child?.summary === "string" ? child.summary.trim() : "";
+        if (!title || Array.from(title).length > 32 || !summary || Array.from(summary).length > 120 || titles.has(titleKey(title))) {
+          throw new Error("下级卡片含重复标题或无效正文，请调整问题后重试。");
+        }
+        titles.add(titleKey(title));
+        return { id: ids[index], parentId: targetId, category: "reference", title, summary };
+      });
+      const previous = organization;
+      const current = previous.current || {
+        title: $("canvas-title").textContent, summary: "", positions: previous.rawPositions,
+        layout: organizationEngine.settings({ flow: "vertical", density: previous.rawCompact ? "compact" : "normal" }),
+        collapsedBranches: previous.rawCollapsedBranches || [],
+      };
+      const before = visibleRect(targetId);
+      const readingBranch = sourceManual && guideRects.has(targetId);
+      const restoreSelection = selectedModuleId() === targetId;
+      organization = {
+        ...previous, previous: previous.current, quickUndo: null, undoAvailable: true,
+        current: { ...current, items: [...items, ...additions] },
+      };
+      const { openedOutlines } = openBranchPath(targetId, true);
+      try {
+        applyOrganization(true);
+      } catch (error) {
+        for (const note of openedOutlines) note.outlineCollapsed = true;
+        organization = previous;
+        applyOrganization(true);
+        throw error;
+      }
+      retainBranchAnchor(before, visibleRect(targetId), readingBranch);
+      if (restoreSelection && visibleRect(targetId)) {
+        const element = board.querySelector(`[data-element-id="${targetId}"]`);
+        if (element) applySelection([describe(element)]);
+      }
+      const notesStored = !openedOutlines.length || persist();
+      const stored = saveOrganization() && notesStored;
+      deletionUndo = null;
+      lastPayload = { ...request };
+      delete lastPayload.api;
+      report(`已在 ${targetId} 下增加 ${additions.length} 张卡。` +
+        (stored ? "可以选中一张新卡继续展开，也可撤销本轮。" : "浏览器存储不可用，本次展开只保留在当前页面。"));
+    } catch (error) {
+      if (acceptsRunEvent(run)) report(error.message);
+    } finally {
+      if (run.stopping) await run.stopPromise;
+      if (activeRun === run) {
+        if (run.stopping) report("已停止展开。");
+        activeRun = null;
+      }
+      renderInspector();
+    }
+  }
+
   async function decomposeBoard(payload, target, branch) {
     const [targetId] = payload.anchor.elementIds;
     if (payload.anchor.elementIds.length !== 1 || !visibleRect(targetId)) {
@@ -5764,7 +6008,7 @@
     if (!used && document.activeElement === target && activateCanvasItem(target, shiftKey)) event.preventDefault();
   });
   viewport.addEventListener("wheel", (event) => {
-    if (event.target.closest("#ask-popover, #canvas-menu")) return;
+    if (event.target.closest("#ask-popover, #expand-card, #canvas-menu")) return;
     const zooming = event.ctrlKey || event.metaKey;
     const originalAnswer = event.target.closest(".thread-original p");
     if (!zooming && originalAnswer && originalAnswer.scrollHeight > originalAnswer.clientHeight) return;
@@ -6492,8 +6736,33 @@
     status("已记入项目主线。后续 Codex 会读到这条决定。");
   });
   askOpen.addEventListener("click", () => {
+    setCardExpansionOpen(null);
     showAsk(true);
     question.focus();
+  });
+  expandCardOpen.addEventListener("click", () => {
+    const id = selectedModuleId();
+    if (!id || activeRun) return;
+    showAsk();
+    setCardExpansionOpen(id);
+    expandCardFocus.focus();
+  });
+  function closeCardExpansion() {
+    setCardExpansionOpen(null);
+    expandCardOpen.focus();
+  }
+  $("expand-card-close").addEventListener("click", closeCardExpansion);
+  expandCardForm.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    closeCardExpansion();
+  });
+  expandCardForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const focus = expandCardFocus.value.trim();
+    const id = selectedModuleId();
+    if (focus && id && id === expandCardTarget) void expandSelectedCard(id, focus);
   });
   $("ask-close").addEventListener("click", () => {
     showAsk();

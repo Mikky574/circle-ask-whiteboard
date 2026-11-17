@@ -6260,13 +6260,98 @@ async function testRequirementAttachment() {
   finally { await closeSession(session); }
 }
 
+async function testExpandCardWithFocus() {
+  const session = await openPage("normal", "repo-manual");
+  try {
+    const { page, jsErrors } = session;
+    const card = (id) => page.locator(`#board [data-element-id="${id}"]`);
+    const target = { id: "E72", parentId: "E71", category: "reference",
+      title: "上传校验", summary: "上传前检查附件，失败时提示用户。", folded: false };
+    const existing = { id: "E73", parentId: target.id, category: "reference",
+      title: "文件类型", summary: "按允许的 MIME 类型检查。", folded: false };
+    const items = [
+      { id: "E70", parentId: null, category: "main", title: "附件项目", summary: "可附加文件。" },
+      { id: "E71", parentId: "E70", category: "reference", title: "上传规则", summary: "校验失败时保留已选文件。" },
+      target,
+      existing,
+    ];
+    await page.evaluate((items) => {
+      const { organization, memory } = BoardMemory.storageKeys;
+      localStorage.setItem(organization, JSON.stringify({ current: {
+        title: "附件使用说明", items, collapsedBranches: [],
+      } }));
+      localStorage.setItem(memory, JSON.stringify({ notes: [], pinnedIds: ["E71"] }));
+    }, items);
+    await page.reload({ waitUntil: "networkidle" });
+    await chooseApi(page);
+    assert.ok(await card("E71").evaluate((element) => element.classList.contains("board-pinned")));
+
+    const focus = "想知道文件大小怎么拦截，以及超限后怎么重试。";
+    const children = [
+      { title: "大小拦截", summary: "读取文件字节数，超过阈值就停止上传。" },
+      { title: "超限后重试", summary: "用较小的文件替换超限附件，再提交。" },
+    ];
+    const requests = [];
+    await page.route("**/api/codex", (route) => {
+      requests.push(route.request().postDataJSON());
+      return route.fulfill({ contentType: "application/x-ndjson; charset=utf-8",
+        body: [{ type: "children", children }, { type: "done" }].map((event) => JSON.stringify(event)).join("\n") + "\n" });
+    });
+
+    const expand = page.locator("#expand-card-open");
+    const form = page.locator("#expand-card-form");
+    const input = page.locator("#expand-card-focus");
+    assert.equal(await expand.isVisible(), false);
+    await card(target.id).locator(".organized-title").click();
+    await expand.click();
+    await form.waitFor();
+    await input.fill(focus);
+    assert.equal(requests.length, 0, "Opening and typing in the expansion form must stay local");
+    await page.locator("#expand-card-submit").click();
+
+    const expectChildren = async () => {
+      for (const { title } of children) {
+        await page.locator("#board").getByText(title, { exact: true }).waitFor();
+      }
+      const saved = await page.evaluate(() =>
+        JSON.parse(localStorage.getItem(BoardMemory.storageKeys.organization)).current.items);
+      assert.deepEqual(saved.filter(({ parentId }) => parentId === target.id).map(({ title, summary }) => ({ title, summary })),
+        [{ title: existing.title, summary: existing.summary }, ...children]);
+      for (const item of saved.filter(({ title }) => children.some((child) => child.title === title))) {
+        await connectionPath(page, target.id, item.id).waitFor({ state: "attached" });
+      }
+    };
+    await expectChildren();
+    assert.equal(requests.length, 1, "Card expansion should send one scoped read-only request");
+    const [request] = requests;
+    assert.equal(request.backend, "api");
+    assert.equal(request.scope, "expandCard");
+    assert.equal(request.mode, "ask");
+    assert.equal(request.question, focus);
+    assert.deepEqual(request.anchor.elementIds, [target.id]);
+    const expansion = request.project.expansion;
+    assert.equal(expansion.targetId, target.id);
+    assert.deepEqual(expansion.path.map(({ id, parentId }) => [id, parentId]),
+      [["E70", null], ["E71", "E70"], [target.id, target.parentId]]);
+    assert.deepEqual(expansion.pinned.map(({ id }) => id), ["E71"]);
+    assert.deepEqual(expansion.children.map(({ id, parentId, title }) => [id, parentId, title]),
+      [[existing.id, target.id, existing.title]]);
+    await page.reload({ waitUntil: "networkidle" });
+    await expectChildren();
+    assert.equal(requests.length, 1, "Reload should restore the saved children without a new request");
+    assertNoJsErrors(jsErrors);
+    record("U66", "PASS", "A selected card opens an inline focus prompt. One API request contains its ancestor path, relevant pin, and existing child. The two returned cards stay linked to the selected card after reload.");
+  } catch (error) { record("U66", "FAIL", safeError(error)); await screenshot("U66-failure", session.page); }
+  finally { await closeSession(session); }
+}
+
 try {
   if (!existsSync(EDGE)) throw new Error(`BLOCKED: installed msedge channel not found at ${EDGE}`);
   server = createServer((req, res) => { relay(req, res).catch(() => { if (!res.headersSent) res.writeHead(500); res.end(); }); });
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(0, "127.0.0.1", resolveListen); });
   port = server.address().port;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
-  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62,U63,U64,U65").split(","));
+  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62,U63,U64,U65,U66").split(","));
   if (selected.has("U01")) { console.log("BROWSER_CASE=U01"); await testCapabilities(); }
   if (selected.has("U02")) { console.log("BROWSER_CASE=U02"); await testKeyEphemeral(); }
   if (selected.has("U05-A")) { console.log("BROWSER_CASE=U05-A"); await testStopLateEvents(); }
@@ -6334,6 +6419,7 @@ try {
   if (selected.has("U63")) { console.log("BROWSER_CASE=U63"); await testLinkedProjectBoards(); }
   if (selected.has("U64")) { console.log("BROWSER_CASE=U64"); await testRegisteredProjectIntroduction(); }
   if (selected.has("U65")) { console.log("BROWSER_CASE=U65"); await testRequirementAttachment(); }
+  if (selected.has("U66")) { console.log("BROWSER_CASE=U66"); await testExpandCardWithFocus(); }
 } catch (error) {
   record("HARNESS", String(error?.message || "").startsWith("BLOCKED:") ? "BLOCKED" : "FAIL", safeError(error));
 } finally {

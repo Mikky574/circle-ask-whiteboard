@@ -419,6 +419,18 @@
             <button id="canvas-menu-delete" type="button" hidden>删除此卡片</button>
             <button id="canvas-menu-delete-edge" type="button" hidden>删除连线</button>
           </div>
+          <div id="expand-card" hidden>
+            <button id="expand-card-open" type="button" aria-label="继续展开选中的卡片" aria-controls="expand-card-form" title="继续展开">+</button>
+            <form id="expand-card-form" hidden>
+              <label for="expand-card-focus">想了解哪一点？</label>
+              <div class="expand-card-row">
+                <input id="expand-card-focus" maxlength="400" required autocomplete="off" placeholder="例如：检测框怎么还原到原图？">
+                <button id="expand-card-submit" type="submit">展开</button>
+                <button id="expand-card-close" type="button" aria-label="关闭展开输入框">×</button>
+              </div>
+              <p id="expand-card-status" role="status" hidden></p>
+            </form>
+          </div>
           <div id="ask-popover" role="group" aria-label="选区操作" hidden>
             <div id="selection-toolbar">
               <button id="ask-open" type="button" aria-expanded="false" aria-controls="ask-composer">

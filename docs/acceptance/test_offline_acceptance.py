@@ -333,6 +333,64 @@ class DecompositionAcceptanceTests(unittest.TestCase):
                     self.assertEqual(runtime.events[-2]["children"], children)
 
 
+class CardExpansionAcceptanceTests(unittest.TestCase):
+    @staticmethod
+    def request_body():
+        root = {"id": "E04", "parentId": None, "title": "项目", "summary": "优先保护用户数据。", "pinned": True}
+        target = {"id": "E12", "parentId": "E04", "title": "数据恢复", "summary": "从本地备份恢复状态。", "pinned": False}
+        child = {"id": "E13", "parentId": "E12", "title": "备份入口", "summary": "用户可导出备份。", "pinned": False}
+        return {
+            "backend": "api", "model": "fixture", "mode": "ask", "scope": "expandCard",
+            "question": "恢复失败时怎么验证数据完整性？",
+            "api": {"baseUrl": "https://example.invalid/v1", "apiKey": TEST_ONLY_KEY},
+            "anchor": {"elementIds": ["E12"]},
+            "project": {"expansion": {"targetId": "E12", "path": [root, target], "children": [child], "pinned": [root]}},
+        }
+
+    @staticmethod
+    def candidate():
+        return {"children": [
+            {"title": "校验备份格式", "summary": "待查证：恢复前是否拒绝格式错误的备份？"},
+            {"title": "验证失败时保留数据", "summary": "用损坏备份触发恢复失败，并比较失败前后的现有数据。"},
+        ]}
+
+    def test_api_receives_path_pins_and_question_without_board_tools(self):
+        request = self.request_body()
+        candidate = self.candidate()
+        body = json.dumps(request).encode()
+        with isolated_server() as (port, host), patch.object(server, "run_api", return_value=json.dumps(candidate)) as api:
+            status, _, raw = post(port, "/api/codex", body, good_headers(host, body))
+        events = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(status, 200)
+        self.assertEqual([event["type"] for event in events], ["status", "context", "children", "done"])
+        self.assertEqual(events[2]["children"], candidate["children"])
+        self.assertEqual(events[3]["changedFiles"], [])
+        self.assertIsNone(api.call_args.kwargs["board_tools"])
+        self.assertEqual(api.call_args.args[4]["properties"]["children"]["items"]["required"], ["title", "summary"])
+        for phrase in (request["question"], "优先保护用户数据。", "备份入口", "flag what needs a source check"):
+            self.assertIn(phrase, api.call_args.args[2])
+        self.assertNotIn(TEST_ONLY_KEY, raw.decode())
+        parsed = server.backend_request_from_body(body, server.parse_request(body))
+        self.assertEqual((parsed.intent, parsed.permissions), ("expandCard", ()))
+
+    def test_request_rejects_nonmatching_tree_and_write_scope(self):
+        request = self.request_body()
+        expansion = request["project"]["expansion"]
+        invalid_project = {"expansion": {**expansion, "children": [{**expansion["children"][0], "parentId": "E04"}]}}
+        for update in ({"project": invalid_project}, {"anchor": {"elementIds": ["E04"]}}, {"mode": "edit"},
+                       {"board": board_snapshot()}, {"minimumDepth": 2}):
+            with self.subTest(update=update), self.assertRaises(ValueError):
+                server.parse_request(json.dumps({**request, **update}).encode())
+
+    def test_candidate_rejects_reparenting_duplicate_and_invalid_card_lengths(self):
+        context = server.parse_request(json.dumps(self.request_body()).encode())[2]
+        first, second = self.candidate()["children"]
+        for children in ([first], [{**first, "parentIndex": None}, second], [{**first, "title": "备份入口"}, second],
+                         [first, {**second, "summary": "详" * 121}], [first, {**second, "title": "查" * 33}]):
+            with self.subTest(children=children), self.assertRaises(ValueError):
+                server.structured_candidate(json.dumps({"children": children}), context)
+
+
 class ExplanationAcceptanceTests(unittest.TestCase):
     @staticmethod
     def request_body():
@@ -780,6 +838,8 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
         invalid_intro["items"][-1]["summary"] = "Evidence: `src/missing.py`"
         child_fields = DecompositionAcceptanceTests.request_body()
         children = DecompositionAcceptanceTests.children()
+        expansion_fields = CardExpansionAcceptanceTests.request_body()
+        expansion = CardExpansionAcceptanceTests.candidate()
         filing = {
             "orphans": [{"id": "E04", "title": "Unfiled", "summary": "Detached"}],
             "parents": [{"id": "E01", "parentId": None, "title": "Root", "summary": "Overview"}],
@@ -789,6 +849,8 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
              {"action": "ask"}, {"action": "write"}),
             ("decompose", {key: child_fields[key] for key in ("scope", "anchor", "decomposition")}, "children",
              {"children": children}, {"children": [{**children[0], "title": "盘点键名"}]}),
+            ("expandCard", {key: expansion_fields[key] for key in ("scope", "anchor", "project")}, "children",
+             expansion, {"children": expansion["children"][:1]}),
             ("organizeBranch", {key: node_fields[key] for key in ("scope", "board", "branchRootId")}, "branch",
              branch, invalid_branch),
             ("regenerate", {key: node_fields[key] for key in ("scope", "board", "branchRootId")} | {"branchIntent": "regenerate"},

@@ -698,6 +698,47 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 #ask-popover:has(#ask-composer:not([hidden])) { width: min(338px, calc(100% - 16px)); }
 
+#expand-card {
+  position: absolute;
+  z-index: 6;
+  width: max-content;
+  max-width: calc(100% - 16px);
+  cursor: auto;
+}
+
+#viewport.is-moving-cards #expand-card { visibility: hidden; }
+#expand-card button {
+  border: 1px solid var(--panel-border);
+  border-radius: 7px;
+  min-height: 30px;
+  background: #243830;
+  color: var(--mint);
+}
+#expand-card button:disabled { opacity: .6; }
+#expand-card-open { width: 32px; padding: 0; font-size: 22px; line-height: 1; }
+#expand-card-form {
+  width: 340px;
+  max-width: 100%;
+  padding: 10px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 6px 18px #0004;
+  font-size: 13px;
+}
+#expand-card-form label { display: block; margin-bottom: 7px; }
+.expand-card-row { display: flex; gap: 6px; }
+#expand-card-focus {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #111715;
+  color: inherit;
+}
+#expand-card-status { margin: 8px 0 0; color: var(--muted); overflow-wrap: anywhere; }
+
 #selection-toolbar { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px; }
 #move-selection {
   padding-inline: 8px;
