@@ -1116,6 +1116,11 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .organized-meta { margin-right: auto; }
 .organized-body { display: grid; gap: 7px; }
 .organized-body[hidden] { display: none; }
+.card-requirement { display: grid; gap: 7px; }
+.card-requirement h4, .card-requirement p { margin: 0; }
+.card-requirement h4, .card-requirement strong { font-weight: 680; }
+.card-requirement ul { display: grid; gap: 6px; margin: 6px 0 0; padding-inline-start: 16px; }
+.card-requirement summary { cursor: pointer; }
 .module-fold, .branch-toggle {
   padding: 2px 6px;
   border: 1px solid #a3b5a8;
@@ -1406,6 +1411,8 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
+.attachment-link { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.organized-face .thread-attachments { color: #405c4e; }
 #ask-feedback {
   margin: 7px 0 0;
   color: var(--mint);

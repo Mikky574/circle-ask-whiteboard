@@ -6142,13 +6142,120 @@ async function testRegisteredProjectIntroduction() {
   finally { await closeSession(session); }
 }
 
+async function testRequirementAttachment() {
+  const session = await openPage("normal", null);
+  try {
+    const { context, page, jsErrors } = session;
+    const detail = { id: "E12", parentId: "E04", category: "reference",
+      title: "检测与分类｜用户整理过的名称", summary: "现有的实现说明应保留。", folded: false,
+      repositoryFiles: ["backend/predictor.rs"] };
+    const sibling = { id: "E13", parentId: "E04", category: "reference",
+      title: "与需求无关的卡片", summary: "这是同一张画布的另一条分支。", folded: false };
+    const root = { id: "E04", parentId: null, category: "main", title: "原有识别项目", summary: "测试保留本机画布。" };
+    const original = { current: { title: "用户原有画布", items: [root, detail, sibling], collapsedBranches: [] } };
+    const documentText = "# REQ-REC-012\n\n现有检测与分类的可验证需求。\n";
+    const attachment = { id: "d".repeat(32), name: "REQ-REC-012.md", size: Buffer.byteLength(documentText, "utf8") };
+    const attachmentPath = "/api/attachments/" + attachment.id;
+    const requirement = {
+      cardId: detail.id,
+      requirementId: "REQ-REC-012",
+      title: "图中目标检测与候选分类",
+      need: "用户可以查看各个图中目标的识别候选和对应区域。",
+      method: "解码后根据手动画框、自动检测或整图确定分类区域。",
+      validation: [
+        { id: "V-REC-012-01", title: "手动画框", condition: "只对用户框出的区域分类。" },
+        { id: "V-REC-012-02", title: "无候选框", condition: "检查当前识别入口配置的整图回退。" },
+      ],
+    };
+    await page.route("**/api/workbench-activity", (route) => {
+      const { projectId } = route.request().postDataJSON();
+      const activity = projectId === parentProject.id ? {
+        version: 1, id: "project-requirements", projectId, branches: [], events: [],
+        cardRequirements: [{ ...requirement, attachment }],
+      } : null;
+      return route.fulfill({ json: { activity } });
+    });
+    await context.route("**" + attachmentPath, (route) => route.fulfill({
+      contentType: "text/plain; charset=utf-8", body: documentText,
+    }));
+    await page.evaluate(({ projects, original }) => {
+      for (const project of projects) {
+        const keys = BoardMemory.boardStorageKeys("board-" + project.id);
+        localStorage.setItem(keys.organization, JSON.stringify(original));
+        localStorage.setItem(keys.memory, JSON.stringify({ notes: [], project: { goal: "保留原有项目目标" } }));
+      }
+    }, { projects: [parentProject, childProject], original });
+    const openCanvas = async (project) => {
+      const url = new URL("/", page.url());
+      url.searchParams.set("board", "board-" + project.id);
+      url.searchParams.set("project", project.id);
+      url.searchParams.set("view", "canvas");
+      await page.goto(url.href, { waitUntil: "networkidle" });
+      assert.equal((await page.locator("#project-context-title").textContent()).trim(), project.name);
+      await page.locator("#board").getByText(detail.title, { exact: true }).waitFor();
+    };
+    const card = page.locator('#board [data-element-id="E12"]');
+    const panel = card.locator(".card-requirement");
+    const link = card.getByRole("link", { name: attachment.name, exact: true });
+    const savedBoard = () => page.evaluate(() => {
+      const { organization, memory } = BoardMemory.storageKeys;
+      return [localStorage.getItem(organization), localStorage.getItem(memory)];
+    });
+
+    await openCanvas(childProject);
+    assert.equal(await panel.count(), 0, "Matching card IDs in another project must not receive the requirement");
+    await openCanvas(parentProject);
+    const saved = await savedBoard();
+    await panel.getByText(requirement.requirementId, { exact: false }).waitFor();
+    await panel.getByText(requirement.need, { exact: true }).waitFor();
+    await panel.getByText(requirement.method, { exact: true }).waitFor();
+    assert.equal(await panel.getByText(requirement.validation[0].condition, { exact: true }).isVisible(), false);
+    await panel.locator("summary", { hasText: "验收场景" }).click();
+    await panel.getByText(requirement.validation[0].condition, { exact: true }).waitFor();
+    assert.equal(new URL(await link.getAttribute("href"), page.url()).pathname, attachmentPath);
+    const [documentPage] = await Promise.all([context.waitForEvent("page"), link.click()]);
+    await documentPage.waitForURL((url) => url.pathname === attachmentPath);
+    assert.equal((await documentPage.locator("body").innerText()).trim(), documentText.trim());
+    await documentPage.close();
+
+    await page.reload({ waitUntil: "networkidle" });
+    await panel.waitFor();
+    assert.equal(await panel.count(), 1);
+    assert.equal(await link.count(), 1);
+    assert.equal(await page.locator('#board [data-element-id="E13"] .card-requirement').count(), 0);
+    assert.equal(await card.getByText(detail.title, { exact: true }).count(), 1);
+    assert.equal(await page.locator('#board [data-element-id="E13"]').getByText(sibling.summary, { exact: true }).count(), 1);
+    assert.deepEqual(await savedBoard(), saved, "Requirement rendering and reading must preserve existing user storage");
+    assert.deepEqual(JSON.parse(saved[0]).current.items, original.current.items);
+
+    const requests = [];
+    const reply = "夹具回答：按验收条件核对识别路径。";
+    await page.route("**/api/codex", (route) => {
+      const request = route.request().postDataJSON();
+      requests.push(request);
+      const answer = request.scope === "plan" ? '{"action":"ask"}' : reply;
+      return route.fulfill({ contentType: "application/x-ndjson",
+        body: [{ type: "answer", text: answer }, { type: "done" }].map((event) => JSON.stringify(event)).join("\n") + "\n" });
+    });
+    await askFromCard(page, detail.id, "这项需求如何验收？");
+    await page.locator("#board").getByText(reply, { exact: true }).waitFor();
+    const question = requests.at(-1);
+    assert.deepEqual(question.anchor.elementIds, [detail.id]);
+    assert.deepEqual(question.project.requirements, [requirement]);
+    assert.deepEqual(question.attachments, [attachment]);
+    assertNoJsErrors(jsErrors);
+    record("U65", "PASS", "Linked requirements enrich an existing project card, open the real attachment via its own URL, persist across reload, and travel with scoped questions.");
+  } catch (error) { record("U65", "FAIL", safeError(error)); await screenshot("U65-failure", session.page); }
+  finally { await closeSession(session); }
+}
+
 try {
   if (!existsSync(EDGE)) throw new Error(`BLOCKED: installed msedge channel not found at ${EDGE}`);
   server = createServer((req, res) => { relay(req, res).catch(() => { if (!res.headersSent) res.writeHead(500); res.end(); }); });
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(0, "127.0.0.1", resolveListen); });
   port = server.address().port;
   browser = await chromium.launch({ executablePath: EDGE, headless: true });
-  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62,U63,U64").split(","));
+  const selected = new Set((process.env.BROWSER_CASES || "U01,U02,U05-A,U04-A,U04-B,U03,U06,U07,U08,U09-A,U09-B,U10,U11,U12,U13,U14,U15,U16,U17,U18,U19,U20,U21,U22,U23,U24,U25,U26,U27,U28,U29,U30,U31,U32,U33,U34,U35,U36,U37,U38,U39,U40,U41,U42,U43,U44,U45,U46,U47,U48,U49,U50,U51,U52,U53,U54,U55,U56,U57,U58,U59,U60,U61,U62,U63,U64,U65").split(","));
   if (selected.has("U01")) { console.log("BROWSER_CASE=U01"); await testCapabilities(); }
   if (selected.has("U02")) { console.log("BROWSER_CASE=U02"); await testKeyEphemeral(); }
   if (selected.has("U05-A")) { console.log("BROWSER_CASE=U05-A"); await testStopLateEvents(); }
@@ -6215,6 +6322,7 @@ try {
   if (selected.has("U62")) { console.log("BROWSER_CASE=U62"); await testProjectHomeWorkflow(); }
   if (selected.has("U63")) { console.log("BROWSER_CASE=U63"); await testLinkedProjectBoards(); }
   if (selected.has("U64")) { console.log("BROWSER_CASE=U64"); await testRegisteredProjectIntroduction(); }
+  if (selected.has("U65")) { console.log("BROWSER_CASE=U65"); await testRequirementAttachment(); }
 } catch (error) {
   record("HARNESS", String(error?.message || "").startsWith("BLOCKED:") ? "BLOCKED" : "FAIL", safeError(error));
 } finally {

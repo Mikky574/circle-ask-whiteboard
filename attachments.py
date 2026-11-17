@@ -129,6 +129,16 @@ def load_attachments(value):
     return [_load_attachment(root, attachment_id) for attachment_id in ids]
 
 
+def read_attachment(attachment_id):
+    """Read a stored upload without accepting a caller-supplied filesystem path."""
+    record, = load_attachments([attachment_id])
+    with record["path"].open("rb") as stream:
+        content = stream.read(record["size"] + 1)
+    if len(content) != record["size"]:
+        raise ValueError("附件长度与声明不一致。")
+    return record, content
+
+
 def stage_attachments(records, workspace):
     """Copy attachments into a fresh workspace and return only relative paths."""
     if not records:

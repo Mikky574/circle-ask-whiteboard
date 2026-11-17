@@ -19,6 +19,7 @@ import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import quote
 
 from api_backend import validate_settings, run_api
 from board_tools import BoardTools
@@ -26,7 +27,7 @@ from backends import FACTORY, BackendRequest, CancellationToken
 from local_projects import ProjectCatalogError, project_activity_request, project_catalog_request
 from repo_index import RepositoryIndex, RepoIndexError
 
-from attachments import MAX_ATTACHMENT_BYTES, load_attachments, save_attachment, stage_attachments
+from attachments import MAX_ATTACHMENT_BYTES, load_attachments, read_attachment, save_attachment, stage_attachments
 from agent_trace import SOURCE_SUFFIXES, TRACE_LIMIT, bounded_detail, codex_trace, diff_preview, safe_path, trace_event
 from zcode_backend import run_zcode, zcode_command
 from zcode_workspace import READABLE as MAP_SOURCE_FILES, REPOSITORY_PREFIX, call_tool as call_workspace_tool
@@ -1540,7 +1541,7 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
         self._response_started = False
         self._event_meta = {}
 
-    def headers_for(self, status, content_type, length=None):
+    def headers_for(self, status, content_type, length=None, *, disposition=None):
         self._response_started = True
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -1548,6 +1549,9 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Referrer-Policy", "no-referrer")
+        if disposition:
+            self.send_header("Content-Disposition", disposition)
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         if length is not None:
             self.send_header("Content-Length", str(length))
         self.end_headers()
@@ -1576,9 +1580,31 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
         hosts = self.headers.get_all("Host", [])
         return len(hosts) == 1 and hosts[0] in ALLOWED_HOSTS
 
+    def send_attachment(self, attachment_id):
+        try:
+            record, content = read_attachment(attachment_id)
+        except (OSError, ValueError):
+            self.send_json(404, {"type": "error", "text": "附件不存在或已损坏，请重新上传。"})
+            return
+        inline = record["suffix"] in {".md", ".markdown", ".txt"}
+        if inline:
+            try:
+                content.decode("utf-8")
+            except UnicodeDecodeError:
+                inline = False
+        kind = "inline" if inline else "attachment"
+        content_type = "text/plain; charset=utf-8" if inline else "application/octet-stream"
+        filename = quote(record["name"], safe="")
+        disposition = f"{kind}; filename=\"attachment{record['suffix']}\"; filename*=UTF-8''{filename}"
+        self.headers_for(200, content_type, len(content), disposition=disposition)
+        self.wfile.write(content)
+
     def do_GET(self):
         if not self.host_allowed():
             self.send_json(403, {"type": "error", "text": "无效的本机访问地址。"})
+            return
+        if self.path.startswith("/api/attachments/"):
+            self.send_attachment(self.path.removeprefix("/api/attachments/"))
             return
         path = self.path.partition("?")[0]
         if path == "/api/status":

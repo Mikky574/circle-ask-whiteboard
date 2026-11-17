@@ -92,6 +92,7 @@
   }
   let registeredProject = null;
   let initialActivity = null;
+  let cardRequirements = new Map();
   if (projectViews) {
     try {
       if (!registeredBoard) throw new Error("这个项目链接无效。");
@@ -110,9 +111,10 @@
           return;
         }
         showProjectContext(details, "canvas");
+        const activity = await window.WorkbenchActivity.load(projectId);
+        cardRequirements = readCardRequirements(activity?.cardRequirements);
         if (isEmptyProjectCanvas(organizationEngine.load(), memory.load())) {
           const untouched = Object.values(memory.storageKeys).every((key) => localStorage.getItem(key) === null);
-          const activity = await window.WorkbenchActivity.load(projectId);
           if (activity?.initialBoard || untouched) initialActivity = activity;
         }
       } else {
@@ -253,6 +255,30 @@
   function projectCanvasUrl(project) {
     if (project.boardUrl && new URL(project.boardUrl).origin !== location.origin) return project.boardUrl;
     return projectUrl(project.id);
+  }
+
+  function readCardRequirements(entries) {
+    const byCard = new Map();
+    if (!Array.isArray(entries)) return byCard;
+    const field = (value, limit) => typeof value === "string" ? excerpt(value, limit) : "";
+    const identifier = (value) => typeof value === "string" && /^[A-Z][A-Z0-9-]{2,47}$/.test(value);
+    for (const entry of entries.slice(0, 64)) {
+      const { cardId, requirementId } = entry || {};
+      if (typeof cardId !== "string" || !/^E[0-9]{2,8}$/.test(cardId) || !identifier(requirementId) || byCard.has(cardId)) continue;
+      const [attachment] = memory.cleanAttachments([entry.attachment]);
+      const title = field(entry.title, 100);
+      const need = field(entry.need, 400);
+      const method = field(entry.method, 500);
+      const validation = (Array.isArray(entry.validation) ? entry.validation.slice(0, 8) : []).flatMap((test) => {
+        const title = field(test?.title, 100);
+        const condition = field(test?.condition, 240);
+        return identifier(test?.id) && title && condition ? [{ id: test.id, title, condition }] : [];
+      });
+      if (attachment && title && need && method && validation.length) {
+        byCard.set(cardId, { cardId, requirementId, title, need, method, validation, attachment });
+      }
+    }
+    return byCard;
   }
 
   function isEmptyProjectCanvas(state, savedBoard) {
@@ -880,6 +906,7 @@
     const refs = [
       ...ids.flatMap((id) => replies.get(id)?.payload.attachments || []),
       ...(organization.current?.items || []).filter((item) => chosen.has(item.id)).flatMap((item) => item.attachments || []),
+      ...ids.flatMap((id) => cardRequirements.get(id)?.attachment || []),
     ];
     // Keep every valid inherited reference visible so limit checks cannot
     // silently discard the tail when the selection changes.
@@ -1185,6 +1212,14 @@
       decisions: project.decisions.filter(({ sourceIds }) => sourceIds.every(inScope)) };
     const items = hierarchyItems(nodes).filter((item) => item.category !== "archive" && !deletedIds.has(item.id) && inScope(item.id));
     const contextBytes = (value) => new TextEncoder().encode(JSON.stringify(value)).length;
+    for (const id of ids) {
+      const entry = cardRequirements.get(id);
+      if (!entry) continue;
+      const { cardId, requirementId, title, need, method, validation } = entry;
+      const next = { ...context, requirements: [...(context.requirements || []),
+        { cardId, requirementId, title, need, method, validation }] };
+      if (contextBytes(next) <= 23 * 1024) context = next;
+    }
     if (draftRoot) {
       const branch = describeDraftBranch(nodes, drafts, draftRoot, ids[0]);
       const scoped = { ...context, draftBranch: branch };
@@ -2892,6 +2927,25 @@
     }
   }
 
+  function renderCardRequirement(body, requirement) {
+    const section = appendText(body, "section", "card-requirement", "");
+    appendText(section, "h4", "", `${requirement.requirementId} · ${requirement.title}`).dataset.selectPart = "text";
+    for (const [label, value] of [["需求", requirement.need], ["实现方法", requirement.method]]) {
+      const paragraph = appendText(section, "p", "", "");
+      appendText(paragraph, "strong", "", `${label} · `);
+      appendText(paragraph, "span", "", value).dataset.selectPart = "text";
+    }
+    const details = appendText(section, "details", "", "");
+    appendText(details, "summary", "", `验收场景（${requirement.validation.length} 项）`);
+    const cases = appendText(details, "ul", "", "");
+    for (const { id, title, condition } of requirement.validation) {
+      const item = appendText(cases, "li", "", "");
+      appendText(item, "strong", "", `${id} · ${title}`);
+      appendText(item, "p", "", condition).dataset.selectPart = "text";
+    }
+    details.addEventListener("toggle", () => layoutReplies(true));
+  }
+
   function applyOrganization(preserveView = false) {
     board.classList.toggle("is-organized", Boolean(organization.current));
     const plan = new Map((organization.current?.items || organization.rawCards || []).map((item) => [item.id, item]));
@@ -2943,7 +2997,9 @@
         preview.dataset.selectPart = "text";
       }
       const body = appendText(face, "div", "organized-body", "");
-      if (item.taskDetails) renderTaskDetails(body, item.taskDetails);
+      const requirement = cardRequirements.get(item.id);
+      if (requirement) renderCardRequirement(body, requirement);
+      else if (item.taskDetails) renderTaskDetails(body, item.taskDetails);
       else if (item.summary) appendText(body, "p", "organized-summary", item.summary).dataset.selectPart = "text";
       if (item.spec?.runner) appendText(body, "p", "organized-evidence", item.spec.runner);
       const formula = element.querySelector(":scope > .element-content [data-select-part='formula']");
@@ -3261,7 +3317,15 @@
     const line = container.querySelector(":scope > .thread-attachments");
     const refs = memory.cleanAttachments(attachments);
     if (!refs.length) { line?.remove(); return; }
-    (line || appendText(container, "p", "thread-attachments", "")).textContent = `附件 · ${refs.map((ref) => ref.name).join("、")}`;
+    const content = line || appendText(container, "p", "thread-attachments", "");
+    content.textContent = "附件 · ";
+    refs.forEach(({ id, name }, index) => {
+      if (index) content.append("、");
+      const link = appendText(content, "a", "attachment-link", name);
+      link.href = `/api/attachments/${id}`;
+      link.target = "_blank";
+      link.rel = "noopener";
+    });
   }
 
   async function readEvents(response, request, receive) {
