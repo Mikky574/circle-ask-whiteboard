@@ -6600,7 +6600,8 @@ async function testAdaptiveReorder() {
         }
         const start = path.getPointAtLength(0);
         const end = path.getPointAtLength(length);
-        return { parentId, childId, crossed, start: { x: start.x, y: start.y }, end: { x: end.x, y: end.y } };
+        return { parentId, childId, crossed, start: { x: start.x, y: start.y }, end: { x: end.x, y: end.y },
+          rounded: /Q/.test(path.getAttribute("d")), bundled: path.classList.contains("connection-bundled") };
       }), arranged);
     assert.deepEqual(edges.map(({ parentId, childId }) => `${parentId}>${childId}`).sort(), expected);
     for (const { parentId, childId, start, end, crossed } of edges) {
@@ -6608,6 +6609,39 @@ async function testAdaptiveReorder() {
       assertCardOnEdge(start, arranged[parentId], "Adaptive path starts on its recorded parent");
       assertCardOnEdge(end, arranged[childId], "Adaptive path ends on its recorded child");
     }
+    const rounded = edges.find((edge) => edge.rounded && !edge.bundled);
+    assert.ok(rounded, "An individual orthogonal route should have a rounded bend");
+    const roundedLine = connectionPath(page, rounded.parentId, rounded.childId);
+    const readLine = () => roundedLine.evaluate((path) => {
+      const style = getComputedStyle(path);
+      return { shape: path.getAttribute("d"), related: path.classList.contains("connection-related"),
+        weight: parseFloat(style.strokeWidth) * Number(style.strokeOpacity) * Number(style.opacity) };
+    });
+    const resting = await readLine();
+    assert.ok(resting.weight > 0 && !resting.related, "A resting edge should remain visible without focus");
+    await card(rounded.childId).press("Enter");
+    const focused = await readLine();
+    assert.ok(focused.related && focused.weight > resting.weight, "Focusing a card should emphasize its quieter edge");
+    assert.equal(focused.shape, resting.shape, "Focusing a card should preserve its route");
+    await clearCardSelection(page);
+    assert.deepEqual(await readLine(), resting, "Clearing the card selection should restore the edge style");
+
+    const editable = edges.find((edge) => edge.bundled) || rounded;
+    const editableLine = connectionPath(page, editable.parentId, editable.childId);
+    const hit = page.locator(`.connection-hit[data-edge-parent="${editable.parentId}"][data-edge-child="${editable.childId}"]`);
+    const visibleShape = await editableLine.getAttribute("d");
+    const hitShape = await hit.getAttribute("d");
+    assert.ok(hitShape);
+    if (editable.bundled) assert.notEqual(hitShape, visibleShape, "A bundled edge should expose only its own tail for editing");
+    await page.locator("#connect-mode").click();
+    await selectConnection(page, editable.parentId, editable.childId);
+    assert.equal(await editableLine.evaluate((path) => path.classList.contains("connection-selected")), true);
+    assert.equal(await page.locator("#delete-connection").isEnabled(), true);
+    await hit.press("Escape");
+    assert.equal(await page.locator("#delete-connection").isEnabled(), false);
+    assert.equal(await editableLine.getAttribute("d"), visibleShape);
+    assert.equal(await hit.getAttribute("d"), hitShape);
+    await page.locator("#select-mode").click();
     await page.reload();
     await card("E35").waitFor();
     assert.deepEqual(await visibleCardRects(page), arranged);
@@ -6635,7 +6669,7 @@ async function testAdaptiveReorder() {
     assert.deepEqual(await visibleCardRects(page), beforeScope);
     assert.equal(telemetry.requests.length, modelRequests, "Adaptive reorder is local");
     assertNoJsErrors(jsErrors);
-    record("U69", "PASS", "Adaptive reorder fits visible cards, preserves parent paths, fits a selected subtree around fixed cards, and supports reload and undo.", { originalZoom, newZoom });
+    record("U69", "PASS", "Adaptive reorder fits visible cards, preserves rounded parent paths and reversible edge selection, fits a selected subtree around fixed cards, and supports reload and undo.", { originalZoom, newZoom });
   } catch (error) { record("U69", "FAIL", safeError(error)); await screenshot("U69-failure", session.page); }
   finally { await closeSession(session); }
 }

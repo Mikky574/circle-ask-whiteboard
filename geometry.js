@@ -203,7 +203,7 @@
               overlaps(previousY, y, rect.y, rect.y + rect.height));
           });
           if (!blocked) {
-            best = `M${startX},${startY} H${firstX} V${channelY} H${lastX} V${endY} H${endX}`;
+            best = roundedOrthogonalPath(points, [parent, child, ...blockers]);
             shortest = distance;
             break;
           }
@@ -226,6 +226,48 @@
         Math.max(y, previousY) > rect.y - clearance)) return false;
     }
     return true;
+  }
+
+  function roundedOrthogonalPath(points, rectangles) {
+    const corners = [];
+    const heading = (from, to) => [Math.sign(to[0] - from[0]), Math.sign(to[1] - from[1])];
+    for (const point of points) {
+      const last = corners.at(-1);
+      if (last && last[0] === point[0] && last[1] === point[1]) continue;
+      if (corners.length > 1) {
+        const [inX, inY] = heading(corners.at(-2), last);
+        const [outX, outY] = heading(last, point);
+        if ((!inX || !inY) && inX === outX && inY === outY) corners.pop();
+      }
+      corners.push(point);
+    }
+    if (corners.length < 2) return "";
+    const path = [`M${corners[0]}`];
+    for (let index = 1; index < corners.length - 1; index++) {
+      const point = corners[index];
+      const before = corners[index - 1];
+      const after = corners[index + 1];
+      const [inX, inY] = heading(before, point);
+      const [outX, outY] = heading(point, after);
+      let curve = null;
+      if (Math.abs(inX) + Math.abs(inY) === 1 && Math.abs(outX) + Math.abs(outY) === 1 &&
+          inX * outX + inY * outY === 0) {
+        const [x, y] = point;
+        const maximum = Math.min(18, Math.hypot(x - before[0], y - before[1]) / 2,
+          Math.hypot(after[0] - x, after[1] - y) / 2);
+        for (let radius = maximum; radius >= 1; radius /= 2) {
+          const start = [x - inX * radius, y - inY * radius];
+          const end = [x + outX * radius, y + outY * radius];
+          // The curve stays inside this corner rectangle, so its entire arc clears the cards.
+          if (!clearOrthogonalPath([start, end], rectangles)) continue;
+          curve = `L${start} Q${point} ${end}`;
+          break;
+        }
+      }
+      path.push(curve ?? `L${point}`);
+    }
+    path.push(`L${corners.at(-1)}`);
+    return path.join(" ");
   }
 
   function orthogonalSegments(points) {
@@ -316,7 +358,7 @@
     const breadth = horizontal ? "height" : "width";
     const clearance = 2;
     const parentCenter = parent[across] + parent[breadth] / 2;
-    const point = (a, b) => horizontal ? `${a},${b}` : `${b},${a}`;
+    const point = (a, b) => horizontal ? [a, b] : [b, a];
     const segment = (a, b, c, d) => `M${point(a, b)} L${point(c, d)}`;
     const overlaps = (a, b, start, size) =>
       Math.max(a, b) > start - clearance && Math.min(a, b) < start + size + clearance;
@@ -346,20 +388,11 @@
 
       const edges = branches.map(({ id, end, center }) => {
         const hit = segment(rail, center, end, center);
-        const lead = `M${point(start, parentCenter)}`;
-        const radius = Math.min(8, Math.abs(rail - start) / 2, Math.abs(end - rail) / 2,
-          Math.abs(center - parentCenter) / 2);
-        if (!radius) return { id, d: `${lead} L${point(end, center)}`, hit };
-        const bend = Math.sign(center - parentCenter) * radius;
-        const inset = direction * radius;
-        const d = `${lead} L${point(rail - inset, parentCenter)} ` +
-          `Q${point(rail, parentCenter)} ${point(rail, parentCenter + bend)} ` +
-          `L${point(rail, center - bend)} Q${point(rail, center)} ${point(rail + inset, center)} ` +
-          `L${point(end, center)}`;
+        const d = roundedOrthogonalPath([point(start, parentCenter), point(rail, parentCenter),
+          point(rail, center), point(end, center)], rectangles);
         return { id, d, hit };
       });
-      const d = [segment(start, parentCenter, rail, parentCenter), segment(rail, top, rail, bottom),
-        ...edges.map(({ hit }) => hit)].join(" ");
+      const d = edges.map((edge) => edge.d).join(" ");
       bundles.push({ d, edges });
     }
     return bundles;
@@ -762,7 +795,7 @@
   })();
 
   const geometry = { scenePoint, bounds, contains, intersectsShape, isLasso, placeNote, placeNoteGroup,
-    routeAcrossCards, orthogonalSegments, routeAroundCards, sharedBranchRoutes, compactCardRows, layoutBranches,
+    routeAcrossCards, roundedOrthogonalPath, orthogonalSegments, routeAroundCards, sharedBranchRoutes, compactCardRows, layoutBranches,
     sectionColumnThreshold, layoutAdaptive };
   if (typeof window !== 'undefined') window.BoardGeometry = geometry;
   if (typeof module !== 'undefined') module.exports = geometry;

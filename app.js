@@ -29,7 +29,8 @@
   }
 
   const { scenePoint, bounds, contains, intersectsShape, isLasso, compactCardRows, placeNote, placeNoteGroup,
-    routeAcrossCards, orthogonalSegments, routeAroundCards, sharedBranchRoutes, sectionColumnThreshold } = window.BoardGeometry;
+    routeAcrossCards, roundedOrthogonalPath, orthogonalSegments, routeAroundCards, sharedBranchRoutes,
+    sectionColumnThreshold } = window.BoardGeometry;
   const runGate = window.WhiteboardRunGate;
   const $ = (id) => document.getElementById(id);
   const viewport = $("viewport");
@@ -2600,10 +2601,6 @@
     groups.get(key).children.push({ id: childId, rect: child });
   }
 
-  function orthogonalPath(points) {
-    return `M${points.map(([x, y]) => `${x},${y}`).join(" L")}`;
-  }
-
   function drawOrganizedConnections(items, placements, settings, guideLevels) {
     const layer = $("connections");
     layer.replaceChildren();
@@ -2654,7 +2651,7 @@
           : guideConnectionPoints(parent, child, rectangles, guideLevel, directional, otherRails);
         let path;
         if (points) {
-          path = orthogonalPath(points);
+          path = roundedOrthogonalPath(points, rectangles);
           for (const rail of orthogonalSegments(points)) guideRails.push({ ...rail, parentId });
         } else {
           const start = edgePoint(parent, { x: child.x + child.width / 2, y: child.y + child.height / 2 });
@@ -3390,7 +3387,7 @@
         if (adaptive || section) {
           const bundle = bundledSections.get(childId);
           const points = adaptive && !bundle ? routeAroundCards(parent, child, rectangles, facingAxis(parent, child), null, []) : null;
-          const route = bundle?.d || (points ? orthogonalPath(points) : routeAcrossCards(parent, child, rectangles));
+          const route = bundle?.d || (points ? roundedOrthogonalPath(points, rectangles) : routeAcrossCards(parent, child, rectangles));
           if (route) {
             drawEdge(route, reply ? "reply-connection" : "organization-branch", parentId, childId, bundle?.hit);
             continue;
