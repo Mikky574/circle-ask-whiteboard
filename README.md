@@ -56,6 +56,8 @@ Codex 沿用本机 `codex login`。ZCode 沿用本机 CLI 配置和登录，可�
 
 外部会话直接交付已完成的内容时，优先用 [whiteboard-service 技能](.agents/skills/whiteboard-service/SKILL.md)，无需代理浏览器，也无需再次调用模型。先运行 `python scripts/whiteboard_service.py --url http://127.0.0.1:8791 probe` 检查用户实际打开的端口，再读取板号、根卡、版本并提交局部提案。目标板不存在就停止核对，不能另建同名板代替。第一版不初始化空板、不删除或重挂已有节点。白板内的 Codex／ZCode 请求则是另一条路径：后端返回候选，前端校验后保存；模型完成回答不等于内容已保存。使用主线、现有能力和版本/模块恢复的待补契约见 [当前架构说明](docs/current-architecture.md)。
 
+外部 AI 也可以直接使用文件工作目录：`checkout --board ID --node E27 --out board-work` 导出目标分支的完整上下文及提交信息，编辑 `board-work/proposal.json` 后，运行 `submit --workspace board-work` 预览，再加 `--commit` 保存并读回。命令均从 `python scripts/whiteboard_service.py` 进入。脚本固定读取时的服务、板号、父卡和版本，版本过期就停止，工作文件不会自动上传或替代服务数据库。提案格式见 [局部提案参考](.agents/skills/whiteboard-service/references/proposals.md)。
+
 [首页](http://127.0.0.1:8791/) 展示本机的顶层项目。点「添加项目」填写名称和本机已有目录，保存后打开项目画布。同一目录再次添加时打开原项目。父项目内的「子项目」显示下一层卡片，页面顶部的路径导航可返回上一级。搜索也可以匹配子项目。
 
 每张项目卡片显示简介和目录。「打开项目」直接进入项目画布。首次进入空画布，可点「写第一张卡片」建立主干，或使用 Codex/ZCode 初始化工程介绍。项目图展示所属项目的卡片与分支，AI 动作展示项目记录。点「关闭项目」回到首页。已保存的卡片和目录在重新打开时恢复，未发送或未保存的草稿会在离开前提示。Windows 上可点「打开文件夹」在资源管理器查看目录。

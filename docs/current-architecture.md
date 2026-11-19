@@ -26,6 +26,8 @@
 
 ## 外部 AI 的最小工作流程
 
+推荐文件入口：`checkout --board ID --node E27 --out board-work` 一次导出完整分支、祖先路径、项目规则和读取版本，模型只写 `proposal.json`。`submit --workspace board-work` 预览，追加 `--commit` 后提交并生成回执。服务仍是事实源；本地上下文文件只是阅读投影，不能整体覆盖现有文档。该入口复用以下范围、版本和读回约束，不要求模型手抄修订号。
+
 1. 用 `list` 核对板号、标题和项目目录。
 2. 用 `find`、`read --node` 核对目标父卡、祖先路径、直属下级和版本号。
 3. 写有 `rootId` 的 JSON 提案：同一对象更新原卡，新细节通过 `children` 挂到明确父卡。嵌套 children 可一次建立多层。

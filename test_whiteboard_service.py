@@ -39,9 +39,13 @@ class Handler(BaseHTTPRequestHandler):
             result = "<!doctype html><title>Legacy board</title>"
         elif self.server.mode == "wrong-api":
             result = {"ok": True}
+        elif self.server.mode == "save-unavailable" and request["action"] == "save":
+            status, result = 503, {"text": "Save did not run"}
         else:
             try:
                 result = board_store_request(request)
+                if self.server.mode == "save-ack-lost" and request["action"] == "save":
+                    status, result = 503, {"text": "Save committed but the acknowledgement was lost"}
             except BoardStoreError as error:
                 status, result = error.status, {"text": str(error)}
         raw = (result if isinstance(result, str) else json.dumps(result)).encode()
@@ -176,6 +180,248 @@ class WhiteboardServiceSkillTests(unittest.TestCase):
                     self.origin + "/?board=other", self.origin + "/api/board-store"):
             with self.subTest(url=url), self.assertRaises(skill.ServiceError):
                 skill.Client(url)
+
+    def checkout_directory(self, name="work", root="E05"):
+        directory = self.directory / name
+        code, result = self.run_command("checkout", "--board", self.identity, "--node", root, "--out", str(directory))
+        self.assertEqual(code, 0, result)
+        return directory
+
+    def write_workspace_proposal(self, directory, proposal=None):
+        if proposal is None:
+            proposal = {"updates": [{"id": "E05", "summary": "File-based evidence"}],
+                        "children": [{"ref": "detail", "parentId": "E05", "title": "Decoder", "summary": "Implementation",
+                                      "children": [{"ref": "test", "title": "Decoder test", "summary": "Concrete acceptance"}]}]}
+        (directory / "proposal.json").write_text(json.dumps(proposal), encoding="utf-8")
+
+    def test_checkout_exports_complete_scoped_context_and_original_answers_without_writing(self):
+        organization = json.loads(self.storage["organization"])
+        organization["current"]["items"].append(
+            {"id": "E07", "parentId": "A02", "title": "Deep implementation", "summary": "Second descendant level"})
+        memory = json.loads(self.storage["memory"])
+        memory["project"] = {"goal": "Understand the project", "constraints": ["Keep behavior"], "decisions": []}
+        memory["notes"][0].update({"answer": "Long real answer " * 100, "originalAnswer": "Old answer",
+                                   "payload": {"question": "How does it work?", "anchor": {"elementIds": ["E05"]}},
+                                   "attachments": [{"id": "a" * 32, "name": "evidence.txt", "size": 20}]})
+        storage = {**self.storage, "organization": json.dumps(organization), "memory": json.dumps(memory)}
+        latest = board_store_request({"action": "save", "id": self.identity, "expectedRevision": 1,
+                                       "metadata": {"title": "Shared project", "repositoryPath": "C:/project"},
+                                       "storage": storage})["board"]
+        self.server.calls = []
+        directory = self.checkout_directory()
+        context = json.loads((directory / "context.json").read_text(encoding="utf-8"))
+        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        self.assertEqual({node["id"] for node in context["subtree"]}, {"E05", "A02", "E07"})
+        self.assertEqual([node["id"] for node in context["ancestors"]], ["E04"])
+        self.assertEqual(context["project"], memory["project"])
+        self.assertEqual(context["notes"], memory["notes"])
+        self.assertEqual(context["repositoryPath"], "C:/project")
+        self.assertEqual(manifest["revision"], 2)
+        self.assertEqual(manifest["contextSha256"], skill.digest(context))
+        overview_other = next(node for node in context["overview"]["nodes"] if node["id"] == "E06")
+        self.assertNotIn("summary", overview_other, "Unrelated branch full text must not be copied")
+        self.assertEqual(json.loads((directory / "proposal.json").read_text(encoding="utf-8")), {"updates": [], "children": []})
+        self.assertFalse(any(call["action"] == "save" for call in self.server.calls))
+        self.assertEqual(board_store_request({"action": "load", "id": self.identity})["board"], latest)
+
+    def test_checkout_never_overwrites_an_existing_nonempty_directory(self):
+        directory = self.directory / "existing"
+        directory.mkdir()
+        marker = directory / "keep.txt"
+        marker.write_text("Keep this exact draft", encoding="utf-8")
+        code, result = self.run_command("checkout", "--board", self.identity, "--node", "E05", "--out", str(directory))
+        self.assertEqual(code, 1)
+        self.assertIn("不会覆盖", result["error"])
+        self.assertEqual(marker.read_text(encoding="utf-8"), "Keep this exact draft")
+        self.assertEqual(list(directory.iterdir()), [marker])
+
+    def test_global_pinned_constraints_are_readable_but_do_not_expand_the_writable_scope(self):
+        organization = json.loads(self.storage["organization"])
+        items = organization["current"]["items"]
+        items[-1]["summary"] = "Global constraint: preserve the protocol"
+        items[-1]["spec"] = {"kind": "constraint", "id": "RULE-PROTOCOL"}
+        items.extend([
+            {"id": "A03", "parentId": "E06", "title": "Pinned answer", "summary": "Short preview"},
+            {"id": "E08", "parentId": None, "title": "Draft", "summary": "Unconfirmed", "draft": True},
+            {"id": "E09", "parentId": "E08", "title": "Pinned draft child", "summary": "Do not promote"},
+            {"id": "A10", "parentId": "E09", "title": "Draft answer", "summary": "Not a global rule"},
+            {"id": "E11", "parentId": None, "title": "Deleted root", "summary": "Removed"},
+            {"id": "E12", "parentId": "E11", "title": "Pinned deleted child", "summary": "Do not use"}])
+        memory = json.loads(self.storage["memory"])
+        memory["pinnedIds"] = ["E04", "E06", "A03", "E09", "A10", "E12"]
+        memory["deletedIds"] = ["E11"]
+        memory["notes"].extend([{"id": "A03", "answer": "Full globally pinned answer " * 100},
+                                 {"id": "A10", "answer": "Full unconfirmed draft answer"}])
+        board_store_request({"action": "save", "id": self.identity, "expectedRevision": 1,
+                              "metadata": {"title": "Shared project", "repositoryPath": "C:/project"},
+                              "storage": {**self.storage, "organization": json.dumps(organization), "memory": json.dumps(memory)}})
+        directory = self.checkout_directory()
+        context = json.loads((directory / "context.json").read_text(encoding="utf-8"))
+        self.assertEqual({item["id"] for item in context["pinnedCards"]}, {"E04", "E06", "A03"})
+        self.assertEqual(next(item for item in context["pinnedCards"] if item["id"] == "E06")["summary"],
+                         "Global constraint: preserve the protocol")
+        self.assertEqual({note["id"] for note in context["notes"]}, {"A02", "A03"})
+        self.assertEqual(next(note for note in context["notes"] if note["id"] == "A03"), memory["notes"][1])
+        self.write_workspace_proposal(directory, {"updates": [{"id": "E06", "summary": "Forbidden scope expansion"}]})
+        self.server.calls = []
+        code, result = self.run_command("submit", "--workspace", str(directory), "--commit")
+        self.assertEqual(code, 1, result)
+        self.assertFalse(result["committed"])
+        self.assertFalse(any(call["action"] == "save" for call in self.server.calls))
+
+    def test_workspace_preview_and_commit_preserve_unrelated_data_and_do_not_duplicate(self):
+        directory = self.checkout_directory()
+        self.write_workspace_proposal(directory)
+        self.server.calls = []
+        code, preview = self.run_command("submit", "--workspace", str(directory))
+        self.assertEqual(code, 0, preview)
+        self.assertFalse(preview["committed"])
+        self.assertEqual(preview["rootId"], "E05")
+        self.assertFalse((directory / "receipt.json").exists())
+        self.assertFalse(any(call["action"] == "save" for call in self.server.calls))
+        code, committed = self.run_command("submit", "--workspace", str(directory), "--commit")
+        self.assertEqual(code, 0, committed)
+        self.assertTrue(committed["verified"])
+        self.assertEqual(committed["revision"], 2)
+        record = json.loads((directory / "receipt.json").read_text(encoding="utf-8"))
+        self.assertEqual(record["status"], "verified")
+        self.assertEqual(record["result"], committed)
+        fresh = skill.Client(self.origin).call("load", id=self.identity)["board"]
+        items = {node["id"]: node for node in json.loads(fresh["storage"]["organization"])["current"]["items"]}
+        self.assertEqual(items[committed["assigned"]["test"]]["parentId"], committed["assigned"]["detail"])
+        self.assertEqual(items["E06"]["summary"], "Keep this")
+        for field in ("memory", "templateBackup", "guideBackup"):
+            self.assertEqual(fresh["storage"][field], self.storage[field])
+        code, repeated = self.run_command("submit", "--workspace", str(directory), "--commit")
+        self.assertEqual(code, 0, repeated)
+        self.assertTrue(repeated["alreadyCommitted"])
+        self.assertEqual(sum(call["action"] == "save" for call in self.server.calls), 1)
+        self.assertEqual(skill.Client(self.origin).call("load", id=self.identity)["board"], fresh)
+
+    def test_workspace_rejects_empty_out_of_scope_and_changed_root_proposals(self):
+        directory = self.checkout_directory()
+        for proposal in ({"updates": [], "children": []},
+                         {"updates": [{"id": "E06", "summary": "Wrong branch"}]},
+                         {"rootId": "E04", "updates": [{"id": "E05", "summary": "Changed scope"}]},
+                         {"board": "other", "updates": [{"id": "E05", "summary": "Changed metadata"}]}):
+            with self.subTest(proposal=proposal):
+                self.write_workspace_proposal(directory, proposal)
+                code, result = self.run_command("submit", "--workspace", str(directory), "--commit")
+                self.assertEqual(code, 1, result)
+                self.assertFalse(result["committed"])
+        self.assertFalse((directory / "receipt.json").exists())
+        self.assertFalse(any(call["action"] == "save" for call in self.server.calls))
+
+    def test_workspace_rejects_modified_context_manifest_url_and_file_redirection(self):
+        for index, changed in enumerate(("context", "manifest", "url", "file")):
+            with self.subTest(changed=changed):
+                directory = self.checkout_directory(f"changed-{index}")
+                self.write_workspace_proposal(directory)
+                manifest_file, context_file = directory / "manifest.json", directory / "context.json"
+                if changed == "context":
+                    value = json.loads(context_file.read_text(encoding="utf-8"))
+                    value["subtree"][0]["summary"] = "Edited the source instead of the proposal"
+                    context_file.write_text(json.dumps(value), encoding="utf-8")
+                elif changed == "manifest":
+                    value = json.loads(manifest_file.read_text(encoding="utf-8"))
+                    value["revision"] += 1
+                    manifest_file.write_text(json.dumps(value), encoding="utf-8")
+                elif changed == "file":
+                    context_file.unlink()
+                    context_file.mkdir()
+                arguments = ["submit", "--workspace", str(directory), "--commit"]
+                if changed == "url":
+                    out, err = io.StringIO(), io.StringIO()
+                    with redirect_stdout(out), redirect_stderr(err):
+                        code = skill.main(["--url", "http://127.0.0.1:1", *arguments])
+                    result = json.loads(out.getvalue() or err.getvalue())
+                else:
+                    code, result = self.run_command(*arguments)
+                self.assertEqual(code, 1, result)
+                self.assertFalse((directory / "receipt.json").exists())
+        self.assertFalse(any(call["action"] == "save" for call in self.server.calls))
+
+    def test_workspace_stale_version_never_overwrites_another_users_change(self):
+        directory = self.checkout_directory()
+        self.write_workspace_proposal(directory)
+        changed, _ = skill.propose(self.saved, {"rootId": "E04", "updates": [{"id": "E06", "summary": "New independent change"}]}, 1)
+        winner = board_store_request({"action": "save", "id": self.identity, "expectedRevision": 1,
+                                      "metadata": {"title": "Shared project", "repositoryPath": "C:/project"},
+                                      "storage": changed["storage"]})["board"]
+        self.server.calls = []
+        code, result = self.run_command("submit", "--workspace", str(directory), "--commit")
+        self.assertEqual(code, 1)
+        self.assertIn("版本已改变", result["error"])
+        self.assertFalse(any(call["action"] == "save" for call in self.server.calls))
+        self.assertEqual(board_store_request({"action": "load", "id": self.identity})["board"], winner)
+
+    def test_pending_receipt_reconciles_lost_acknowledgement_without_another_save(self):
+        directory = self.checkout_directory()
+        self.write_workspace_proposal(directory)
+        self.server.calls, self.server.mode = [], "save-ack-lost"
+        code, unknown = self.run_command("submit", "--workspace", str(directory), "--commit")
+        self.assertEqual(code, 1)
+        self.assertEqual(unknown["committed"], "unknown")
+        self.assertEqual(json.loads((directory / "receipt.json").read_text(encoding="utf-8"))["status"], "pending")
+        self.server.mode = "normal"
+        code, recovered = self.run_command("submit", "--workspace", str(directory), "--commit")
+        self.assertEqual(code, 0, recovered)
+        self.assertTrue(recovered["alreadyCommitted"])
+        self.assertEqual(sum(call["action"] == "save" for call in self.server.calls), 1)
+        self.assertEqual(json.loads((directory / "receipt.json").read_text(encoding="utf-8"))["status"], "verified")
+
+    def test_pending_uncommitted_or_changed_proposal_stops_instead_of_retrying(self):
+        directory = self.checkout_directory()
+        self.write_workspace_proposal(directory)
+        self.server.calls, self.server.mode = [], "save-unavailable"
+        code, result = self.run_command("submit", "--workspace", str(directory), "--commit")
+        self.assertEqual(code, 1)
+        self.assertEqual(result["committed"], "unknown")
+        self.server.mode = "normal"
+        code, result = self.run_command("submit", "--workspace", str(directory), "--commit")
+        self.assertEqual(code, 1)
+        self.assertEqual(result["committed"], "unknown")
+        self.write_workspace_proposal(directory, {"updates": [{"id": "E05", "summary": "Different proposal"}]})
+        code, result = self.run_command("submit", "--workspace", str(directory), "--commit")
+        self.assertEqual(code, 1)
+        self.assertIn("回执与本提案不一致", result["error"])
+        self.assertEqual(sum(call["action"] == "save" for call in self.server.calls), 1)
+        self.assertEqual(board_store_request({"action": "load", "id": self.identity})["board"], self.saved)
+
+    def test_prior_submission_never_becomes_false_after_draft_context_or_service_changes(self):
+        for index, changed in enumerate(("proposal", "context", "manifest", "receipt", "service", "deleted")):
+            with self.subTest(changed=changed):
+                # Restore this isolated fixture; each workspace simulates an
+                # acknowledgement lost after exactly one successful HTTP save.
+                if index:
+                    self.identity = "board-" + str(index) * 32
+                    board_store_request({"action": "save", "id": self.identity, "expectedRevision": 0,
+                                          "metadata": {"title": "Shared project", "repositoryPath": "C:/project"}, "storage": self.storage})
+                self.server.mode = "normal"
+                directory = self.checkout_directory(f"pending-{index}")
+                self.write_workspace_proposal(directory)
+                self.server.calls, self.server.mode = [], "save-ack-lost"
+                code, unknown = self.run_command("submit", "--workspace", str(directory), "--commit")
+                self.assertEqual(code, 1, unknown)
+                self.assertEqual(unknown["committed"], "unknown")
+                self.server.mode = "normal"
+                if changed == "proposal":
+                    self.write_workspace_proposal(directory, {"updates": [{"id": "E05", "summary": "A different new question"}]})
+                elif changed == "receipt":
+                    receipt_path = directory / "receipt.json"
+                    record = json.loads(receipt_path.read_text(encoding="utf-8"))
+                    del record["result"]["newIds"]
+                    receipt_path.write_text(json.dumps(record), encoding="utf-8")
+                elif changed in {"context", "manifest"}:
+                    (directory / f"{changed}.json").write_text("{broken", encoding="utf-8")
+                elif changed == "service":
+                    self.server.mode = "unsupported"
+                else:
+                    board_store_request({"action": "delete", "id": self.identity, "expectedRevision": 2})
+                code, result = self.run_command("submit", "--workspace", str(directory), "--commit")
+                self.assertEqual(code, 1, result)
+                self.assertEqual(result["committed"], "unknown", "A prior committed result must not look safe to repeat")
+                self.assertEqual(sum(call["action"] == "save" for call in self.server.calls), 1)
 
 
 # Preserve the original handoff acceptance coverage as well as API probing.

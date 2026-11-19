@@ -6,17 +6,23 @@ connection settings or model credentials. Apply defaults to a read-only preview.
 
 import argparse
 import copy
+import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import sys
+import tempfile
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
 MAX_BYTES = 24 * 1024 * 1024
+DEFAULT_URL = "http://127.0.0.1:8791"
+BUNDLE_FORMAT = "circle-ask-whiteboard-workspace-v1"
+RECEIPT_FORMAT = "circle-ask-whiteboard-submission-v1"
 FIELDS = ("memory", "organization", "templateBackup", "guideBackup")
 CATEGORIES = {"main", "done", "optimize", "reference", "archive"}
 CARD_ID = re.compile(r"[EA][0-9]+\Z")
@@ -29,6 +35,10 @@ SOURCE_FILES = {"index.html", "styles.css", "app.js", "geometry.js", "memory.js"
 
 class ServiceError(Exception):
     pass
+
+
+class SubmissionUncertain(ServiceError):
+    """A durable pending receipt prevents another write after an unknown result."""
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -331,9 +341,223 @@ def propose(board, proposal, expected_revision):
     return result, receipt
 
 
+def digest(value):
+    raw = json.dumps(value, ensure_ascii=False, sort_keys=True, allow_nan=False, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def plain_path(path):
+    # These checks prevent accidentally following a workspace file into another
+    # directory. They are not a security boundary against a hostile local user.
+    if path.is_symlink() or (path.exists() and getattr(path.lstat(), "st_file_attributes", 0) & 0x400):
+        raise ServiceError("工作目录和工作文件不能是符号链接或目录联接，请使用独立的普通目录。")
+    return path
+
+
+def workspace_file(directory, name):
+    path = plain_path(directory / name)
+    if path.resolve().parent != directory:
+        raise ServiceError("工作文件超出工作目录，未处理。")
+    return path
+
+
+def read_json(path):
+    plain_path(path)
+    if not path.is_file() or path.stat().st_size > MAX_BYTES:
+        raise ServiceError("工作文件不存在、不是普通文件或超过 24 MB。")
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
+def write_json(path, value, *, exclusive=False):
+    plain_path(path)
+    raw = json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2)
+    if len(raw.encode("utf-8")) > MAX_BYTES:
+        raise ServiceError("工作文件超过 24 MB，请缩小目标分支。")
+    if exclusive:
+        with path.open("x", encoding="utf-8") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        return
+    # Replace the pending receipt atomically; a killed process leaves either a
+    # recoverable pending record or a verified record, never truncated JSON.
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=".receipt-", suffix=".tmp", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        except Exception:
+            stream.close()
+            temporary.unlink(missing_ok=True)
+            raise
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def context_for(board, root, origin):
+    _, memory, by_id = document(board)
+    if not isinstance(root, str) or root not in by_id:
+        raise ServiceError("未找到 checkout 根卡，请先 find 确认卡号。")
+    deleted = set(memory.get("deletedIds", []))
+    paths = {identity: [entry["id"] for entry in path_for(identity, by_id)] for identity in by_id}
+    scope = [identity for identity in by_id if root in paths[identity] and not deleted.intersection(paths[identity])]
+    if root not in scope:
+        raise ServiceError("checkout 根卡已删除或处于已删除的分支下。")
+    path = path_for(root, by_id)
+    pins = [identity for identity in memory.get("pinnedIds", []) if identity in by_id
+            and not deleted.intersection(paths[identity])
+            and not any(by_id[ancestor].get("draft") is True for ancestor in paths[identity])]
+    related = set(scope) | {entry["id"] for entry in path} | set(pins)
+    return {"format": BUNDLE_FORMAT, "url": origin, "board": board["id"], "title": board["title"],
+            "revision": board["revision"], "repositoryPath": board.get("repositoryPath", ""), "rootId": root,
+            "path": path, "ancestors": [copy.deepcopy(by_id[entry["id"]]) for entry in path[:-1]],
+            "subtree": [copy.deepcopy(by_id[identity]) for identity in scope],
+            "notes": [copy.deepcopy(note) for note in memory.get("notes", [])
+                      if isinstance(note, dict) and note.get("id") in related],
+            "project": copy.deepcopy(memory.get("project", {})),
+            "pinnedIds": pins,
+            "pinnedCards": [{**copy.deepcopy(by_id[identity]), "path": path_for(identity, by_id)} for identity in pins],
+            "overview": {"total": len(by_id), "nodes": [
+                {key: item.get(key) for key in ("id", "parentId", "title", "category")}
+                for item in list(by_id.values())[:128]]}}
+
+
+def checkout(board, root, origin, directory):
+    context = context_for(board, root, origin)
+    manifest = {"format": BUNDLE_FORMAT, "url": origin, "board": board["id"], "rootId": root,
+                "revision": board["revision"], "contextSha256": digest(context)}
+    directory = plain_path(directory.absolute()).resolve()
+    if directory.exists() and (not directory.is_dir() or any(directory.iterdir())):
+        raise ServiceError("checkout 需要空目录或尚不存在的目录，不会覆盖现有文件。")
+    directory.mkdir(parents=True, exist_ok=True)
+    # Only proposal.json is edited. The other two files detect accidental scope
+    # or version changes; the hash is deliberately not called a signature.
+    write_json(workspace_file(directory, "context.json"), context, exclusive=True)
+    write_json(workspace_file(directory, "proposal.json"), {"updates": [], "children": []}, exclusive=True)
+    write_json(workspace_file(directory, "manifest.json"), manifest, exclusive=True)
+    return {"workspace": str(directory), "board": board["id"], "rootId": root,
+            "revision": board["revision"], "contextCards": len(context["subtree"]), "readOnly": True,
+            "proposal": str(directory / "proposal.json"), "committed": False}
+
+
+def read_workspace(path, explicit_url=None):
+    directory = plain_path(path.absolute()).resolve()
+    if not directory.is_dir():
+        raise ServiceError("工作目录不存在。")
+    manifest = read_json(workspace_file(directory, "manifest.json"))
+    keys = {"format", "url", "board", "rootId", "revision", "contextSha256"}
+    if (not isinstance(manifest, dict) or set(manifest) != keys or manifest.get("format") != BUNDLE_FORMAT
+            or not isinstance(manifest.get("board"), str) or not manifest["board"]
+            or not isinstance(manifest.get("url"), str)
+            or not isinstance(manifest.get("rootId"), str) or not CARD_ID.fullmatch(manifest["rootId"])
+            or not isinstance(manifest.get("revision"), int) or isinstance(manifest["revision"], bool) or manifest["revision"] < 1):
+        raise ServiceError("manifest.json 元数据无效；请重新 checkout，不要手工改板号、根卡或版本。")
+    client = Client(manifest["url"])
+    if manifest["url"] != client.origin or (explicit_url and Client(explicit_url).origin != client.origin):
+        raise ServiceError("提交服务地址与 checkout 不一致；请使用原服务，不能切换目标。")
+    context = read_json(workspace_file(directory, "context.json"))
+    if (not isinstance(context, dict) or digest(context) != manifest["contextSha256"] or
+            any(context.get(key) != manifest[key] for key in ("format", "url", "board", "rootId", "revision"))):
+        raise ServiceError("context.json 或 manifest.json 已改变；仅编辑 proposal.json，需更新上下文时重新 checkout。")
+    proposal = read_json(workspace_file(directory, "proposal.json"))
+    if not isinstance(proposal, dict) or set(proposal) - {"rootId", "updates", "children"}:
+        raise ServiceError("proposal.json 只支持 updates、children；不能设置服务、板号或版本。")
+    if "rootId" in proposal and proposal["rootId"] != manifest["rootId"]:
+        raise ServiceError("提案 rootId 与 checkout 根卡不一致，未提交。")
+    proposal["rootId"] = manifest["rootId"]
+    return directory, client, manifest, context, proposal
+
+
+def candidate_hash(board):
+    return digest({"metadata": {key: board[key] for key in ("id", "title", "repositoryPath", "projectId") if key in board},
+                   "storage": board["storage"]})
+
+
+def committed_result(client, receipt, revision):
+    focus = receipt["newIds"][0] if receipt["newIds"] else receipt["rootId"]
+    return {**receipt, "committed": True, "revision": revision, "verified": True,
+            "focusId": focus, "url": f"{client.origin}/?board={receipt['board']}#{focus}"}
+
+
+def reconcile_submission(client, manifest, proposal, path):
+    record = read_json(path)
+    if (not isinstance(record, dict) or record.get("format") != RECEIPT_FORMAT
+            or record.get("manifestSha256") != digest(manifest) or record.get("proposalSha256") != digest(proposal)
+            or record.get("status") not in {"pending", "verified"} or not isinstance(record.get("result"), dict)
+            or not isinstance(record["result"].get("newIds"), list)
+            or any(not isinstance(identity, str) or not CARD_ID.fullmatch(identity) for identity in record["result"]["newIds"])
+            or record["result"].get("board") != manifest["board"] or record["result"].get("rootId") != manifest["rootId"]
+            or record["result"].get("previousRevision") != manifest["revision"]):
+        raise ServiceError("已有提交回执与本提案不一致；不会重新提交。保留原提案和回执，先查看版本历史确认原结果，不能直接重建相同新增。")
+    revision = manifest["revision"] + 1
+    try:
+        snapshot = client.call("load", id=manifest["board"], revision=revision).get("board")
+        if not snapshot or snapshot.get("revision") != revision or candidate_hash(snapshot) != record.get("candidateSha256"):
+            raise ServiceError("服务端未找到与本次提案完全一致的版本。")
+        result = committed_result(client, record["result"], revision)
+        if record["status"] != "verified":
+            write_json(path, {**record, "status": "verified", "result": result})
+        return {**result, "alreadyCommitted": True}
+    except (ServiceError, OSError) as error:
+        raise SubmissionUncertain("已有待核对回执，未再次写入。请 read 或查看版本历史确认结果，勿删除回执后盲目重试。" + str(error)) from error
+
+
+def _submit_workspace(path, explicit_url=None, commit=False):
+    directory, client, manifest, context, proposal = read_workspace(path, explicit_url)
+    listing = client.probe()
+    if not any(entry["id"] == manifest["board"] for entry in listing["boards"]):
+        raise ServiceError("原板号不在服务目录中，未新建同名板。")
+    receipt_path = workspace_file(directory, "receipt.json")
+    if receipt_path.exists():
+        return reconcile_submission(client, manifest, proposal, receipt_path)
+    board = client.call("load", id=manifest["board"]).get("board")
+    if not board or board.get("revision") != manifest["revision"]:
+        raise ServiceError("服务端版本已改变；请重新 checkout 后合并提案，不能自动换新版本覆盖。")
+    if digest(context_for(board, manifest["rootId"], client.origin)) != manifest["contextSha256"]:
+        raise ServiceError("服务端目标内容与 checkout 上下文不符，请检查服务和板号。")
+    candidate, receipt = propose(board, proposal, manifest["revision"])
+    if not commit:
+        return {**receipt, "committed": False, "workspace": str(directory)}
+    pending = {"format": RECEIPT_FORMAT, "manifestSha256": digest(manifest), "proposalSha256": digest(proposal),
+               "candidateSha256": candidate_hash(candidate), "status": "pending", "result": receipt}
+    write_json(receipt_path, pending, exclusive=True)
+    try:
+        fields = {key: board[key] for key in ("id", "title", "repositoryPath", "projectId") if key in board}
+        saved = client.call("save", id=manifest["board"], expectedRevision=manifest["revision"],
+                            metadata=fields, storage=candidate["storage"]).get("board")
+        if not saved or saved.get("revision") != manifest["revision"] + 1 or candidate_hash(saved) != pending["candidateSha256"]:
+            raise ServiceError("保存回执与提案不一致。")
+        checked = client.call("load", id=manifest["board"]).get("board")
+        if not checked or checked.get("revision") != saved["revision"] or candidate_hash(checked) != pending["candidateSha256"]:
+            raise ServiceError("保存后当前版本已变化，需从版本历史核对本次结果。")
+        result = committed_result(client, receipt, saved["revision"])
+        write_json(receipt_path, {**pending, "status": "verified", "result": result})
+        return result
+    except (ServiceError, OSError) as error:
+        raise SubmissionUncertain("本次结果待核对，pending 回执已保留。再次 submit 只读核对，不会再次追加。" + str(error)) from error
+
+
+def submit_workspace(path, explicit_url=None, commit=False):
+    # A previous write may have succeeded even if the draft, context or service
+    # is now invalid. Never turn that uncertainty into an apparent safe retry.
+    receipt_path = path / "receipt.json"
+    had_receipt = os.path.lexists(receipt_path)
+    try:
+        return _submit_workspace(path, explicit_url, commit)
+    except SubmissionUncertain:
+        raise
+    except (ServiceError, OSError, ValueError, TypeError, RecursionError) as error:
+        if had_receipt or os.path.lexists(receipt_path):
+            raise SubmissionUncertain("该工作目录已有提交记录，原结果仍需核对；不能认定未提交或重新追加相同内容。" + str(error)) from error
+        raise
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--url", default="http://127.0.0.1:8791")
+    parser.add_argument("--url", help=f"本机服务根地址（默认 {DEFAULT_URL}；submit 使用 manifest 地址）")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("probe")
     commands.add_parser("list")
@@ -349,10 +573,21 @@ def main(argv=None):
     apply.add_argument("--file", required=True, type=Path)
     apply.add_argument("--commit", action="store_true")
     apply.add_argument("--receipt", type=Path)
+    checkout_parser = commands.add_parser("checkout", help="导出只读上下文与可编辑提案文件")
+    checkout_parser.add_argument("--board", required=True)
+    checkout_parser.add_argument("--node", required=True)
+    checkout_parser.add_argument("--out", required=True, type=Path)
+    submit = commands.add_parser("submit", help="按工作目录固定的范围与版本预览或提交")
+    submit.add_argument("--workspace", required=True, type=Path)
+    submit.add_argument("--commit", action="store_true")
     args = parser.parse_args(argv)
     write_started = False
     try:
-        client = Client(args.url)
+        if args.command == "submit":
+            output = submit_workspace(args.workspace, args.url, args.commit)
+            print(json.dumps(output, ensure_ascii=False, indent=2))
+            return 0
+        client = Client(args.url or DEFAULT_URL)
         listing = client.probe()
         if args.command == "probe":
             output = {"url": client.origin, "sharedBoards": True, "boardCount": len(listing["boards"]),
@@ -375,6 +610,8 @@ def main(argv=None):
                 else:
                     output = {**base, "items": list(by_id.values()), "project": memory.get("project", {}),
                               "pinnedIds": memory.get("pinnedIds", [])}
+            elif args.command == "checkout":
+                output = checkout(board, args.node, client.origin, args.out)
             elif args.command == "find":
                 query = args.query.strip().casefold()
                 if not query:
@@ -406,7 +643,7 @@ def main(argv=None):
         print(json.dumps(output, ensure_ascii=False, indent=2))
         return 0
     except (ServiceError, OSError, ValueError, TypeError, RecursionError) as error:
-        print(json.dumps({"error": str(error), "committed": "unknown" if write_started else False}, ensure_ascii=False), file=sys.stderr)
+        print(json.dumps({"error": str(error), "committed": "unknown" if write_started or isinstance(error, SubmissionUncertain) else False}, ensure_ascii=False), file=sys.stderr)
         return 1
 
 
