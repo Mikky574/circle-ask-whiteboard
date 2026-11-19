@@ -14,6 +14,8 @@
   let lastElements = [];
   let inspectorSelection = "";
   let inspectorSignature = "";
+  let quoteSelection = null;
+  let readingPointer = false;
   const positionCache = new Map();
 
   const byId = (id) => document.getElementById(id);
@@ -21,6 +23,93 @@
   const isBusy = () => typeof callbacks.isBusy === "function" ? Boolean(callbacks.isBusy()) : Boolean(callbacks.isBusy);
   const arrayOf = (value) => value instanceof Map ? [...value.values()] : Array.from(value || []);
   const elementsOf = (value) => arrayOf(value).filter((entry) => entry?.dataset?.elementId);
+
+  function canAskText() {
+    return !isBusy() && typeof callbacks.onAskText === "function" &&
+      !(typeof callbacks.canAskText === "function" ? !callbacks.canAskText() : callbacks.canAsk && !callbacks.canAsk());
+  }
+
+  function renderQuoteSelection() {
+    const panel = byId("mindmap-selection-panel");
+    if (!panel) return;
+    const ask = byId("mindmap-ask-selection");
+    if (ask) ask.disabled = !quoteSelection || !canAskText();
+    // Showing or hiding a previous quote moves the text under a held pointer.
+    // Keep the reader geometry fixed until the native drag has finished.
+    if (readingPointer) return;
+    panel.hidden = !quoteSelection || !mode;
+    if (!quoteSelection) return;
+    const label = byId("mindmap-selection-source");
+    const preview = panel.querySelector(".mindmap-selection-quote");
+    const hint = byId("mindmap-selection-hint");
+    if (label) label.textContent = `选自 ${quoteSelection.id} · ${quoteSelection.length} 字`;
+    if (preview && preview.textContent !== quoteSelection.quote) preview.textContent = quoteSelection.quote;
+    if (hint) hint.textContent = quoteSelection.length > 600 ? "本次引用前 600 字，同时带上所属卡片的上下文。" : "只引用这段文字，同时带上所属卡片的上下文。";
+  }
+
+  function clearQuoteSelection(removeNative = false) {
+    quoteSelection = null;
+    if (removeNative) {
+      const selection = window.getSelection();
+      const container = byId("mindmap-inspector");
+      if (selection?.rangeCount && container?.contains(selection.anchorNode) && container.contains(selection.focusNode)) selection.removeAllRanges();
+    }
+    renderQuoteSelection();
+  }
+
+  function readerOwner(node) {
+    const element = node?.nodeType === 1 ? node : node?.parentElement;
+    return element?.closest("[data-reader-content][data-card-id]");
+  }
+
+  function captureReaderSelection() {
+    if (!mode || selectedIds.length !== 1) return;
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) return;
+    const range = selection.getRangeAt(0);
+    const owner = readerOwner(range.startContainer);
+    const endOwner = readerOwner(range.endContainer);
+    if (!owner || owner !== endOwner || !byId("mindmap-inspector")?.contains(owner)) {
+      if (owner || endOwner) clearQuoteSelection();
+      return;
+    }
+    const fragments = range.cloneContents();
+    if ([...fragments.querySelectorAll("[data-reader-content][data-card-id]")]
+      .some((element) => element.dataset.cardId !== owner.dataset.cardId && element.textContent.trim())) {
+      clearQuoteSelection();
+      return;
+    }
+    const text = Array.from(selection.toString().trim());
+    if (!text.length || !/^[EA]\d+$/.test(owner.dataset.cardId || "")) return;
+    quoteSelection = { id: owner.dataset.cardId, quote: text.slice(0, 600).join(""), length: text.length, board: storageKey() };
+    if (!readingPointer) renderQuoteSelection();
+  }
+
+  function selectionPanel(actions) {
+    const panel = append(actions, "section", "mindmap-selection-panel");
+    panel.id = "mindmap-selection-panel";
+    panel.hidden = true;
+    panel.setAttribute("aria-label", "当前引用的正文选段");
+    const source = append(panel, "p", "mindmap-selection-source");
+    source.id = "mindmap-selection-source";
+    append(panel, "blockquote", "mindmap-selection-quote");
+    const hint = append(panel, "p", "mindmap-selection-hint");
+    hint.id = "mindmap-selection-hint";
+    const controls = append(panel, "div", "mindmap-selection-actions");
+    const ask = append(controls, "button", "tool-button mindmap-primary-action", "问这段");
+    ask.id = "mindmap-ask-selection";
+    ask.type = "button";
+    ask.addEventListener("mousedown", (event) => event.preventDefault());
+    ask.addEventListener("click", () => {
+      if (!canAskText() || !quoteSelection || quoteSelection.board !== storageKey()) return;
+      const { id, quote } = quoteSelection;
+      callbacks.onAskText({ id, quote });
+    });
+    const clear = append(controls, "button", "tool-button", "取消选段");
+    clear.type = "button";
+    clear.id = "mindmap-selection-clear";
+    clear.addEventListener("click", () => clearQuoteSelection(true));
+  }
 
   function savedMode() {
     try { return localStorage.getItem(storageKey()) === "mindmap"; }
@@ -74,6 +163,8 @@
   function setActive(value) {
     const next = Boolean(value);
     if (mode === next || isBusy()) return false;
+    clearQuoteSelection(true);
+    readingPointer = false;
     mode = next;
     try { localStorage.setItem(storageKey(), mode ? "mindmap" : "cards"); }
     catch { /* The current view still works when browser storage is unavailable. */ }
@@ -84,6 +175,8 @@
   }
 
   function init(options = {}) {
+    clearQuoteSelection(true);
+    readingPointer = false;
     callbacks = options;
     mode = savedMode();
     if (!initialized) {
@@ -91,6 +184,25 @@
       byId("presentation-mindmap")?.addEventListener("click", () => setActive(true));
       byId("mindmap-overview")?.addEventListener("click", () => callbacks.onOverview?.());
       byId("mindmap-expand-all")?.addEventListener("click", () => callbacks.onExpandAll?.());
+      document.addEventListener("selectionchange", captureReaderSelection);
+      byId("mindmap-inspector")?.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0 || event.target.closest("button, a, input, textarea, select, summary") || !readerOwner(event.target)) return;
+        readingPointer = true;
+        // A press inside an old text range would otherwise start native HTML
+        // drag-and-drop and cancel this selection gesture before pointerup.
+        clearQuoteSelection(true);
+      });
+      document.addEventListener("pointerup", () => {
+        if (!readingPointer) return;
+        readingPointer = false;
+        captureReaderSelection();
+        renderQuoteSelection();
+      });
+      document.addEventListener("pointercancel", () => {
+        readingPointer = false;
+        captureReaderSelection();
+        renderQuoteSelection();
+      });
       initialized = true;
     }
     syncMode();
@@ -229,6 +341,7 @@
     const original = tree.dom.get(id);
     const organized = original?.querySelector(":scope > .organized-face > .organized-body");
     const answer = original?.querySelector(":scope > .thread-answer");
+    if (tree.models.get(id)?.localContent) return null;
     if (tree.models.get(id)?.nativeFace && answer) return answer;
     return organized?.childElementCount ? organized : answer || original?.querySelector(":scope > .element-content");
   }
@@ -350,6 +463,8 @@
       if (!disclosure.open || loaded) return;
       loaded = true;
       const content = append(disclosure, "div", "mindmap-child-content");
+      content.dataset.readerContent = "true";
+      content.dataset.cardId = id;
       const navigate = append(content, "button", "tool-button mindmap-child-navigate", "查看节点");
       navigate.type = "button";
       navigate.dataset.navigateId = id;
@@ -384,9 +499,14 @@
   function updateDetailActions(container) {
     for (const navigate of container.querySelectorAll(".mindmap-child-navigate")) navigate.disabled = !callbacks.onNavigate || isBusy();
     const ask = container.querySelector("#mindmap-ask");
-    if (ask) ask.disabled = isBusy() || Boolean(callbacks.canAsk && !callbacks.canAsk());
+    if (ask) ask.disabled = isBusy() || !callbacks.onAsk || Boolean(callbacks.canAsk && !callbacks.canAsk());
+    const extend = container.querySelector("#mindmap-extend");
+    if (extend) extend.disabled = isBusy() || !callbacks.onExtend || Boolean(callbacks.canSplit && !callbacks.canSplit());
     const split = container.querySelector("#mindmap-split");
-    if (split) split.disabled = isBusy() || Boolean(callbacks.canSplit && !callbacks.canSplit());
+    if (split) split.disabled = isBusy() || !callbacks.onSplit || Boolean(callbacks.canSplit && !callbacks.canSplit());
+    const show = container.querySelector("#mindmap-show-card");
+    if (show) show.disabled = isBusy() || !callbacks.onShowCard;
+    renderQuoteSelection();
   }
 
   function inspect(ids = [], items = lastItems, elements = lastElements) {
@@ -396,7 +516,7 @@
     const container = byId("mindmap-inspector");
     if (!container) return;
     container.hidden = !mode;
-    if (!mode) return;
+    if (!mode) { clearQuoteSelection(); return; }
     const tree = hierarchy(lastItems, lastElements);
     const selection = `${storageKey()}:${selectedIds.join(",")}`;
     const signature = semanticSignature(selectedIds, tree);
@@ -405,6 +525,12 @@
       return;
     }
     const sameSelection = selection === inspectorSelection;
+    if (sameSelection && readingPointer && container.childElementCount) {
+      updateDetailActions(container);
+      return;
+    }
+    clearQuoteSelection(!sameSelection);
+    readingPointer = false;
     const disclosures = new Map(sameSelection ? [...container.querySelectorAll("details[data-reader-key]")]
       .map((element) => [element.dataset.readerKey, element.open]) : []);
     const scrollContainer = container.closest(".context-body") || container;
@@ -434,7 +560,10 @@
       append(container, "h3", "mindmap-detail-title", titleOf(id, tree));
       append(container, "p", "mindmap-detail-id", `${id} · ${original?.dataset.mapCount || 0} 个下级`);
       renderActions();
+      append(container, "p", "mindmap-detail-hint mindmap-question-hint", "问这张卡会带上卡片说明和分支上下文；也可以在下面拖选正文，再点「问这段」。向下延伸可以继续补充这条分支。");
       const content = append(container, "div", "mindmap-detail-body");
+      content.dataset.readerContent = "true";
+      content.dataset.cardId = id;
       append(content, "h4", "mindmap-detail-section-heading", "说明");
       renderRealContent(content, id, tree, realDetails(id), restore);
       const children = detailChildren(id, tree);
@@ -457,12 +586,15 @@
         button.disabled = disabled;
         button.addEventListener("click", () => callback?.(id));
       }
-      action("mindmap-ask", "问选中内容", callbacks.onAsk,
-        isBusy() || Boolean(callbacks.canAsk && !callbacks.canAsk()));
+      action("mindmap-ask", selectedIds.length === 1 ? "问这张卡" : "问所选节点", callbacks.onAsk,
+        isBusy() || !callbacks.onAsk || Boolean(callbacks.canAsk && !callbacks.canAsk()));
       if (selectedIds.length === 1) {
-        action("mindmap-split", "拆分节点", callbacks.onSplit,
+        if (callbacks.onExtend) action("mindmap-extend", "向下延伸", callbacks.onExtend,
           isBusy() || Boolean(callbacks.canSplit && !callbacks.canSplit()));
-        action("mindmap-show-card", "查看卡片", callbacks.onShowCard);
+        action("mindmap-split", "拆成子节点", callbacks.onSplit,
+          isBusy() || !callbacks.onSplit || Boolean(callbacks.canSplit && !callbacks.canSplit()));
+        action("mindmap-show-card", "查看卡片", callbacks.onShowCard, isBusy() || !callbacks.onShowCard);
+        selectionPanel(actions);
       }
     }
   }

@@ -15,7 +15,7 @@
   const categories = new Set(["main", "done", "optimize", "reference", "archive"]);
   const sourceFiles = new Set(["index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "run_gate.js",
     "project_finder.js", "server.py", "zcode_backend.py", "zcode_workspace.py", "attachments.py", "backends.py", "api_backend.py",
-    "board_tools.py", "local_projects.py", "board_transfer.js"]);
+    "board_tools.py", "local_projects.py", "board_transfer.js", "board_store.py", "board_sync.js", "board_versions.js"]);
   const owns = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   function fail(message) { throw new Error(`白板文件无效：${message}`); }
   function object(value, field) {

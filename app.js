@@ -1433,7 +1433,7 @@
   function contextCard(node, items, detailed = false) {
     const item = items.get(node.id);
     const reply = replies.get(node.id)?.saved;
-    const summary = (item && !item.nativeFace ? item.summary : reply?.answer) || node.summary || node.text;
+    const summary = (item && (!item.nativeFace || item.localContent) ? item.summary : reply?.answer) || node.summary || node.text;
     const repositoryFiles = detailed ? [...new Set([
       ...(item?.codePreview ? [item.codePreview.path] : []), ...(item?.repositoryFiles || []),
     ])].slice(0, 12) : [];
@@ -1470,7 +1470,10 @@
     const nodes = boardForOrganization();
     const drafts = draftMembership(nodes);
     const draftRoot = selectedDraftRoot(ids, drafts);
-    const inScope = (id) => !drafts.has(id) || drafts.get(id) === draftRoot;
+    // Explicitly selected cards are the user's research scope, even when they
+    // belong to separate drafts. Keep unselected drafts isolated as before.
+    const explicitIds = new Set(ids.filter((id) => id !== "board"));
+    const inScope = (id) => explicitIds.has(id) || !drafts.has(id) || drafts.get(id) === draftRoot;
     let context = { goal: project.goal, constraints: [], decisions: [] };
     const items = hierarchyItems(nodes).filter((item) => item.category !== "archive" && !deletedIds.has(item.id) && inScope(item.id));
     const encoder = new TextEncoder();
@@ -4628,6 +4631,19 @@
     return true;
   }
 
+  function locateLinkedCard() {
+    const match = location.hash.match(/^#([EA]\d+)$/);
+    if (!match) return;
+    const id = match[1];
+    if (activeRun || deletionPreparing || gesture || connectionDrag || question.value.trim() ||
+        draftAttachments.length || workbenchDraft || document.querySelector("dialog[open]")) {
+      status(`暂未跳转到 ${id}，请先完成当前操作或保留提问、附件及卡片编辑草稿，再打开链接。`);
+      return;
+    }
+    if (locateCard(id, true)) status(`已定位 ${id}。查看后可点「回到总览」。`);
+    else status(`当前白板中没有可定位的 ${id} 卡片，请核对白板链接和卡号。`);
+  }
+
   function availableModuleIds(nodes, limit = Math.min(8, 64 - nodes.length)) {
     const occupied = new Set([
       ...nodes.map((node) => node.id), ...pinnedIds, ...deletedIds,
@@ -7455,6 +7471,31 @@
     showAsk(true);
     question.focus();
   });
+  function selectMindmapCard(id, quote) {
+    if (!mindmap?.active || activeRun || gesture || connectionDrag || deletionPreparing ||
+        sourceChanged || storageStale || mode === "connect") return false;
+    const draft = question.value;
+    if (!selected.some((item) => item.id === id)) {
+      // A reader can open a hidden descendant's text without opening its map
+      // branch. Reveal that actual owner before using its scene anchor.
+      if (selected.length !== 1 || !subtreeIds(hierarchyItems(boardForOrganization()), selected[0].id).has(id) ||
+          !locateCard(id, true)) return false;
+      question.value = draft;
+    }
+    const element = boardElements().find((entry) => entry.dataset.elementId === id);
+    const box = visibleRect(id);
+    if (!element || !box || element.getAttribute("aria-busy") === "true") return false;
+    const text = typeof quote === "string" ? quote.trim() : null;
+    if (text !== null && !text) return false;
+    // Inspector text lives outside the canvas. Anchor its quote to the owning
+    // node in scene coordinates, while retaining the native partial-selection
+    // marker so getPayload does not mislabel it as a whole-card question.
+    const item = text === null ? describe(element) : describe(element, [{ quote: text, boxes: [{ ...box }] }]);
+    applySelection([item]);
+    question.value = draft;
+    renderInspector();
+    return true;
+  }
   function openCardExpansion() {
     const id = selectedModuleId();
     if (!id || expandCardOpen.disabled) return;
@@ -7782,14 +7823,15 @@
   }).observe(viewport);
   mindmap?.init({
     isBusy: () => Boolean(gesture || connectionDrag || preparingQuestion() || deletionPreparing),
-    canAsk: () => Boolean(selected.length) && !preparingQuestion() && mode !== "connect",
+    canAsk: () => Boolean(selected.length) && !activeRun && !gesture && !connectionDrag &&
+      !deletionPreparing && !sourceChanged && !storageStale && mode !== "connect",
     canSplit: () => Boolean(selectedModuleId()) && !expandCardOpen.disabled,
     getDetails: (id) => {
       const item = (organization.current?.items || organization.rawCards || []).find((entry) => entry.id === id);
       const reply = replies.get(id);
       return {
         requirement: cardRequirements.get(id),
-        answer: reply?.saved?.answer || reply?.answer.textContent || "",
+        answer: item?.localContent ? item.summary : reply?.saved?.answer || reply?.answer.textContent || "",
         originalAnswer: reply?.saved?.originalAnswer || "",
         question: reply?.payload.question || "",
         attachments: inheritedAttachments([id]),
@@ -7816,9 +7858,31 @@
     },
     onOverview: () => changeMindmapDepth(false),
     onExpandAll: () => changeMindmapDepth(true),
-    onAsk: () => askOpen.click(),
-    onSplit: () => openCardExpansion(),
-    onNavigate: (id) => locateCard(id, true),
+    onAsk: (id) => {
+      if (selected.length > 1 || selectMindmapCard(id)) askOpen.click();
+    },
+    onAskText: ({ id, quote }) => {
+      if (!selectMindmapCard(id, quote)) return;
+      askOpen.click();
+      status(`正在询问 ${id} 的选中原文；同时保留卡片说明和分支上下文。`);
+    },
+    onExtend: (id) => {
+      if (expandCardOpen.disabled || !selectMindmapCard(id)) return;
+      openCardExpansion();
+      status(`向下延伸 ${id}：填写方向后生成下级，继续挂在这张卡片下面。`);
+    },
+    onSplit: (id) => {
+      if (expandCardOpen.disabled || !selectMindmapCard(id)) return;
+      openCardExpansion();
+    },
+    onNavigate: (id) => {
+      if (activeRun || gesture || connectionDrag || deletionPreparing || storageStale) return;
+      const draft = question.value;
+      if (locateCard(id, true)) {
+        question.value = draft;
+        renderInspector();
+      }
+    },
     onShowCard: () => {
       const id = selectedModuleId();
       mindmap.setActive(false);
@@ -7874,6 +7938,8 @@
     }
   }
   appendPublishedGuide();
+  locateLinkedCard();
+  window.addEventListener("hashchange", locateLinkedCard);
   if (rebuiltProject) $("organization-status").textContent = rebuiltProject;
   if (projectBoardMessage) $("organization-status").textContent = projectBoardMessage;
   if (recoveredReset) status(`已恢复重置前的 ${saved.notes.length} 条批注和白板排布。`);

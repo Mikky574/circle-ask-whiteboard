@@ -171,6 +171,21 @@ body.mindmap-view #mindmap-inspector {
 #mindmap-inspector .mindmap-detail-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 17px; padding-top: 14px; border-top: 1px solid #dbe5d6; }
 #mindmap-inspector .tool-button { padding: 7px 10px; border: 1px solid #c1d2c1; border-radius: 6px; background: #fbfcf8; color: #29443d; font-size: 12px; }
 #mindmap-inspector .tool-button:hover:not(:disabled) { background: #e5eee0; }
+#mindmap-inspector .tool-button:disabled { opacity: .5; cursor: default; }
+#mindmap-inspector #mindmap-ask,
+#mindmap-inspector .mindmap-primary-action { background: #295c49; border-color: #295c49; color: #fff; }
+#mindmap-inspector :is(#mindmap-ask, .mindmap-primary-action):hover:not(:disabled) { background: #214b3c; }
+#mindmap-inspector .mindmap-question-hint { margin: 0 0 12px; font-size: 12px; }
+#mindmap-inspector [data-reader-content],
+#mindmap-inspector [data-reader-content] :is(p, li, span, code, pre, strong, h4) { -webkit-user-select: text; user-select: text; }
+#mindmap-inspector [data-reader-content] { cursor: text; touch-action: pan-y; }
+#mindmap-inspector [data-reader-content] ::selection { background: #c8e4d4; color: #183b2d; }
+#mindmap-inspector .mindmap-selection-panel { flex-basis: 100%; min-width: 0; margin: 3px 0 0; padding: 10px; border: 1px solid #b8cfbd; border-radius: 8px; background: #eef5eb; }
+#mindmap-inspector .mindmap-selection-panel[hidden] { display: none; }
+#mindmap-inspector :is(.mindmap-selection-source, .mindmap-selection-hint) { margin: 0; font-size: 11px; line-height: 1.65; color: #526b5b; }
+#mindmap-inspector .mindmap-selection-source { font-weight: 650; }
+#mindmap-inspector .mindmap-selection-quote { max-height: 84px; overflow: auto; margin: 6px 0; padding: 2px 0 2px 9px; border-left: 2px solid #83ab91; color: #2e4d3d; font-size: 12px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+#mindmap-inspector .mindmap-selection-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 #mindmap-inspector a { color: #286757; text-underline-offset: 3px; }
 #mindmap-inspector :is(img, video) { max-width: 100%; height: auto; }
 @media (min-width: 1100px) {
