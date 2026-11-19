@@ -115,7 +115,7 @@
     {
       "id": "L04", "area": "network", "level": "L1", "status": "PARTIAL",
       "precondition": "Fake timeout/malformed transport", "action": "Raise transport failures", "expected": "Safe error without test key; next lock test remains runnable",
-      "testRef": "acceptance/test_offline_acceptance.py::ApiLoopAcceptanceTests.test_transport_errors_redact_test_material; HttpBoundaryAcceptanceTests.test_turn_lock_returns_409_then_releases",
+      "testRef": "acceptance/test_offline_acceptance.py::ApiLoopAcceptanceTests.test_transport_errors_redact_test_material; HttpBoundaryAcceptanceTests.test_parallel_requests_have_independent_slots_and_cancellation",
       "coverage": "SIMULATED_L1_L2", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance records L04 and H02 = PASS", "notImplemented": "401/429 wording is old-test coverage; no real API."
     },
     {
@@ -132,8 +132,8 @@
     },
     {
       "id": "H02", "area": "http", "level": "L2", "status": "PARTIAL",
-      "precondition": "Fake adapter holds TURN_LOCK on temporary Controller", "action": "Send second then released third request", "expected": "409 then success after release",
-      "testRef": "acceptance/test_offline_acceptance.py::HttpBoundaryAcceptanceTests.test_turn_lock_returns_409_then_releases",
+      "precondition": "Four Codex and ZCode fixture requests are held on a temporary service", "action": "Send a fifth request, cancel one, and submit another", "expected": "The fifth is rejected at capacity, only the cancelled request stops, and another request can use the released slot",
+      "testRef": "acceptance/test_offline_acceptance.py::HttpBoundaryAcceptanceTests.test_parallel_requests_have_independent_slots_and_cancellation",
       "coverage": "SIMULATED_L2_LOOPBACK", "runCommand": "python -B docs/acceptance/run_offline_acceptance.py", "evidence": "offline-report.json newAcceptance record H02 = PASS", "notImplemented": "No real CLI/API operation is held."
     },
     {

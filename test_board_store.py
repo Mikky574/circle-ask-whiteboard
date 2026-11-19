@@ -383,10 +383,10 @@ class BoardStoreHTTPTests(unittest.TestCase):
 
     def test_http_endpoint_is_independent_of_active_model_and_protects_origin(self):
         import server
-        with patch.object(server, "TURN_LOCK") as busy:
+        with patch.object(server, "register_active_request") as reserve:
             status, response = self.post({"action": "list"})
             self.assertEqual((status, response), (200, {"boards": [], "deleted": []}))
-            busy.acquire.assert_not_called()
+            reserve.assert_not_called()
         status, _ = self.post({"action": "list"}, Origin="http://unrelated.test")
         self.assertEqual(status, 403)
         status, _ = self.post({"action": "list"}, **{"Sec-Fetch-Site": "cross-site"})

@@ -410,7 +410,7 @@ class CardExpansionAcceptanceTests(unittest.TestCase):
         context = server.parse_request(json.dumps(self.request_body()).encode())[2]
         first, second = self.candidate()["children"]
         for children in ([first], [{**first, "parentIndex": None}, second], [{**first, "title": "备份入口"}, second],
-                         [first, {**second, "summary": "详" * 121}], [first, {**second, "title": "查" * 33}],
+                         [first, {**second, "summary": "详" * 241}], [first, {**second, "title": "查" * 33}],
                          [first, {"title": second["title"]}], [first, {**second, "summary": ""}]):
             with self.subTest(children=children), self.assertRaises(ValueError):
                 server.structured_candidate(json.dumps({"children": children}), context)
@@ -996,6 +996,15 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
         self.assertEqual(events[-1]["type"], "done")
         self.assertEqual(events[-1]["changedFiles"], [])
 
+    def test_zcode_expansion_preserves_the_full_135_character_summary(self):
+        expansion = CardExpansionAcceptanceTests.request_body()
+        fields = {key: expansion[key] for key in ("scope", "anchor", "project")}
+        candidate = CardExpansionAcceptanceTests.candidate()
+        candidate["children"][1]["summary"] = "详" * 134 + "。"
+        events, sends = self.exchange(fields, json.dumps(candidate))
+        self.assertEqual(len(sends), 1)
+        self.assert_result(events, "children", candidate)
+
     def test_wrapped_json_and_scoped_repair_share_the_same_validation(self):
         with tempfile.TemporaryDirectory() as directory:
             repository = Path(directory).resolve()
@@ -1325,26 +1334,64 @@ class HttpBoundaryAcceptanceTests(unittest.TestCase):
             self.assertEqual(fake.validated, [])
 
     @case_ids("H02")
-    def test_turn_lock_returns_409_then_releases(self):
-        entered, release = threading.Event(), threading.Event()
-        fake = FakeEndpointAdapter([("status", {"text": "held"}), ("done", {"changedFiles": []})], entered, release)
-        body = valid_request()
-        with isolated_server() as (port, host), patch.object(server.FACTORY, "get", return_value=fake):
-            result = {}
+    def test_parallel_requests_have_independent_slots_and_cancellation(self):
+        ids = [f"parallel-{n:02}" for n in range(4)]
+        entered = {key: threading.Event() for key in ids}
+        release = {key: threading.Event() for key in ids}
+        result = {}
 
-            def first_request():
-                result["first"] = post(port, "/api/codex", body, good_headers(host, body))[0]
+        def fake_run_turn(handler, *, request, cancellation):
+            handler.headers_for(200, "application/x-ndjson; charset=utf-8")
+            if request.requestId in entered:
+                cancellation.register(release[request.requestId].set)
+                entered[request.requestId].set()
+                release[request.requestId].wait(6)
+            if not cancellation.cancelled():
+                handler.send_event("answer", text=request.requestId)
+                handler.send_event("done", changedFiles=[])
 
-            worker = threading.Thread(target=first_request)
-            worker.start()
-            self.assertTrue(entered.wait(2))
-            status, _, _ = post(port, "/api/codex", body, good_headers(host, body))
-            self.assertEqual(status, 409)
-            release.set()
-            worker.join(timeout=3)
-            self.assertEqual(result.get("first"), 200)
-            status, _, _ = post(port, "/api/codex", body, good_headers(host, body))
-            self.assertEqual(status, 200)
+        with isolated_server() as (port, host), \
+             patch.object(server, "CODEX_EXECUTABLE", "fake-codex"), \
+             patch.object(server, "ZCODE_COMMAND", ["fake-zcode"]), \
+             patch.object(server.WhiteboardHandler, "run_turn", fake_run_turn):
+            def send(request_id, backend="codex", mode="ask"):
+                body = json.dumps({"backend": backend, "mode": mode, "model": "", "question": "fixture",
+                                   "requestId": request_id}).encode()
+                return post(port, "/api/codex", body, good_headers(host, body))
+
+            def worker(key, backend):
+                result[key] = send(key, backend)
+
+            def cancel(key):
+                body = json.dumps({"requestId": key}).encode()
+                return post(port, "/api/cancel", body, good_headers(host, body))[0]
+
+            workers = []
+            try:
+                for index, key in enumerate(ids):
+                    thread = threading.Thread(target=worker, args=(key, "zcode" if index == 1 else "codex"))
+                    workers.append(thread)
+                    thread.start()
+                    self.assertTrue(entered[key].wait(2), f"{key} should enter while earlier requests are held")
+                self.assertEqual(send("parallel-overflow")[0], 409)
+                self.assertEqual(send(ids[0])[0], 409)
+                self.assertEqual(cancel(ids[1]), 202)
+                workers[1].join(3)
+                self.assertEqual(result[ids[1]][0], 200)
+                self.assertEqual(result[ids[1]][2], b"")
+                self.assertTrue(all(not release[key].is_set() for key in (ids[0], *ids[2:])))
+                self.assertEqual(send("parallel-edit", mode="edit")[0], 409)
+                self.assertEqual(send("parallel-recovered")[0], 200)
+            finally:
+                for event in release.values():
+                    event.set()
+                for thread in workers:
+                    thread.join(3)
+            for key in (ids[0], *ids[2:]):
+                code, _, raw = result[key]
+                self.assertEqual(code, 200)
+                self.assertEqual(json.loads(raw.splitlines()[0])["text"], key)
+            self.assertEqual(send("parallel-edit", mode="edit")[0], 200)
 
     @case_ids("H03")
     def test_fake_backends_have_same_ndjson_happy_path(self):

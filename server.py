@@ -72,7 +72,8 @@ EXPLANATION_CARD_RANGE = (2, 6)
 EXPLANATION_MAX_DEPTH = 3
 CARD_EXPANSION_RANGE = (2, 6)
 CARD_EXPANSION_TITLE_LIMIT = 32
-CARD_EXPANSION_SUMMARY_LIMIT = 120
+CARD_EXPANSION_SUMMARY_TARGET = 120
+CARD_EXPANSION_SUMMARY_LIMIT = 240
 ZCODE_JSON_OUTPUT_RULE = (
     "Final response format: emit exactly one JSON object for the whiteboard parser. "
     "The first non-whitespace character must be { and the last must be }. "
@@ -86,10 +87,14 @@ PLAN_ACTIONS = ("ask", "regenerate", "extend", "explain", "splitAnswer", "decomp
 MAX_BODY = 96 * 1024
 MAX_EVENT = 1024 * 1024
 TURN_TIMEOUT = 300
-TURN_LOCK = threading.Lock()
-ACTIVE_PROCESS = None
+MAX_CONCURRENT_REQUESTS = 4
+ACTIVE_PROCESSES = set()
 ACTIVE_REQUESTS = {}
 ACTIVE_REQUESTS_LOCK = threading.Lock()
+
+
+class RequestBusy(Exception):
+    pass
 REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{8,96}")
 API_BUDGET_CAP = {"timeoutSeconds": 180, "maxRounds": 12, "maxToolCalls": 40}
 CLI_BUDGET_CAP = {"timeoutSeconds": TURN_TIMEOUT}
@@ -1210,24 +1215,39 @@ def normalize_budget(value, backend):
 
 def register_active_request(request, adapter):
     """Make cancellation available before adapter.execute enters its transport."""
-    token = adapter.begin(request) if hasattr(adapter, "begin") else None
     with ACTIVE_REQUESTS_LOCK:
-        ACTIVE_REQUESTS[request.requestId] = adapter
-    return token
+        if request.requestId in ACTIVE_REQUESTS:
+            raise RequestBusy("此请求已经在运行。")
+        if len(ACTIVE_REQUESTS) >= MAX_CONCURRENT_REQUESTS:
+            raise RequestBusy(f"本机服务同时处理 {MAX_CONCURRENT_REQUESTS} 条请求，请等一条结束后再发送。")
+        if any(mode == "edit" for _, mode in ACTIVE_REQUESTS.values()) or (request.mode == "edit" and ACTIVE_REQUESTS):
+            raise RequestBusy("修改源码需要独立执行，请等其他请求完成后再试。")
+        token = adapter.begin(request) if hasattr(adapter, "begin") else None
+        ACTIVE_REQUESTS[request.requestId] = (adapter, request.mode)
+        return token
 
 
 def unregister_active_request(request, adapter):
     with ACTIVE_REQUESTS_LOCK:
-        if ACTIVE_REQUESTS.get(request.requestId) is adapter:
+        entry = ACTIVE_REQUESTS.get(request.requestId)
+        if entry is not None and entry[0] is adapter:
             ACTIVE_REQUESTS.pop(request.requestId, None)
 
 
 def cancel_active_request(request_id):
     with ACTIVE_REQUESTS_LOCK:
-        adapter = ACTIVE_REQUESTS.get(request_id)
-    if adapter is None:
+        entry = ACTIVE_REQUESTS.get(request_id)
+    if entry is None:
         return "missing"
+    adapter, _ = entry
     return "cancelled" if adapter.cancel(request_id) else "finished"
+
+
+def stop_active_processes():
+    with ACTIVE_REQUESTS_LOCK:
+        processes = tuple(ACTIVE_PROCESSES)
+    for process in processes:
+        terminate(process)
 
 
 def build_prompt(mode, question, context, *, source_access=True, repository_scope=False):
@@ -1328,7 +1348,8 @@ def build_prompt(mode, question, context, *, source_access=True, repository_scop
             f"{maximum} immediate child cards as one JSON object: "
             '{"children":[{"title":"...","summary":"..."}]}. '
             f"Use a distinct title of up to {CARD_EXPANSION_TITLE_LIMIT} characters and a nonempty summary of "
-            f"up to {CARD_EXPANSION_SUMMARY_LIMIT} characters. Write one specific fact, mechanism, or check per card. "
+            f"around {CARD_EXPANSION_SUMMARY_TARGET} characters, with a hard limit of {CARD_EXPANSION_SUMMARY_LIMIT}. "
+            "Write one specific fact, mechanism, or check per card. "
             "If the user specifies a focus, answer it directly. If the user's instruction is blank, choose the most "
             "useful unresolved detail from the selected card, its ancestor path and existing children. Prefer a "
             "specific condition, implementation step, or observable check. For a blank instruction, use the language of the selected card. "
@@ -1739,7 +1760,11 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             return
         path = self.path.partition("?")[0]
         if path == "/api/status":
-            self.send_json(200, {"available": bool(CODEX_EXECUTABLE), "busy": TURN_LOCK.locked(),
+            with ACTIVE_REQUESTS_LOCK:
+                active_count = len(ACTIVE_REQUESTS)
+            self.send_json(200, {"available": bool(CODEX_EXECUTABLE), "busy": active_count > 0,
+                                 "activeRequests": active_count, "maxConcurrentRequests": MAX_CONCURRENT_REQUESTS,
+                                 "maxExpansionSummaryLength": CARD_EXPANSION_SUMMARY_LIMIT,
                                  "backends": FACTORY.status(sys.modules[__name__]),
                                  "resetRecovered": RESET_RECOVERED.is_set()})
             return
@@ -1863,10 +1888,8 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                 self.send_json(200, result)
             return
 
-        if not TURN_LOCK.acquire(blocking=False):
-            self.send_json(409, {"type": "error", "text": "本地智能体正在处理另一条请求，请等它完成。"})
-            return
         schema_path = None
+        registered = False
         try:
             try:
                 if context.get("scope") == "organize":
@@ -1890,7 +1913,12 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                 return
             backend_request.schema_path = schema_path
             self._event_meta = {"requestId": backend_request.requestId, "baseRevision": backend_request.baseRevision}
-            self._cancellation = register_active_request(backend_request, adapter)
+            try:
+                self._cancellation = register_active_request(backend_request, adapter)
+            except RequestBusy as error:
+                self.send_json(409, {"type": "error", "text": str(error)})
+                return
+            registered = True
             adapter.execute(backend_request, self)
             if (not self.request_cancelled(getattr(self, "_cancellation", None)) and not self._terminal_sent
                     and self._response_started and not self.disconnected()):
@@ -1899,13 +1927,13 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             if self._response_started and not self._terminal_sent and not self.disconnected():
                 self.send_event("error", text="本地传输中断，未应用结果。", changedFiles=[])
         finally:
-            unregister_active_request(backend_request, adapter)
+            if registered:
+                unregister_active_request(backend_request, adapter)
             if schema_path is not None:
                 try:
                     schema_path.unlink(missing_ok=True)
                 except OSError:
                     pass
-            TURN_LOCK.release()
 
     def cancel_request(self, body):
         try:
@@ -2033,7 +2061,6 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                            request=request, cancellation=cancellation)
 
     def run_agent(self, backend, model, mode, question, context, schema_path, workspace, before, files, *, request=None, cancellation=None):
-        global ACTIVE_PROCESS
         if request is None:
             request = BackendRequest(backend, model, mode, question, context, files, budget=dict(CLI_BUDGET_CAP),
                                      schema_path=schema_path)
@@ -2077,7 +2104,8 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             self.send_event("error", text=f"无法启动本机 {label} CLI。", changedFiles=[])
             return
 
-        ACTIVE_PROCESS = process
+        with ACTIVE_REQUESTS_LOCK:
+            ACTIVE_PROCESSES.add(process)
         if cancellation is not None:
             cancellation.register(lambda: terminate(process))
         events = queue.SimpleQueue()
@@ -2170,7 +2198,8 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                     timed_out = backend == "codex" or not answer
         finally:
             terminate(process)
-            ACTIVE_PROCESS = None
+            with ACTIVE_REQUESTS_LOCK:
+                ACTIVE_PROCESSES.discard(process)
 
         if cancelled():
             return
@@ -2236,6 +2265,4 @@ if __name__ == "__main__":
         except KeyboardInterrupt:
             pass
         finally:
-            process = ACTIVE_PROCESS
-            if process is not None:
-                terminate(process)
+            stop_active_processes()

@@ -22,6 +22,8 @@ const privateChild = "PRIVATE_DRAFT_CHILD_CONTEXT";
 const bodyA = "甲".repeat(650) + tailA;
 const bodyB = "乙".repeat(650) + tailB;
 const requests = [];
+const heldQuestions = new Map();
+const cancellations = [];
 const browserErrors = [];
 const unexpectedRequests = [];
 const records = new Map();
@@ -46,7 +48,8 @@ async function relay(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === "/favicon.ico") { res.writeHead(204); res.end(); return; }
   if (url.pathname === "/api/status") {
-    json(res, { busy: false, backends: [{ id: "codex", available: true, installed: true, models: ["context-fixture"] }] });
+    json(res, { busy: false, maxConcurrentRequests: 4, maxExpansionSummaryLength: 240,
+      backends: ["codex", "zcode"].map(id => ({ id, available: true, installed: true, models: ["context-fixture"] })) });
     return;
   }
   if (url.pathname === "/api/local-projects") { json(res, { projects: [] }); return; }
@@ -69,15 +72,36 @@ async function relay(req, res) {
     } else json(res, { text: "Unsupported test store action" }, 400);
     return;
   }
+  if (url.pathname === "/api/cancel" && req.method === "POST") {
+    const { requestId } = await body(req);
+    cancellations.push(requestId);
+    json(res, { requestId, cancelled: true }, 202);
+    return;
+  }
   if (url.pathname === "/api/codex" && req.method === "POST") {
     const payload = await body(req);
     requests.push(payload);
-    const text = payload.scope === "plan" ? '{"action":"ask"}' : `MOCK_ANSWER_${requests.length}`;
     res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
-    for (const event of [{ type: "answer", text }, { type: "done" }]) {
-      res.write(JSON.stringify({ ...event, requestId: payload.requestId, baseRevision: payload.baseRevision }) + "\n");
+    const stream = event => res.write(JSON.stringify({ ...event, requestId: payload.requestId, baseRevision: payload.baseRevision }) + "\n");
+    if (payload.question.startsWith("并发验收-")) {
+      stream({ type: "status", text: "正在等待验收放行" });
+      heldQuestions.set(payload.question, { payload, complete() {
+        stream({ type: "answer", text: `答复 ${payload.question}` });
+        stream({ type: "done", changedFiles: [] });
+        res.end();
+      } });
+    } else {
+      if (payload.scope === "expandCard") {
+        stream({ type: "children", children: [
+          { title: "短摘要卡片", summary: "行为与限制" },
+          { title: "完整摘要卡片", summary: "详".repeat(134) + "。" },
+        ] });
+      } else {
+        stream({ type: "answer", text: payload.scope === "plan" ? '{"action":"ask"}' : `MOCK_ANSWER_${requests.length}` });
+      }
+      stream({ type: "done", changedFiles: [] });
+      res.end();
     }
-    res.end();
     return;
   }
   if (url.pathname.startsWith("/api/")) {
@@ -243,6 +267,72 @@ try {
     assert.ok(JSON.stringify(turn.project.draftBranch).includes(privateChild));
   }
   pass("A single selected draft still supplies its own branch and descendants");
+
+  async function startQuestion(card, text) {
+    await selectCards(page, [card]);
+    await page.locator("#ask-open").click();
+    await page.locator("#question").fill(text);
+    await page.locator("#submit-question").click();
+    const task = page.locator("#running-questions li").filter({ hasText: text });
+    await task.waitFor({ state: "visible" });
+    return task.getAttribute("data-question-run");
+  }
+  async function switchBackend(id) {
+    const settings = page.locator(".connection-settings");
+    if (!(await settings.getAttribute("open"))) await settings.locator("summary").click();
+    await page.locator("#backend-select").selectOption(id);
+    await settings.locator("summary").click();
+  }
+  const labelA = "并发验收-第一条 Codex";
+  const labelB = "并发验收-第二条 ZCode";
+  const labelC = "并发验收-第三条 Codex";
+  const noteA = await startQuestion("E04", labelA);
+  await switchBackend("zcode");
+  const noteB = await startQuestion(idB, labelB);
+  await switchBackend("codex");
+  const noteC = await startQuestion(idA, labelC);
+  await page.waitForFunction(() => document.querySelectorAll("#running-questions li").length === 3);
+  const runA = heldQuestions.get(labelA);
+  const runB = heldQuestions.get(labelB);
+  const runC = heldQuestions.get(labelC);
+  assert.deepEqual([runA, runB, runC].map(run => run.payload.backend), ["codex", "zcode", "codex"]);
+  assert.equal(new Set([runA, runB, runC].map(run => run.payload.requestId)).size, 3);
+  const note = id => page.locator(`[data-element-id="${id}"]`);
+  await selectCards(page, ["E04"]);
+  await page.locator("#ask-open").click();
+  await page.locator("#question").fill("正在写的新问题");
+  await page.getByRole("button", { name: `停止问答 ${noteB}` }).click();
+  await page.waitForFunction(id => document.querySelector(`[data-element-id="${id}"]`).getAttribute("aria-busy") === "false", noteB);
+  assert.deepEqual(cancellations, [runB.payload.requestId]);
+  assert.match(await note(noteB).locator(".thread-status").textContent(), /停止/);
+  runB.complete();
+  runC.complete();
+  await note(noteC).locator(".thread-answer").getByText(`答复 ${labelC}`).waitFor();
+  assert.equal(await note(noteA).getAttribute("aria-busy"), "true");
+  runA.complete();
+  await note(noteA).locator(".thread-answer").getByText(`答复 ${labelA}`).waitFor();
+  await page.locator("#running-questions").waitFor({ state: "hidden" });
+  assert.equal(await page.locator("#question").inputValue(), "正在写的新问题");
+  await page.evaluate(() => window.BoardSync.flush());
+  await page.reload({ waitUntil: "networkidle" });
+  await ready(page);
+  for (const [id, anchor, question] of [[noteA, "E04", labelA], [noteC, idA, labelC]]) {
+    assert.equal(await note(id).getAttribute("data-anchor"), anchor);
+    assert.equal(await note(id).locator(".thread-answer").textContent(), `答复 ${question}`);
+  }
+  assert.equal(await note(noteB).locator(".thread-answer").textContent(), "");
+  assert.match(await note(noteB).locator(".thread-status").textContent(), /停止/);
+  pass("Three overlapping CLI questions finish independently, cancellation targets one, and responses retain their anchors on reload");
+
+  await switchBackend("zcode");
+  await selectCards(page, ["E04"]);
+  await page.locator("#expand-card-open").click();
+  await page.locator("#expand-card-submit").click();
+  await page.waitForFunction(() => [...document.querySelectorAll(".organized-title")].some(element => element.textContent === "完整摘要卡片"));
+  const expansion = (await readItems(page)).find(item => item.title === "完整摘要卡片");
+  assert.equal(expansion.summary, "详".repeat(134) + "。");
+  assert.equal(expansion.parentId, "E04");
+  pass("A 135-character ZCode expansion summary is saved intact under its source card");
   assert.deepEqual(browserErrors, []);
   assert.deepEqual(unexpectedRequests, []);
   if (baseline) assert.ok(baselineReplacements > 0);

@@ -572,6 +572,7 @@
             <button id="undo-organization" type="button" class="tool-button context-action" hidden>撤销整理</button>
             <button id="reload-board" type="button" class="tool-button context-action" hidden>刷新白板</button>
           </div>
+          <ul id="running-questions" aria-label="进行中的问答" hidden></ul>
           <p id="organization-status" role="status"></p>
           <details id="execution-trace" class="sidebar-disclosure" hidden>
             <summary>执行过程 <span id="execution-trace-status" role="status"></span></summary>
@@ -812,7 +813,7 @@
         {"id":"E18","parentId":"E06","title":"切换白板与本机状态","summary":"index.html 提供切换入口。board_sync.js 先按板号从 /api/board-store 读取服务文档，再由 memory.js 的 selectActiveBoard 选择当前板。浏览器缓存承接同步交互，写入经版本校验保存到 SQLite，空闲画布自动载入外部更新。","category":"reference","folded":true,"sources":["index.html","memory.js","organization.js","app.js"]},
         {"id":"E19","parentId":"E18","title":"讨论记录和组织快照如何协作","summary":"BoardMemory 持久化批注、锚点、项目资料、图钉、已删除节点和待修复信息。BoardOrganization 持久化当前树、上一版、排布和折叠。换模板会先备份，两个写入失败时尝试恢复旧值。","category":"reference","folded":true,"sources":["memory.js","organization.js"]},
         {"id":"E20","parentId":"E18","title":"删除、局部修复和恢复","summary":"deleteSelection 以显式选中的节点做删除计划，记录撤销快照，并清除旧锚点引用。有关联节点时保留待修复记录，整理请求只带受影响的快照。本机可以恢复这次删除和对应的状态。","category":"reference","folded":true,"sources":["app.js","memory.js","organization.js"]},
-        {"id":"E21","parentId":"E07","title":"HTTP 入口与统一请求","summary":"server.py 监听 127.0.0.1:8791。WhiteboardHandler 校验 Host、Origin、类型和长度，再把 POST /api/codex 解析成 BackendRequest。BackendFactory 选择 API、Codex 或 ZCode，权限和预算由本机校验。一次执行由 TURN_LOCK 管理。","category":"reference","folded":true,"sources":["server.py","backends.py"]},
+        {"id":"E21","parentId":"E07","title":"HTTP 入口与统一请求","summary":"WhiteboardHandler 校验 Host、Origin、类型和长度，再把 POST /api/codex 解析成 BackendRequest。BackendFactory 选择 API、Codex 或 ZCode。本机服务最多同时处理四条请求，各自按请求 ID 跟踪和取消。源码修改须单独执行。","category":"reference","folded":true,"sources":["server.py","backends.py"]},
         {"id":"E22","parentId":"E21","title":"意图、上下文和返回形状","summary":"前端 planRequest 先走 scope=plan，再按问答、拆分、整理或改码构造实际请求。build_prompt 区分当前指令和引用数据。parse_decomposition 约束单目标和路径，parse_children 校验 1 至 6 项任务的形状、长度和重名。验收项能否实际核对要结合源码。","category":"reference","folded":true,"sources":["app.js","server.py"]},
         {"id":"E23","parentId":"E07","title":"API 直连怎样使用上下文","summary":"api_backend.py 验证地址与 Key，把提示和附件构造成 Chat Completions 消息。普通问答收文本，拆分返回 children。带白板快照的实际执行可以读取草稿，整理权限允许写工具。API 获取的是提交的内容和附件。","category":"reference","folded":true,"sources":["api_backend.py","server.py","backends.py"]},
         {"id":"E24","parentId":"E23","title":"工具草稿怎样变成可提交的图","summary":"BoardTools 以显式快照建立草稿，每步检查工具参数、预留 ID、父边和图钉约束。api_backend.run_api 按批处理工具调用，遇到失败恢复该批前的草稿。有效终态由本机验证后发送 map，浏览器核对修订后应用。","category":"reference","folded":true,"sources":["board_tools.py","api_backend.py","server.py","app.js"]},

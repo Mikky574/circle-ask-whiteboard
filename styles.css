@@ -1374,6 +1374,10 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 .adaptive-reorder-action { grid-column: 1 / -1; }
 .context-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
 .context-run-actions:not(:has(button:not([hidden]))) { display: none; }
+#running-questions { list-style: none; margin: 8px 0; padding: 0; }
+#running-questions li { display: flex; align-items: center; gap: 8px; padding: 5px 0; font-size: 12px; }
+#running-questions li span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+#running-questions li button { flex-shrink: 0; }
 .context-action { padding-inline: 9px; border-color: #496354; background: #25372d; color: #dcece1; }
 .context-action[hidden] { display: none; }
 .context-action:disabled { border-color: #394a41; background: #202d26; color: #a0b0a4; }

@@ -244,6 +244,11 @@
   let rawRects = new Map();
   let cardBoxes = [];
   let activeRun = null;
+  const questionRuns = new Map();
+  let maxConcurrentRequests = 4;
+  let maxExpansionSummaryLength = 240;
+  let traceOwner = null;
+  let composerSubmission = 0;
   let relayAvailable = false;
   let relayState = "connecting";
   let backends = new Map();
@@ -1092,7 +1097,8 @@
     const label = backendLabels[connection.backend];
     relayAvailable = selectedBackend?.available === true;
     backendSelect.disabled = modelInput.disabled = $("api-url").disabled = $("api-key").disabled = Boolean(activeRun || deletionPreparing);
-    $("connection-label").textContent = activeRun ? `${label} 正在处理` : relayAvailable ? (connection.backend === "api" ? "API 适配器可用（配置/连通性未验证）" : `本机 ${label} 已安装（登录未验证）`) :
+    $("connection-label").textContent = activeRun ? `${backendLabels[activeRun.target?.backend] || label} 正在处理`
+      : questionRuns.size ? `${questionRuns.size} 条问答正在运行` : relayAvailable ? (connection.backend === "api" ? "API 适配器可用（配置/连通性未验证）" : `本机 ${label} 已安装（登录未验证）`) :
       relayState === "connecting" ? "正在连接本地服务…" : relayState === "offline" ? "本地服务未连接" : `${label} 当前不可用`;
     $("connection-label").closest(".demo-label").classList.toggle("is-disconnected", !relayAvailable);
   }
@@ -2120,12 +2126,41 @@
     return activeRun?.mode === "upload" || activeRun?.mode === "plan";
   }
 
+  function questionUnavailable() {
+    return activeRun || deletionPreparing || sourceChanged || storageStale || !relayAvailable ||
+      (window.BoardSync && !window.BoardSync.writable) || questionRuns.size >= maxConcurrentRequests;
+  }
+
+  function renderRunningQuestions() {
+    const list = $("running-questions");
+    const single = activeRun || (questionRuns.size === 1 ? questionRuns.values().next().value : null);
+    stopAi.hidden = !single;
+    stopAi.disabled = !single || Boolean(single.stopping);
+    stopAi.textContent = single?.stopping ? "正在停止…" : "停止";
+    list.hidden = !questionRuns.size;
+    for (const run of questionRuns.values()) {
+      if (!run.row) {
+        const id = run.reply.note.dataset.elementId;
+        run.row = appendText(list, "li", "", "");
+        run.row.dataset.questionRun = id;
+        appendText(run.row, "span", "", `${backendLabels[run.target.backend]} · ${id} · ${excerpt(run.question, 72)}`);
+        run.stopButton = appendText(run.row, "button", "tool-button", "停止");
+        run.stopButton.type = "button";
+        run.stopButton.setAttribute("aria-label", `停止问答 ${id}`);
+        run.stopButton.addEventListener("click", () => void stopRun(run));
+      }
+      run.stopButton.hidden = single === run;
+      run.stopButton.disabled = Boolean(run.stopping);
+      run.stopButton.textContent = run.stopping ? "正在停止…" : "停止";
+    }
+  }
+
   function renderInspector() {
     $("context-title").textContent = mindmap?.active ? "节点详情" : "白板操作";
     if ($("allow-source-edit").checked && sourceEditAuthorization !== sourceEditContext()) clearSourceEditAuthorization();
     renderConnection();
     renderRepoChapter();
-    boardControls.setBusy(Boolean(activeRun || deletionPreparing));
+    boardControls.setBusy(Boolean(activeRun || questionRuns.size || deletionPreparing));
     const text = question.value.trim();
     const inherited = inheritedAttachments(selected.map((item) => item.id));
     const nodes = boardForOrganization();
@@ -2140,13 +2175,13 @@
     $("delete-selection").setAttribute("aria-busy", String(deleting));
     renderDeletionStatus(deleting);
     $("undo-delete").hidden = !deletionUndo;
-    $("undo-delete").disabled = Boolean(activeRun || deleting);
-    $("undo-delete").textContent = deleting ? "处理中，暂不可撤销" : activeRun ? "回答结束后可撤销删除" :
+    $("undo-delete").disabled = Boolean(activeRun || questionRuns.size || deleting);
+    $("undo-delete").textContent = deleting ? "处理中，暂不可撤销" : (activeRun || questionRuns.size) ? "回答结束后可撤销删除" :
       pendingRepair ? "撤销删除（含待处理任务）" : "撤销本次删除";
     $("undo-delete").title = "恢复本次删除前的节点和关联，包含 AI 的归档与重新挂接";
     $("repair-delete").hidden = !pendingRepair;
-    $("repair-delete").disabled = Boolean(activeRun || deleting);
-    const unavailable = Boolean(activeRun || deleting || sourceChanged || storageStale || syncBlocked || !relayAvailable);
+    $("repair-delete").disabled = Boolean(activeRun || questionRuns.size || deleting);
+    const unavailable = Boolean(activeRun || questionRuns.size || deleting || sourceChanged || storageStale || syncBlocked || !relayAvailable);
     expandCardOpen.disabled = unavailable;
     expandCardFocus.readOnly = Boolean(activeRun?.expandCard);
     expandCardSubmit.disabled = unavailable;
@@ -2157,11 +2192,12 @@
     $("ask-board").disabled = preparing || mode === "connect";
     $("ask-independent").disabled = preparing || mode === "connect";
     submitQuestion.disabled = mode === "connect" || !selected.length || (!text && !draftAttachments.length) ||
-      unavailable || attachmentCount(inherited) > attachmentLimit;
-    for (const reply of replies.values()) reply.retryButton.disabled = unavailable;
-    stopAi.hidden = !activeRun;
-    stopAi.disabled = !activeRun || Boolean(activeRun.stopping);
-    stopAi.textContent = activeRun?.stopping ? "正在停止…" : "停止";
+      Boolean(questionUnavailable()) || attachmentCount(inherited) > attachmentLimit;
+    submitQuestion.title = questionRuns.size >= maxConcurrentRequests
+      ? `已有 ${maxConcurrentRequests} 条问答在运行，请等一条完成后发送` : "";
+    for (const reply of replies.values()) reply.retryButton.disabled = Boolean(questionUnavailable() ||
+      reply.note.getAttribute("aria-busy") === "true");
+    renderRunningQuestions();
     renderAttachmentDraft(inherited);
     organize.disabled = unavailable || !organizationEngine || !nodes.length;
     $("empty-canvas-start").hidden = !customBoard || Boolean(nodes.length) || !workbenchCardForm.hidden;
@@ -2208,10 +2244,10 @@
     adaptiveReorder.textContent = quickRoots.length ? "四向快速重排选中分支" : "四向快速重排整张白板";
     adaptiveReorder.title = quickRoots.length ? "在父卡周围重新排布可见下级" : "根据当前画布宽高重新排布可见分支";
     $("install-project-template").disabled = $("restore-project-template").disabled =
-      $("restore-project-guide").disabled = Boolean(activeRun || deleting || storageStale);
+      $("restore-project-guide").disabled = Boolean(activeRun || questionRuns.size || deleting || storageStale);
     const rawLinkUndo = !organization.current && organization.rawLinkUndo;
     undoOrganization.hidden = !organization.undoAvailable && !organization.quickUndo && !rawLinkUndo;
-    undoOrganization.disabled = storageStale || Boolean((activeRun || deleting) && !organization.quickUndo);
+    undoOrganization.disabled = storageStale || Boolean((activeRun || questionRuns.size || deleting) && !organization.quickUndo);
     undoOrganization.textContent = organization.quickUndo ? "撤销重排" : rawLinkUndo ? "撤销连线" : "撤销整理";
     if (mindmap?.active && mindmapUndo) {
       undoOrganization.hidden = false;
@@ -2220,7 +2256,7 @@
     }
     $("adopt-selection").disabled = !selected.length;
     const editableSource = sourceEditAvailable();
-    $("allow-source-edit").disabled = Boolean(activeRun || storageStale || !editableSource);
+    $("allow-source-edit").disabled = Boolean(activeRun || questionRuns.size || storageStale || !editableSource);
     $("source-edit-consent").hidden = !editableSource || Boolean(selected[0]?.independent);
     if (!editableSource) clearSourceEditAuthorization();
     question.placeholder = selected[0]?.independent ? "直接输入问题，回答先留在草稿中…" : selectedReply()
@@ -2234,8 +2270,7 @@
     renderConnectionControls();
   }
 
-  async function stopActiveRun() {
-    const run = activeRun;
+  async function stopRun(run) {
     if (!run || run.stopping) return;
     run.stopPromise = runGate.stop(run, async () => {
       if (!run.requestId) return;
@@ -2257,7 +2292,7 @@
   }
 
   function acceptsRunEvent(run) {
-    return runGate.accepts(run, activeRun);
+    return runGate.accepts(run, run.parallel ? questionRuns.get(run.requestId) : activeRun);
   }
 
   function applySelection(items, point) {
@@ -3501,7 +3536,7 @@
     for (const element of boardElements()) {
       const item = plan.get(element.dataset.elementId);
       const reply = replies.get(element.dataset.elementId);
-      if (reply && activeRun?.reply === reply) continue;
+      if (reply && (activeRun?.reply === reply || reply.note.getAttribute("aria-busy") === "true")) continue;
       if (reply?.saved) {
         reply.questionLine.textContent = item?.localContent ? item.title : reply.payload.question;
         reply.answer.textContent = item?.localContent ? item.summary : reply.saved.answer;
@@ -3977,6 +4012,8 @@
     const panel = $("execution-trace");
     const label = backendLabels[request.backend];
     const show = request.backend === "codex" || request.backend === "zcode";
+    traceOwner = run;
+    const ownsTrace = () => traceOwner === run && show;
     const trace = { panel, list: $("execution-trace-list"), empty: $("execution-trace-empty"), steps: new Map() };
     const statusLine = $("execution-trace-status");
     const repair = $("execution-trace-repair");
@@ -3995,7 +4032,7 @@
     statusLine.textContent = `${label} · 运行中`;
     let terminal = "";
     const showFailure = (message, preview) => {
-      if (!show || request.scope === "explain" || !acceptsRunEvent(run)) return;
+      if (!ownsTrace() || request.scope === "explain" || !acceptsRunEvent(run)) return;
       reason.textContent = message;
       failure.hidden = false;
       const text = typeof preview === "string" ? preview.slice(0, 2800) : "";
@@ -4010,11 +4047,11 @@
       });
       await readEvents(response, request, (event) => {
         if (event.type === "trace") {
-          if (show && event.requestId === request.requestId && acceptsRunEvent(run)) showTraceStep(trace, event);
+          if (ownsTrace() && event.requestId === request.requestId && acceptsRunEvent(run)) showTraceStep(trace, event);
           return;
         }
         if (event.type === "done" || event.type === "error") terminal = event.type;
-        if (show && acceptsRunEvent(run) && event.type === "status" && event.phase === "repair") {
+        if (ownsTrace() && acceptsRunEvent(run) && event.type === "status" && event.phase === "repair") {
           repair.textContent = event.text;
           repair.hidden = false;
           panel.open = true;
@@ -4027,7 +4064,7 @@
       if (failure.hidden) showFailure(error.message);
       throw error;
     } finally {
-      if (show && activeRun === run) {
+      if (ownsTrace()) {
         statusLine.textContent = `${label} · ${run.stopping ? "已停止" : terminal === "done" ? "执行结束" : "执行失败"}`;
         if (!repair.hidden) repair.textContent = "本轮已尝试修正输出格式。";
         trace.empty.textContent = "本轮没有收到工具操作。";
@@ -4175,8 +4212,10 @@
     }
     const controller = new AbortController();
     const requestId = newRequestId();
-    const run = { controller, mode, target, requestId, stopping: false, reply };
-    activeRun = run;
+    const run = { controller, mode, target, requestId, stopping: false, reply,
+      parallel: mode === "ask", question: payload.question };
+    if (run.parallel) questionRuns.set(requestId, run);
+    else activeRun = run;
     const nodes = boardForOrganization();
     const parent = nodes.find(({ id }) => id === note.dataset.elementId)?.layoutParentId;
     if (mode === "ask" && !explaining) {
@@ -4232,7 +4271,7 @@
       else organizedSummary?.remove();
       const stored = retainAttempt(delivery, message);
       status(message + (stored ? "" : " 浏览器未能保存本次状态，本页仍可查看。"));
-      askFeedback(message, delivery === "failed");
+      if (traceOwner === run && askComposer.hidden) askFeedback(message, delivery === "failed");
     }
 
     try {
@@ -4246,9 +4285,9 @@
           return;
         }
         if (event.type === "context") {
-          $("sent-context").textContent = event.text;
+          if (traceOwner === run) $("sent-context").textContent = event.text;
         } else if (event.type === "status") {
-          status(event.text);
+          if (traceOwner === run) status(event.text);
           if (!nextAnswer) reply.deliveryLine.textContent = event.text;
         } else if (event.type === "answer" && !explaining) {
           nextAnswer = event.text;
@@ -4319,24 +4358,27 @@
     } finally {
       if (run.stopping) {
         await run.stopPromise;
-        if (activeRun === run) {
+        if (activeRun === run || questionRuns.get(requestId) === run) {
           showUnfinished("stopped", run.editReport || changes || "已停止本轮，可以重试。");
         }
       }
       note.classList.remove("is-waiting", "is-streaming");
       note.setAttribute("aria-busy", "false");
-      if (deletionUndo?.activeRequest === requestId) {
+      if (deletionUndo?.activeRequests.includes(requestId)) {
         const index = deletionUndo.notes.findIndex(({ id }) => id === note.dataset.elementId);
         if (index >= 0 && reply.saved) deletionUndo.notes[index] = structuredClone(reply.saved);
         const items = deletionUndo.organization.current?.items;
         const itemIndex = items?.findIndex(({ id }) => id === note.dataset.elementId);
         if (itemIndex >= 0 && organizedItem) items[itemIndex] = structuredClone(organizedItem);
-        delete deletionUndo.activeRequest;
+        deletionUndo.activeRequests = deletionUndo.activeRequests.filter((id) => id !== requestId);
       }
+      questionRuns.delete(requestId);
+      run.row?.remove();
       if (activeRun === run) activeRun = null;
       refreshViewLayout(false);
-      if (explanationSaved) focusExplanation(reply, visibleRect(parent));
+      if (explanationSaved && traceOwner === run && askComposer.hidden && !gesture) focusExplanation(reply, visibleRect(parent));
       renderBoardCount();
+      renderInspector();
     }
   }
 
@@ -5046,7 +5088,7 @@
   }
 
   async function fileOrphanCards(ids, { integrate = false } = {}) {
-    if (activeRun || gesture || deletionPreparing || sourceChanged || !relayAvailable || !memory.storageIsCurrent()) return;
+    if (activeRun || questionRuns.size || gesture || deletionPreparing || sourceChanged || !relayAvailable || !memory.storageIsCurrent()) return;
     const report = (message) => {
       $("organization-status").textContent = message;
       status(message);
@@ -5255,7 +5297,7 @@
 
   async function organizeSelectedBranch(instruction = "", target = connectionTarget(), attachments = [], regenerate = false) {
     const rootId = selectedModuleId();
-    if (!rootId || activeRun || gesture || deletionPreparing || sourceChanged || !relayAvailable || !memory.storageIsCurrent()) return false;
+    if (!rootId || activeRun || questionRuns.size || gesture || deletionPreparing || sourceChanged || !relayAvailable || !memory.storageIsCurrent()) return false;
     const allNodes = boardForOrganization();
     const items = hierarchyItems(allNodes);
     const ids = subtreeIds(items, rootId);
@@ -5366,7 +5408,7 @@
   }
 
   async function organizeBoard(instruction, repair = false, submission = null, { initialize = false } = {}) {
-    if (activeRun || gesture?.drag || (!repair && (sourceChanged || deletionPreparing)) || !relayAvailable || !organizationEngine) return false;
+    if (activeRun || questionRuns.size || gesture?.drag || (!repair && (sourceChanged || deletionPreparing)) || !relayAvailable || !organizationEngine) return false;
     const allNodes = boardForOrganization();
     const target = submission?.target || connectionTarget();
     if (initialize && (!customBoard || allNodes.length || target.backend === "api" || storageStale)) return false;
@@ -5626,7 +5668,8 @@
     if (gesture || connectionDrag) return "结束当前拖动后可删除。";
     if (deletionPreparing || activeRun?.repair) return "AI 正在整理关系，可先停止。";
     if (activeRun && !activeRun.protectedCards) return "当前操作结束或停止后可删除。";
-    if (activeRun && plan.removed.some((id) => activeRun.protectedCards.has(id))) {
+    if ([...questionRuns.values(), ...(activeRun ? [activeRun] : [])].some((run) =>
+      !run.protectedCards || plan.removed.some((id) => run.protectedCards.has(id)))) {
       return "正在回答这张卡或其下级，结束或停止后可删除。";
     }
     if (pendingRepair && plan.affected.length) return "请先处理上次删除的待整理关系。";
@@ -5640,7 +5683,7 @@
     deletionUndo = structuredClone({
       notes: savedNotes(), organization, deletedIds: [...deletedIds],
       pinnedIds: [...pinnedIds], decisions: project.decisions, pendingRepair,
-      activeRequest: activeRun?.requestId,
+      activeRequests: [...questionRuns.keys(), ...(activeRun ? [activeRun.requestId] : [])],
     });
     // Persist existing coordinates so deletion and later reloads cannot compact the board.
     const positions = organization.current ? organization.current.positions : organization.rawPositions;
@@ -5744,7 +5787,7 @@
     const organized = saveOrganization();
     applyOrganization(true);
     renderProject();
-    const repairDeferred = pendingRepair && (activeRun || !plan.affected.length);
+    const repairDeferred = pendingRepair && (activeRun || questionRuns.size || !plan.affected.length);
     deletionMessage = `已删除 ${plan.removed.join("、")}。` + (repairDeferred ? "其余关系可在空闲时手动整理。"
       : pendingRepair ? "正在准备 AI 局部整理…" : "关联已在本地更新。") +
       (stored && organized ? "" : " 浏览器存储不可用，刷新可能丢失更改。");
@@ -5753,7 +5796,7 @@
   }
 
   async function repairDeletion() {
-    if (!pendingRepair || activeRun || deletionPreparing) return;
+    if (!pendingRepair || activeRun || questionRuns.size || deletionPreparing) return;
     deletionPreparing = true;
     deletionMessage = "节点已删除，正在连接 AI 进行局部整理…";
     renderInspector();
@@ -5773,7 +5816,7 @@
   $("delete-selection").addEventListener("click", () => deleteSelection());
   $("repair-delete").addEventListener("click", () => void repairDeletion());
   $("undo-delete").addEventListener("click", () => {
-    if (!deletionUndo || activeRun || deletionPreparing) return;
+    if (!deletionUndo || activeRun || questionRuns.size || deletionPreparing) return;
     const snapshot = deletionUndo;
     deletionUndo = null;
     for (const reply of replies.values()) reply.note.remove();
@@ -5879,7 +5922,7 @@
 
   async function splitSelectedModule(minimumDepth = 1) {
     const id = selectedModuleId();
-    if (!id || activeRun || gesture || deletionPreparing || sourceChanged || !relayAvailable || !memory.storageIsCurrent()) return;
+    if (!id || activeRun || questionRuns.size || gesture || deletionPreparing || sourceChanged || !relayAvailable || !memory.storageIsCurrent()) return;
     const note = selectedReply();
     const task = organization.current?.items.find((item) => item.id === id)?.taskDetails;
     if (note?.saved?.outline || (note && !note.saved?.answer)) {
@@ -6335,7 +6378,7 @@
   }
 
   async function expandSelectedCard(targetId, focus) {
-    if (activeRun || gesture || deletionPreparing || sourceChanged || storageStale || !relayAvailable ||
+    if (activeRun || questionRuns.size || gesture || deletionPreparing || sourceChanged || storageStale || !relayAvailable ||
         !memory.storageIsCurrent()) return;
     const report = (message) => {
       status(message);
@@ -6394,7 +6437,7 @@
       const additions = children.map((child, index) => {
         const title = typeof child?.title === "string" ? child.title.trim() : "";
         const summary = typeof child?.summary === "string" ? child.summary.trim() : "";
-        if (!title || Array.from(title).length > 32 || !summary || Array.from(summary).length > 120 ||
+        if (!title || Array.from(title).length > 32 || !summary || Array.from(summary).length > maxExpansionSummaryLength ||
             titles.has(titleKey(title))) {
           throw new Error("下级卡片含重复标题或无效正文，请调整问题后重试。");
         }
@@ -6935,8 +6978,8 @@
   }
 
   allowWorkspaceNavigation = () => {
-    if (activeRun || deletionPreparing) {
-      $("board-lifecycle-status").textContent = activeRun ? "请等待当前任务完成，或先点「停止」再离开。"
+    if (activeRun || questionRuns.size || deletionPreparing) {
+      $("board-lifecycle-status").textContent = (activeRun || questionRuns.size) ? "请等待任务完成，或先停止运行中的任务再离开。"
         : "正在保存删除结果，请稍后再离开。";
       if (!stopAi.hidden && !stopAi.disabled) stopAi.focus();
       return false;
@@ -6988,7 +7031,7 @@
     for (const command of canvasBranchCommands.keys()) {
       const button = $(command);
       button.hidden = Boolean(activeRun || edge || !element);
-      button.disabled = sourceChanged || !relayAvailable;
+      button.disabled = sourceChanged || !relayAvailable || Boolean(questionRuns.size);
     }
     $("canvas-menu-pin").hidden = Boolean(activeRun) || !element;
     $("canvas-menu-pin").textContent = pinnedIds.has(id) ? "取消固定" : "固定卡片";
@@ -7306,7 +7349,7 @@
   showTemplatePanel();
   window.addEventListener("hashchange", showTemplatePanel);
   const replaceBoardFromTemplate = (action) => {
-    if (activeRun || gesture || deletionPreparing) return;
+    if (activeRun || questionRuns.size || gesture || deletionPreparing) return;
     try {
       if (action()) location.reload();
       else templateStatus.textContent = "没有可应用的模板或备份。";
@@ -7337,7 +7380,7 @@
     const quick = organization.quickUndo;
     const rawLinkUndo = !organization.current && organization.rawLinkUndo;
     if (gesture || !memory.storageIsCurrent() ||
-        (!quick && (activeRun || deletionPreparing || (!organization.undoAvailable && !rawLinkUndo)))) return;
+        (!quick && (activeRun || questionRuns.size || deletionPreparing || (!organization.undoAvailable && !rawLinkUndo)))) return;
     const revision = quick ? prepareLayoutChange() : {};
     if (!revision) return;
     if (quick) {
@@ -7595,7 +7638,9 @@
     saveConnection();
   });
   $("attach-files").addEventListener("click", () => attachmentInput.click());
-  stopAi.addEventListener("click", () => { void stopActiveRun(); });
+  stopAi.addEventListener("click", () => {
+    void stopRun(activeRun || (questionRuns.size === 1 ? questionRuns.values().next().value : null));
+  });
   attachmentInput.addEventListener("change", () => {
     addAttachmentFiles(attachmentInput.files);
     attachmentInput.value = "";
@@ -7656,13 +7701,14 @@
   $("question-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const draft = question.value.trim();
-    if (!selected.length || activeRun || deletionPreparing || sourceChanged || !relayAvailable || !memory.storageIsCurrent()) return;
+    if (!selected.length || questionUnavailable() || !memory.storageIsCurrent()) return;
     const approvedContext = sourceEditContext();
     const approvedRevision = sourceEditRevision;
     const allowSourceEdit = $("allow-source-edit").checked && sourceEditAuthorization === approvedContext && sourceEditAvailable();
     clearSourceEditAuthorization();
     const entries = [...draftAttachments];
     if (!draft && !entries.length) return;
+    const submission = ++composerSubmission;
     const text = draft || "请阅读本轮附件，概括与当前选区相关的内容。";
     const ids = selected.map((item) => item.id);
     const independent = Boolean(selected[0]?.independent);
@@ -7675,6 +7721,12 @@
     const sameAnchor = () => Boolean(selected[0]?.independent) === independent && selected.length === ids.length &&
       selected.every((item, index) => item.id === ids[index] && item.quote === quotes[index]);
     const unchanged = () => sameAnchor() && question.value.trim() === draft;
+    const takeAttachments = () => {
+      for (const entry of entries) {
+        const index = draftAttachments.indexOf(entry);
+        if (index !== -1) draftAttachments.splice(index, 1);
+      }
+    };
     askFeedback();
     const target = connectionTarget();
     const uploads = await uploadAttachments(entries, target);
@@ -7688,17 +7740,19 @@
     if (independent) {
       const reply = unfinishedReply(payload, "note") || createReply(payload, "note");
       question.value = "";
+      takeAttachments();
       askAt = null;
       showAsk();
       reply.note.focus({ preventScroll: true });
       if (await runCodex(reply, payload, "ask", undefined, target)) {
-        draftAttachments.splice(0, entries.length);
-        if (sameAnchor() && visibleRect(reply.note.dataset.elementId)) {
+        if (submission === composerSubmission && sameAnchor() && askComposer.hidden &&
+            !question.value && visibleRect(reply.note.dataset.elementId)) {
           applySelection([describe(reply.note)]);
           status("已保存到独立草稿。可以继续提问，验收后再整合。");
         }
-      } else if (sameAnchor() && !question.value) {
+      } else if (submission === composerSubmission && sameAnchor() && !question.value && askComposer.hidden) {
         question.value = draft;
+        if (!draftAttachments.length) draftAttachments.push(...entries);
         askAt = payload.anchor.box;
         showAsk(true);
       }
@@ -7714,7 +7768,7 @@
       askFeedback(message);
       return;
     }
-    if (!sameBoardRevision(planRevision)) {
+    if (!memory.storageIsCurrent()) {
       const message = "判断请求期间白板已发生变化，本轮未执行。请保留问题草稿后刷新重试。";
       status(message);
       askFeedback(message, true);
@@ -7738,31 +7792,37 @@
     if (asksForMultipleLevels && (action === "decompose" || action === "explain" || action === "splitAnswer")) {
       payload.minimumDepth = 2;
     }
-    if (action === "decompose") {
-      if (!sameBoardRevision(planRevision)) {
-        status("判断请求期间白板已发生变化，请基于当前白板重试。");
-        return;
-      }
-      if (await decomposeBoard(payload, target, branch)) {
-        draftAttachments.splice(0, entries.length);
-        renderInspector();
-      }
-      return;
-    }
     const selectedNote = selectedReply();
     const rootId = selectedModuleId();
     const regenerateTree = action === "regenerate" && rootId && (!selectedNote || selectedNote.saved?.outline ||
       subtreeIds(hierarchyItems(boardForOrganization()), rootId).size > 1);
+    if (["edit", "decompose", "organizeBranch", "organize", "main"].includes(action) || regenerateTree) {
+      if (questionRuns.size || !sameBoardRevision(planRevision)) {
+        const message = questionRuns.size
+          ? "这次需要修改源码或重组卡片。请等进行中的问答结束后再次发送，本次草稿已保留。"
+          : "判断请求期间白板已发生变化，请基于当前白板再次发送。本次草稿已保留。";
+        status(message);
+        askFeedback(message, true);
+        return;
+      }
+    }
+    if (action === "decompose") {
+      if (await decomposeBoard(payload, target, branch)) {
+        takeAttachments();
+        renderInspector();
+      }
+      return;
+    }
     if (action === "organizeBranch" || regenerateTree) {
       if (await organizeSelectedBranch(text, target, attachments, Boolean(regenerateTree))) {
-        draftAttachments.splice(0, entries.length);
+        takeAttachments();
         renderInspector();
       }
       return;
     }
     if (action === "organize" || action === "main") {
       if (await organizeBoard(text, false, { action, payload, target })) {
-        draftAttachments.splice(0, entries.length);
+        takeAttachments();
         renderInspector();
       }
       return;
@@ -7802,13 +7862,14 @@
       reply = unfinishedReply(payload, kind) || createReply(payload, kind);
     }
     question.value = "";
+    takeAttachments();
     askAt = null;
     showAsk();
     reply.note.focus({ preventScroll: true });
-    if (await runCodex(reply, payload, mode, branch, target)) {
-      draftAttachments.splice(0, entries.length);
-    } else if (sameAnchor() && !question.value) {
+    const answered = await runCodex(reply, payload, mode, branch, target);
+    if (!answered && submission === composerSubmission && sameAnchor() && !question.value && askComposer.hidden) {
       question.value = draft;
+      if (!draftAttachments.length) draftAttachments.push(...entries);
       const box = unionRects(selected.map((item) => item.box));
       askAt = { x: box.x + box.width, y: box.y + box.height / 2 };
       showAsk(true);
@@ -7952,7 +8013,7 @@
   window.BoardSync?.setRemoteRefresh(() => {
     const editing = workbenchDraft && cardEditorFields().some((value, index) => value !== workbenchDraft.originalFields[index]);
     const focusedInput = document.activeElement?.matches("input, textarea, select, [contenteditable='true']");
-    if (activeRun || deletionPreparing || gesture || connectionDrag || boardControls.isBusy() ||
+    if (activeRun || questionRuns.size || deletionPreparing || gesture || connectionDrag || boardControls.isBusy() ||
         autosaveFailures.size || (storageStale && !cacheStorageStale) || question.value.trim() || draftAttachments.length || editing ||
         decisionText.value.trim() || organizeOpinionDraft?.trim() || [...regenerateDrafts.values()].some((value) => value.trim()) ||
         expandCardFocus.value.trim() || document.querySelector("dialog[open]") || focusedInput ||
@@ -7983,6 +8044,12 @@
       if (!response.ok) throw new Error();
       const data = await response.json();
       const choices = Array.isArray(data.backends) ? data.backends : [{ id: "codex", available: data.available }];
+      if (Number.isSafeInteger(data.maxConcurrentRequests) && data.maxConcurrentRequests > 0) {
+        maxConcurrentRequests = data.maxConcurrentRequests;
+      }
+      if (Number.isSafeInteger(data.maxExpansionSummaryLength) && data.maxExpansionSummaryLength > 0) {
+        maxExpansionSummaryLength = data.maxExpansionSummaryLength;
+      }
       backends = new Map(choices.filter((entry) => entry && Object.hasOwn(backendLabels, entry.id))
         .map((entry) => [entry.id, { available: entry.available === true,
           models: Array.isArray(entry.models) ? entry.models.filter((name) => typeof name === "string") : [] }]));
