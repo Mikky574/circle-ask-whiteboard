@@ -25,6 +25,8 @@ let server;
 let port;
 let browser;
 let executionTraceFixture;
+const boardStores = new Map();
+let nextBrowserSession = 0;
 
 function redact(value) {
   return String(value ?? "").replaceAll(TEST_KEY, "[TEST-ONLY-REDACTED]");
@@ -67,6 +69,41 @@ function jsonResponse(res, result, status = 200) {
 async function relay(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   if (url.pathname === "/favicon.ico") { res.writeHead(204); res.end(); return; }
+  if (url.pathname === "/api/board-store" && req.method === "POST") {
+    // Each acceptance case has a separate document store; tabs within that
+    // case share it. Production persistence is tested against SQLite by
+    // test_shared_boards_browser.mjs, independently of this fake relay.
+    const session = req.headers.cookie?.match(/(?:^|;\s*)whiteboard-test-session=([^;]+)/)?.[1] || "default";
+    if (!boardStores.has(session)) boardStores.set(session, new Map());
+    const records = boardStores.get(session);
+    const payload = await body(req);
+    const current = records.get(payload.id);
+    if (payload.action === "list") {
+      jsonResponse(res, {
+        boards: [...records.values()].filter(board => !board.deleted).map(({ storage, ...metadata }) => metadata),
+        deleted: [...records.values()].filter(board => board.deleted).map(({ id, revision }) => ({ id, revision })),
+      });
+    } else if (payload.action === "load") {
+      jsonResponse(res, { board: current?.deleted ? null : current || null,
+        deleted: Boolean(current?.deleted), revision: current?.revision || 0 });
+    } else if (["save", "delete"].includes(payload.action)) {
+      if (current?.deleted || payload.expectedRevision !== (current?.revision || 0)) {
+        jsonResponse(res, { text: "白板已在另一页面更新或删除，请先保留草稿再刷新。",
+          board: current?.deleted ? null : current || null, deleted: Boolean(current?.deleted),
+          revision: current?.revision || 0 }, 409);
+      } else if (payload.action === "delete") {
+        const removed = { id: payload.id, revision: payload.expectedRevision + 1, deleted: true };
+        records.set(payload.id, removed);
+        jsonResponse(res, removed);
+      } else {
+        const board = { ...payload.metadata, id: payload.id, revision: payload.expectedRevision + 1,
+          updatedAt: new Date().toISOString(), storage: payload.storage };
+        records.set(payload.id, board);
+        jsonResponse(res, { board });
+      }
+    } else jsonResponse(res, { text: "无效的存储测试操作。" }, 400);
+    return;
+  }
   if (url.pathname === "/api/status") {
     jsonResponse(res, { backends: FIXTURE.backends });
     return;
@@ -163,6 +200,8 @@ async function relay(req, res) {
 
 async function openPage(flow = "normal", board = "original") {
   const context = await browser.newContext({ serviceWorkers: "block", viewport: { width: 1440, height: 980 } });
+  await context.addCookies([{ name: "whiteboard-test-session", value: String(++nextBrowserSession),
+    url: `http://127.0.0.1:${port}/` }]);
   context.setDefaultTimeout(8_000);
   const page = await context.newPage();
   const jsErrors = [];

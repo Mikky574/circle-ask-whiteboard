@@ -28,6 +28,7 @@
   }
 
   function storageIsCurrent() {
+    if (window.BoardSync && !window.BoardSync.writable) return false;
     try {
       const current = storageSnapshot();
       if (!knownStorage) knownStorage = current;
@@ -55,7 +56,7 @@
   const defaultConstraints = ["保留圈选和就地批注的交互", "项目主线只记录用户确认过的决定"];
   const sourceFiles = new Set(["index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "run_gate.js",
     "project_finder.js", "server.py", "zcode_backend.py", "zcode_workspace.py", "attachments.py", "backends.py", "api_backend.py",
-    "board_tools.py", "local_projects.py", "board_transfer.js"]);
+    "board_tools.py", "local_projects.py", "board_transfer.js", "board_store.py", "board_sync.js", "board_versions.js"]);
   const branchLabels = {
     E01: "E01 · 圈选与坐标",
     E02: "E02 · 提问与批注定位",
@@ -115,9 +116,15 @@
   }
 
   function changeBoards(change) {
+    const commit = async () => {
+      if (window.BoardSync) await window.BoardSync.flush();
+      const result = await change();
+      if (window.BoardSync) await window.BoardSync.flush();
+      return result;
+    };
     return window.navigator?.locks
-      ? window.navigator.locks.request(catalogKey, change)
-      : Promise.resolve().then(change);
+      ? window.navigator.locks.request(catalogKey, commit)
+      : Promise.resolve().then(commit);
   }
 
   function saveBoardList(boards) {

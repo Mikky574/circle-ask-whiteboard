@@ -23,6 +23,7 @@ from urllib.parse import quote
 
 from api_backend import validate_settings, run_api
 from board_tools import BoardTools
+from board_store import BoardStoreError, MAX_STORE_REQUEST_BYTES, board_store_request
 from backends import FACTORY, BackendRequest, CancellationToken
 from card_search import search_cards
 from local_projects import ProjectCatalogError, project_activity_request, project_catalog_request
@@ -44,6 +45,8 @@ STATIC = {
     "app.js": "text/javascript; charset=utf-8",
     "geometry.js": "text/javascript; charset=utf-8",
     "memory.js": "text/javascript; charset=utf-8",
+    "board_sync.js": "text/javascript; charset=utf-8",
+    "board_versions.js": "text/javascript; charset=utf-8",
     "organization.js": "text/javascript; charset=utf-8",
     "board_transfer.js": "text/javascript; charset=utf-8",
     "run_gate.js": "text/javascript; charset=utf-8",
@@ -1758,7 +1761,7 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             return
         if self.path not in ("/api/codex", "/api/cancel", "/api/reset-recovery", "/api/attachments",
                              "/api/repo-index", "/api/repository", "/api/local-projects", "/api/workbench-activity",
-                             "/api/card-search"):
+                             "/api/card-search", "/api/board-store"):
             self.send_json(404, {"type": "error", "text": "接口不存在。"})
             return
         upload = self.path == "/api/attachments"
@@ -1777,6 +1780,8 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             limit = 24 * 1024
         elif self.path == "/api/card-search":
             limit = 24 * 1024 * 1024
+        elif self.path == "/api/board-store":
+            limit = MAX_STORE_REQUEST_BYTES
         elif self.path in ("/api/repo-index", "/api/workbench-activity"):
             limit = 4096
         if len(lengths[0]) > 8 or int(lengths[0]) > limit:
@@ -1798,6 +1803,9 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             return
         try:
             body = self.rfile.read(int(lengths[0]))
+            if self.path == "/api/board-store":
+                self.send_json(200, board_store_request(json.loads(body)))
+                return
             if self.path == "/api/card-search":
                 result = search_cards(json.loads(body))
                 self.send_json(202 if result["mode"] == "indexing" else 200, result)
@@ -1825,6 +1833,9 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                 context, backend = backend_request.context, backend_request.backend
                 adapter = FACTORY.get(backend)
                 adapter.validate(backend_request, sys.modules[__name__])
+        except BoardStoreError as error:
+            self.send_json(error.status, {"type": "error", "text": str(error), **error.details})
+            return
         except ProjectCatalogError as error:
             self.send_json(error.status, {"type": "error", "text": str(error)})
             return

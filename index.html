@@ -7,6 +7,7 @@
   <title>圈问白板</title>
   <link rel="stylesheet" href="styles.css">
   <script defer src="geometry.js"></script>
+  <script defer src="board_sync.js"></script>
   <script defer src="memory.js"></script>
   <script defer src="organization.js"></script>
   <script defer src="board_transfer.js"></script>
@@ -14,8 +15,28 @@
   <script defer src="project_finder.js"></script>
   <script defer src="workbench_activity.js"></script>
   <script defer src="app.js"></script>
+  <script defer src="board_versions.js"></script>
 </head>
 <body>
+  <div id="board-sync-status" class="board-sync-status" role="status" aria-live="polite" hidden>
+    <span id="board-sync-message">正在连接本机白板服务…</span>
+    <button id="board-versions-button" class="tool-button" type="button" aria-haspopup="dialog" aria-controls="board-versions-dialog" hidden>版本与分支</button>
+    <button id="board-sync-retry" class="tool-button" type="button" hidden>重试保存</button>
+    <button id="board-sync-export" class="tool-button" type="button" hidden>导出本机副本</button>
+  </div>
+  <dialog id="board-versions-dialog" class="board-dialog board-versions-dialog" aria-labelledby="board-version-heading">
+    <h2 id="board-version-heading">白板版本与分支</h2>
+    <p id="board-version-origin" class="board-field-hint"></p>
+    <label for="board-version-name">新分支名称</label>
+    <input id="board-version-name" type="text" maxlength="80" autocomplete="off">
+    <button id="board-version-fork-current" class="tool-button" data-version-action="fork" type="button">从当前版本建分支</button>
+    <p class="board-field-hint">分支在后台独立保存，记录来源白板与版本；修改分支不会改变原白板。恢复历史会新增版本。</p>
+    <p id="board-version-error" class="board-dialog-error" role="alert" hidden></p>
+    <ol id="board-version-list" class="board-version-list" aria-label="已保存版本"></ol>
+    <button id="board-version-more" class="tool-button" type="button" hidden>更早版本</button>
+    <pre id="board-version-preview" class="board-version-preview" tabindex="0" hidden></pre>
+    <div class="board-dialog-actions"><button id="board-version-close" class="tool-button" type="button">关闭</button></div>
+  </dialog>
   <div class="app-shell">
     <header class="masthead">
       <div class="brand">

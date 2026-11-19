@@ -520,6 +520,20 @@
       element.hidden = !message;
     }
 
+    async function navigateWorkspace(url) {
+      try {
+        if (window.BoardSync?.pending && !window.BoardSync.failed) {
+          report.textContent = "正在保存白板，完成后自动切换…";
+          await window.BoardSync.flush();
+        }
+        if (!allowWorkspaceNavigation()) { refreshOptions(); return; }
+        location.assign(url);
+      } catch (error) {
+        report.textContent = error.message || "白板尚未保存，请重试保存后再切换。";
+        refreshOptions();
+      }
+    }
+
     function openCreate(trigger) {
       if (busy || saving) return;
       returnFocus = trigger;
@@ -572,6 +586,7 @@
       refreshControls();
       try {
         const result = await change();
+        if (window.BoardSync) await window.BoardSync.flush();
         if (stay) {
           saving = false;
           refreshOptions();
@@ -603,7 +618,7 @@
     else if (active && active !== "original") document.title = `${memory.activeBoardInfo.title} · 圈问白板`;
     const currentUrl = new URL(location.href);
     const requested = currentUrl.searchParams.get("board");
-    if (!projectViews && ((requested !== null && requested !== active && !(projectDirectory && requested === "project-workbench")) ||
+    if (!projectViews && !window.BoardSync?.failed && ((requested !== null && requested !== active && !(projectDirectory && requested === "project-workbench")) ||
         (!requested && active !== "original" &&
         (currentUrl.searchParams.has("project-guide") || currentUrl.searchParams.has("rebuild-project"))))) {
       history.replaceState(history.state, "", boardUrl(projectDirectory ? null : active));
@@ -611,13 +626,13 @@
     }
     refreshOptions();
     switcher.addEventListener("change", () => {
-      if (busy || saving || !memory.listBoards().some(({ id }) => id === switcher.value) || !allowWorkspaceNavigation()) {
+      if (busy || saving || !memory.listBoards().some(({ id }) => id === switcher.value)) {
         refreshOptions();
         return;
       }
       const url = boardUrl(switcher.value);
       if (switcher.value === "project-workbench") url.searchParams.set("view", "canvas");
-      location.assign(url.href);
+      void navigateWorkspace(url.href);
     });
     manage.addEventListener("click", () => setMenu(actions.hidden));
     document.addEventListener("pointerdown", (event) => {
@@ -688,7 +703,10 @@
     document.addEventListener("click", (event) => {
       if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
       const link = event.target.closest("#local-project-link, #close-project, #project-context a, #project-children a, a.activity-canvas-link");
-      if (link?.href && (link.href === location.href || !allowWorkspaceNavigation())) event.preventDefault();
+      if (link?.href) {
+        event.preventDefault();
+        if (link.href !== location.href) void navigateWorkspace(link.href);
+      }
     });
     configureRepository.addEventListener("click", () => {
       if (!available || busy || saving) return;

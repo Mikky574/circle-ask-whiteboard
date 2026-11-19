@@ -13,7 +13,7 @@ from pathlib import Path
 EDITABLE = ("index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "board_transfer.js")
 READABLE = (
     *EDITABLE, "run_gate.js", "project_finder.js", "server.py", "attachments.py", "zcode_backend.py", "zcode_workspace.py",
-    "backends.py", "api_backend.py", "board_tools.py", "local_projects.py",
+    "backends.py", "api_backend.py", "board_tools.py", "local_projects.py", "board_sync.js", "board_store.py", "board_versions.js",
 )
 ATTACHMENT = re.compile(r"attachments/attachment-[0-9]{1,2}\.[a-z0-9]{1,12}")
 TEXT = {"type": "string"}

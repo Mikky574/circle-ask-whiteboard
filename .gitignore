@@ -12,3 +12,6 @@ whiteboard-backup*/
 .codex/
 .zcode/
 attachments/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
