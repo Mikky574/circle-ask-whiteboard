@@ -1015,9 +1015,11 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
             for name, fields, kind, expected, invalid in self.cases(repository):
                 with self.subTest(operation=name):
                     wrapped = "以下是整理结果：\n" + json.dumps(expected) + "\n以上是结果。"
+                    result = ({**expected, "items": [{**item, "repositoryFiles": ["src/main.py"]} for item in expected["items"]]}
+                              if name == "repository_init" else expected)
                     events, sends = self.exchange(fields, wrapped)
                     self.assertEqual(len(sends), 1)
-                    self.assert_result(events, kind, expected)
+                    self.assert_result(events, kind, result)
                     events, sends = self.exchange(fields, json.dumps(invalid), wrapped)
                     self.assertEqual(len(sends), 2)
                     self.assertEqual(sends[1]["attachments"], [])
@@ -1026,7 +1028,7 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
                                      ["status", "context", "status", "status", "status", kind, "done"])
                     self.assertEqual(events[4].get("phase"), "repair")
                     self.assertIn("自动修正", events[4]["text"])
-                    self.assert_result(events, kind, expected)
+                    self.assert_result(events, kind, result)
 
     def test_branch_repair_rejects_a_second_invalid_result_without_partial_events(self):
         branch = BranchOrganizationAcceptanceTests.request_body()

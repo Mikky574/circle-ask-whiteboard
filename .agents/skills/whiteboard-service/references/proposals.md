@@ -1,12 +1,13 @@
 # 局部提案格式与直接提交
 
-`checkout` 工作目录里的 `proposal.json` 只需填写 `updates`、`children`，根卡由 `manifest.json` 固定。下面带 `rootId` 的完整例子适用于直接 `apply` 入口；不能借此改变工作目录的提交范围。
+`checkout` 工作目录里的 `proposal.json` 可填写 `updates`、`children`，项目概括加 `"structure":"project-summary"`，根卡由 `manifest.json` 固定。下面带 `rootId` 的完整例子适用于直接 `apply` 入口；不能借此改变工作目录的提交范围。
 
 把修改写成 UTF-8 JSON 文件。`rootId` 必须是实际存在的范围根卡，所有更新和新增都留在该分支内。
 
 ```json
 {
   "rootId": "E27",
+  "structure": "project-summary",
   "updates": [{"id": "E27", "summary": "结合新证据修正后的说明；保留仍成立的内容。"}],
   "children": [{
     "ref": "stream",
@@ -24,7 +25,7 @@
 }
 ```
 
-新增卡自动分配 `E` 编号，`ref` 用于回执和本提案的 `parentId:"@stream"` 引用；嵌套 `children` 自动挂在直接父卡下面。需要先展示章节、稍后深入时，给新增章节设 `collapsed:true`，原有分支的展开状态保持不变。先预览：
+新增卡自动分配 `E` 编号，`ref` 用于回执和本提案的 `parentId:"@stream"` 引用；嵌套 `children` 自动挂在直接父卡下面。项目概括模式会把新增后的活动子卡连同已有子卡一起计数，新增涉及的父卡最多有 4 张直属下级。需要先展示章节、稍后深入时，给新增章节设 `collapsed:true`，原有分支的展开状态保持不变。先预览：
 
 ```text
 python scripts/whiteboard_service.py --url http://127.0.0.1:8797 apply --board BOARD_ID --expected-revision 12 --file proposal.json

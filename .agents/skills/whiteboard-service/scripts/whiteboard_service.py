@@ -5,6 +5,7 @@ connection settings or model credentials. Apply defaults to a read-only preview.
 """
 
 import argparse
+from collections import Counter
 import copy
 import hashlib
 import json
@@ -25,6 +26,8 @@ BUNDLE_FORMAT = "circle-ask-whiteboard-workspace-v1"
 RECEIPT_FORMAT = "circle-ask-whiteboard-submission-v1"
 FIELDS = ("memory", "organization", "templateBackup", "guideBackup")
 CATEGORIES = {"main", "done", "optimize", "reference", "archive"}
+PROPOSAL_FIELDS = {"rootId", "updates", "children", "structure"}
+PROJECT_SUMMARY_MAX_CHILDREN = 4
 CARD_ID = re.compile(r"[EA][0-9]+\Z")
 PATCH_FIELDS = {"title", "summary", "category", "sources", "repositoryFiles", "taskDetails", "spec"}
 SOURCE_FILES = {"index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "run_gate.js",
@@ -232,8 +235,11 @@ def propose(board, proposal, expected_revision):
         raise ServiceError("expected-revision 必须是刚读取的正整数版本号。")
     if board.get("revision") != expected_revision:
         raise ServiceError("白板版本已改变，请重新读取目标分支后合并提案；未写入。")
-    if not isinstance(proposal, dict) or set(proposal) - {"rootId", "updates", "children"}:
-        raise ServiceError("提案只支持 rootId、updates、children。")
+    if not isinstance(proposal, dict) or set(proposal) - PROPOSAL_FIELDS:
+        raise ServiceError("提案只支持 rootId、updates、children、structure。")
+    layered_summary = "structure" in proposal
+    if layered_summary and proposal["structure"] != "project-summary":
+        raise ServiceError("structure 只支持 project-summary。")
     result = copy.deepcopy(board)
     organization, memory, by_id = document(result)
     root = proposal.get("rootId")
@@ -333,6 +339,14 @@ def propose(board, proposal, expected_revision):
     for item, _, _ in additions:
         if root not in [entry["id"] for entry in path_for(item["id"], by_id)]:
             raise ServiceError("新增分支未连回 rootId，不能生成孤立节点。")
+    if layered_summary:
+        counts = Counter(item.get("parentId") for item in by_id.values()
+                         if item["id"] not in deleted and item.get("category") != "archive")
+        affected_parents = dict.fromkeys(item["parentId"] for item, _, _ in additions)
+        for parent in affected_parents:
+            if counts[parent] > PROJECT_SUMMARY_MAX_CHILDREN:
+                raise ServiceError(f"{parent}「{by_id[parent]['title']}」将有 {counts[parent]} 张直属下级。"
+                                   "项目概括每个父卡最多 4 张，请按能力或问题把细节归入子章节后再预览。")
     result["storage"]["organization"] = json.dumps(organization, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     receipt = {"board": board["id"], "rootId": root, "previousRevision": expected_revision,
                "assigned": refs, "touchedIds": touched,
@@ -463,8 +477,8 @@ def read_workspace(path, explicit_url=None):
             any(context.get(key) != manifest[key] for key in ("format", "url", "board", "rootId", "revision"))):
         raise ServiceError("context.json 或 manifest.json 已改变；仅编辑 proposal.json，需更新上下文时重新 checkout。")
     proposal = read_json(workspace_file(directory, "proposal.json"))
-    if not isinstance(proposal, dict) or set(proposal) - {"rootId", "updates", "children"}:
-        raise ServiceError("proposal.json 只支持 updates、children；不能设置服务、板号或版本。")
+    if not isinstance(proposal, dict) or set(proposal) - PROPOSAL_FIELDS:
+        raise ServiceError("proposal.json 支持 updates、children、structure；不能设置服务、板号或版本。")
     if "rootId" in proposal and proposal["rootId"] != manifest["rootId"]:
         raise ServiceError("提案 rootId 与 checkout 根卡不一致，未提交。")
     proposal["rootId"] = manifest["rootId"]

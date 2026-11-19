@@ -248,6 +248,7 @@
   const deferredQuestions = new Set();
   let maxConcurrentRequests = 4;
   let maxExpansionSummaryLength = 240;
+  let maxRepositoryInitCards = 10;
   let traceOwner = null;
   const executionTraces = new Map();
   let displayedTrace = null;
@@ -5529,7 +5530,7 @@
     if (repair) deletionMessage = `节点已删除，AI 正在处理 ${nodes.length} 个直接关联节点…`;
     const opinion = initialize ? "" : instruction.trim();
     const archiveAllowed = new Set(Array.isArray(repairContext?.archiveAllowed) ? repairContext.archiveAllowed : []);
-    const newIds = repair ? [] : availableModuleIds(allNodes, initialize ? 10 : Math.min(8, 64 - nodes.length));
+    const newIds = repair ? [] : availableModuleIds(allNodes, initialize ? maxRepositoryInitCards : Math.min(8, 64 - nodes.length));
     const request = {
       ...target, mode: "ask", scope: "organize", boardId,
       requestId, baseRevision: revisionToken(`${revisionSnapshot.organization}\n${JSON.stringify(revisionSnapshot.storage)}`),
@@ -5675,9 +5676,8 @@
       candidate.collapsedBranches = previous.current?.collapsedBranches ?? previous.rawCollapsedBranches ?? [];
       if (initialize) {
         const rootId = candidate.items.find((item) => item.parentId === null)?.id;
-        candidate.collapsedBranches = candidate.items.filter((item) => item.parentId === rootId &&
-          candidate.items.some((child) => child.parentId === item.id) &&
-          !candidate.items.some((child) => child.parentId === item.id && child.codePreview)).map((item) => item.id);
+        const parents = new Set(candidate.items.map(({ parentId }) => parentId));
+        candidate.collapsedBranches = candidate.items.filter(({ id }) => id !== rootId && parents.has(id)).map(({ id }) => id);
       }
       const guide = previous.current?.projectGuide;
       if (guide && candidate.items.some((item) => item.id === guide.rootId && item.category !== "archive")) {
@@ -8136,6 +8136,9 @@
       const choices = Array.isArray(data.backends) ? data.backends : [{ id: "codex", available: data.available }];
       if (Number.isSafeInteger(data.maxConcurrentRequests) && data.maxConcurrentRequests > 0) {
         maxConcurrentRequests = data.maxConcurrentRequests;
+      }
+      if (Number.isSafeInteger(data.maxRepositoryInitCards) && data.maxRepositoryInitCards >= 10 && data.maxRepositoryInitCards <= 64) {
+        maxRepositoryInitCards = data.maxRepositoryInitCards;
       }
       if (Number.isSafeInteger(data.maxExpansionSummaryLength) && data.maxExpansionSummaryLength > 0) {
         maxExpansionSummaryLength = data.maxExpansionSummaryLength;

@@ -189,7 +189,7 @@ class WhiteboardServiceSkillTests(unittest.TestCase):
 
     def write_workspace_proposal(self, directory, proposal=None):
         if proposal is None:
-            proposal = {"updates": [{"id": "E05", "summary": "File-based evidence"}],
+            proposal = {"structure": "project-summary", "updates": [{"id": "E05", "summary": "File-based evidence"}],
                         "children": [{"ref": "detail", "parentId": "E05", "title": "Decoder", "summary": "Implementation",
                                       "children": [{"ref": "test", "title": "Decoder test", "summary": "Concrete acceptance"}]}]}
         (directory / "proposal.json").write_text(json.dumps(proposal), encoding="utf-8")
@@ -539,6 +539,27 @@ class OriginalHandoffServiceTests(unittest.TestCase):
         self.assertEqual(preview["assigned"], {"chapter": "E100", "detail": "E101"})
         self.assertNotIn("save", OriginalHandoffHandler.calls)
         self.assertEqual(self.client.call("load", id=IDENTITY)["board"]["storage"], self.original["storage"])
+
+    def test_project_summary_rejects_wide_siblings_and_accepts_grouped_children(self):
+        proposed = {"rootId": "E04", "structure": "project-summary",
+                    "children": [{"ref": f"topic{index}", "parentId": "E18", "title": f"主题 {index}", "summary": "说明"}
+                                 for index in range(4)]}
+        status, error = self.cli("apply", "--board", IDENTITY, "--expected-revision", "1",
+                                 "--file", self.file(proposed), "--commit")
+        self.assertNotEqual(status, 0)
+        self.assertRegex(str(error), r"E18.*5 张直属下级")
+        self.assertNotIn("save", OriginalHandoffHandler.calls)
+        last = proposed["children"].pop()
+        del last["parentId"]
+        proposed["children"][0]["children"] = [last]
+        status, result = self.cli("apply", "--board", IDENTITY, "--expected-revision", "1",
+                                  "--file", self.file(proposed), "--commit")
+        self.assertEqual(status, 0, result)
+        self.assertTrue(result["verified"])
+        saved = self.client.call("load", id=IDENTITY)["board"]
+        items = json.loads(saved["storage"]["organization"])["current"]["items"]
+        by_id = {item["id"]: item for item in items}
+        self.assertEqual(by_id[result["assigned"]["topic3"]]["parentId"], result["assigned"]["topic0"])
 
     def test_commits_nested_tree_once_preserving_every_other_field(self):
         receipt = Path(self.tmp.name) / "receipt.json"

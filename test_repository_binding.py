@@ -236,7 +236,8 @@ class RepositoryBindingTests(unittest.TestCase):
             return server.structured_candidate(json.dumps(plan), request.context,
                                                repository_scope=True, repository=request.repository_path)
 
-        self.assertEqual(candidate(), ("map", {"map": plan}))
+        expected = {**plan, "items": [{**item, "repositoryFiles": ["src/main.py"]} for item in plan["items"]]}
+        self.assertEqual(candidate(), ("map", {"map": expected}))
         plan["items"][-1]["parentId"] = "E04"
         with self.assertRaisesRegex(ValueError, "细节卡"):
             candidate()
@@ -287,17 +288,51 @@ class RepositoryBindingTests(unittest.TestCase):
                                                repository_scope=True, repository=request.repository_path)[1]["map"]
 
         generated = candidate()["items"]
-        self.assertEqual(generated[:5], plan["items"])
+        self.assertEqual([item["id"] for item in generated[:5]], [item["id"] for item in plan["items"]])
         self.assertEqual([(item["id"], item["parentId"], item["codePreview"]["path"]) for item in generated[5:]], [
-            ("E12", "E05", "src/main.py"), ("E13", "E06", "src/test_main.py"),
+            ("E12", "E08", "src/main.py"), ("E13", "E06", "src/test_main.py"),
         ])
         self.assertIn("    return 61", generated[5]["codePreview"]["text"])
         self.assertNotIn("example-only-private-token", generated[5]["codePreview"]["text"])
         self.assertIn("assert 61 > 60", generated[6]["codePreview"]["text"])
         plan["items"][2]["summary"] = "Evidence: `README.md`"
-        self.assertEqual(candidate()["items"][-1]["codePreview"]["path"], "src/test_main.py")
+        self.assertEqual([item["codePreview"]["path"] for item in candidate()["items"] if "codePreview" in item],
+                         ["src/main.py"])
         plan["items"][-1]["id"] = "E12"
         with self.assertRaisesRegex(ValueError, "未知或重复"):
+            candidate()
+
+    def test_full_initialization_checks_each_capability_and_parent_width(self):
+        reserved = [f"E{number:02}" for number in range(4, 27)]
+        request = self.repository_init_request(repositoryPath=str(self.repository),
+                                               board={"nodes": [], "newIds": reserved})
+        self.assertEqual(request.context["board"]["newIds"], reserved[:21])
+        self.assertEqual(request.context["board"]["codeIds"], reserved[21:])
+        parents = [None, "E04", "E04", "E04", "E05", "E05", "E05",
+                   "E06", "E06", "E06", "E07", "E07", "E07"]
+        plan = {"title": "能力手册", "summary": "从能力逐级到验收", "layout": {"flow": "horizontal", "density": "compact"},
+                "items": [{"id": identity, "parentId": parent, "category": "reference" if parent else "main",
+                           "title": f"Topic {identity}", "summary": "Evidence: `src/main.py`", "sources": []}
+                          for identity, parent in zip(reserved, parents)]}
+
+        def candidate():
+            return server.structured_candidate(json.dumps(plan), request.context,
+                                               repository_scope=True, repository=request.repository_path)[1]["map"]
+
+        generated = candidate()["items"]
+        self.assertEqual(len(generated), 14)
+        self.assertEqual(generated[-1]["parentId"], "E08")
+        self.assertEqual(generated[-1]["codePreview"]["path"], "src/main.py")
+        plan["items"][-1]["parentId"] = "E08"
+        self.assertEqual(candidate()["items"][12]["parentId"], "E08", "Evidence can be nested one level deeper")
+        plan["items"][9]["parentId"] = "E05"
+        plan["items"][-1]["parentId"] = "E05"
+        with self.assertRaisesRegex(ValueError, "直属下级超过 4 张"):
+            candidate()
+        plan["items"][9]["parentId"] = "E06"
+        plan["items"][-1]["parentId"] = "E08"
+        plan["items"][-2]["parentId"] = "E08"
+        with self.assertRaisesRegex(ValueError, "E07.*至少两个直属主题"):
             candidate()
 
     def test_repository_links_do_not_escape_scope(self):

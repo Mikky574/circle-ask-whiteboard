@@ -105,7 +105,7 @@ async function relay(req, res) {
     return;
   }
   if (url.pathname === "/api/status") {
-    jsonResponse(res, { backends: FIXTURE.backends });
+    jsonResponse(res, { backends: FIXTURE.backends, maxRepositoryInitCards: 23 });
     return;
   }
   if (url.pathname === "/api/local-projects" && req.method === "POST") {
@@ -1242,8 +1242,15 @@ async function testRepositoryInitialization() {
     await page.route("**/api/codex", async (route) => {
       const request = route.request().postDataJSON();
       requests.push(request);
-      const [root, purpose, flow, tests, detail] = request.board?.newIds || [];
-      const [source, testSource] = request.board?.newIds?.slice(8) || [];
+      const [root, purpose, flow, tests, ...reserved] = request.board.newIds;
+      const topics = [
+        [purpose, "服务谁", "输入是什么", "输出及边界"],
+        [flow, "入口怎样处理请求", "业务逻辑如何选择", "错误怎样返回"],
+        [tests, "验证关键链路", "边缘条件和回退", "从哪里运行验收"],
+      ];
+      const detail = reserved[3];
+      const testDetail = reserved[6];
+      const [source, testSource] = reserved.slice(-2);
       const item = (id, parentId, title, summary) => ({
         id, parentId, title, summary, category: parentId ? "reference" : "main", side: "auto", sources: [],
       });
@@ -1256,10 +1263,11 @@ async function testRepositoryInitialization() {
           item(purpose, root, "工程用途", "`README.md` 描述输入和输出。"),
           item(flow, root, "运行链路", "`src/main.py` 负责入口调度。"),
           item(tests, root, "验证方式", "`tests/test_main.py` 覆盖入口调用。"),
-          item(detail, flow, "入口怎样处理请求", "`src/main.py` 的 run 函数调用业务模块。"),
-          { ...item(source, flow, "源码｜main.py", "初始化时读取的源码片段。"),
+          ...topics.flatMap(([parent, ...titles], chapter) => titles.map((title, index) =>
+            item(reserved[chapter * 3 + index], parent, title, "本主题核对了 `src/main.py`。"))),
+          { ...item(source, detail, "源码｜main.py", "本主题引用的源码片段。"),
             codePreview: { path: "src/main.py", text: "def run():\n    return 61" } },
-          { ...item(testSource, tests, "源码｜test_main.py", "初始化时读取的源码片段。"),
+          { ...item(testSource, testDetail, "源码｜test_main.py", "本主题引用的源码片段。"),
             codePreview: { path: "tests/test_main.py", text: "def test_run():\n    assert run() == 61" } },
         ],
       };
@@ -1311,18 +1319,28 @@ async function testRepositoryInitialization() {
       assert.equal(request.boardId, id);
       assert.equal(request.repositoryPath, repositoryPath);
       assert.deepEqual(request.board.nodes, []);
-      assert.equal(request.board.newIds.length, 10);
-      assert.equal(new Set(request.board.newIds).size, 10);
+      assert.equal(request.board.newIds.length, 23);
+      assert.equal(new Set(request.board.newIds).size, 23);
       assert.equal(Object.hasOwn(request, "api"), false);
     }
-    const [root, purpose, flow, tests, detail] = requests[1].board.newIds;
-    const [source, testSource] = requests[1].board.newIds.slice(8);
-    const parentRelations = [[root, null], [purpose, root], [flow, root], [tests, root], [detail, flow],
-      [source, flow], [testSource, tests]];
+    const [root, purpose, flow, tests, ...reserved] = requests[1].board.newIds;
+    const detail = reserved[3];
+    const testDetail = reserved[6];
+    const [source, testSource] = reserved.slice(-2);
+    const parentRelations = [[root, null], [purpose, root], [flow, root], [tests, root],
+      ...reserved.slice(0, 9).map((id, index) => [id, [purpose, flow, tests][Math.floor(index / 3)]]),
+      [source, detail], [testSource, testDetail]];
     assert.deepEqual((await organization()).current.items.map(({ id, parentId }) => [id, parentId]), parentRelations);
     const branch = card(flow).locator(".branch-toggle");
-    assert.equal(await branch.getAttribute("aria-expanded"), "true");
+    assert.equal(await branch.getAttribute("aria-expanded"), "false");
+    assert.equal(await card(detail).isVisible(), false);
+    await branch.press("Enter");
+    await card(detail).waitFor();
+    assert.equal(await card(source).isVisible(), false, "Opening an ability should reveal its topics before their evidence");
+    await card(detail).locator(".branch-toggle").press("Enter");
     await card(source).waitFor();
+    await card(tests).locator(".branch-toggle").press("Enter");
+    await card(testDetail).locator(".branch-toggle").press("Enter");
     await card(testSource).waitFor();
     const code = card(source).locator(".organized-code-preview");
     assert.equal(await code.isVisible(), false, "Keep source bodies folded at first");
