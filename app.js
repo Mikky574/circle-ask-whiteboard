@@ -1467,7 +1467,10 @@
     const nodes = boardForOrganization();
     const drafts = draftMembership(nodes);
     const draftRoot = selectedDraftRoot(ids, drafts);
-    const inScope = (id) => !drafts.has(id) || drafts.get(id) === draftRoot;
+    // Explicitly selected cards are the user's research scope, even when they
+    // belong to separate drafts. Keep unselected drafts isolated as before.
+    const explicitIds = new Set(ids.filter((id) => id !== "board"));
+    const inScope = (id) => explicitIds.has(id) || !drafts.has(id) || drafts.get(id) === draftRoot;
     let context = { goal: project.goal, constraints: [], decisions: [] };
     const items = hierarchyItems(nodes).filter((item) => item.category !== "archive" && !deletedIds.has(item.id) && inScope(item.id));
     const encoder = new TextEncoder();
