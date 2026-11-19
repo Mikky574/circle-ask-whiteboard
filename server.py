@@ -31,7 +31,7 @@ from repo_index import RepositoryIndex, RepoIndexError
 
 from attachments import MAX_ATTACHMENT_BYTES, load_attachments, read_attachment, save_attachment, stage_attachments
 from agent_trace import SOURCE_SUFFIXES, TRACE_LIMIT, bounded_detail, codex_trace, diff_preview, safe_path, trace_event
-from zcode_backend import run_zcode, zcode_command
+from zcode_backend import OUTPUT_LIMIT, read_zcode_stderr, run_zcode, zcode_command
 from zcode_workspace import READABLE as MAP_SOURCE_FILES, REPOSITORY_PREFIX, call_tool as call_workspace_tool
 
 
@@ -2121,7 +2121,8 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             environment = {**os.environ, "ZCODE_STORAGE_DIR": str(workspace / ".zcode-runtime")} if backend == "zcode" else None
             process = subprocess.Popen(
                 command, cwd=workspace, env=environment,
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE if backend == "zcode" else subprocess.DEVNULL,
                 **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
                    if os.name == "nt" else {"start_new_session": True}),
             )
@@ -2138,6 +2139,10 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
         next_status = started + 12
         answer = ""
         diagnostics = ""
+        output = ""
+        sent_output = ""
+        next_output = started
+        stderr_reader = None
         timed_out = False
         operation = structured_operation(context)
         repairing = False
@@ -2147,6 +2152,23 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
         trace_limit = TRACE_LIMIT - len(STATIC) if mode == "edit" else TRACE_LIMIT
         cancelled = (lambda: self.request_cancelled(cancellation)) if hasattr(self, "request_cancelled") else (
             lambda: bool(cancellation and cancellation.cancelled()) or bool(getattr(self, "disconnected", lambda: False)()))
+
+        def send_output(now, *, final=False):
+            nonlocal sent_output, next_output
+            if not output or not final and now < next_output:
+                return
+            # Avoid displaying an unfinished ASCII token that may be a key.
+            value = output if final else re.sub(r"[A-Za-z0-9_+/=.@-]+\Z", "", output)
+            preview = bounded_detail(value, limit=OUTPUT_LIMIT, line_limit=48)
+            if preview != sent_output:
+                sent_output = preview
+                self.send_event("output", text=preview)
+            next_output = now + 0.20
+
+        def send_stderr(value):
+            nonlocal diagnostics
+            diagnostics = (diagnostics + " " + value.lower())[-4000:]
+            self.send_event("log", channel="stderr", text=value)
 
         def candidate(value):
             return structured_candidate(value, context, attachments=bool(files),
@@ -2181,6 +2203,8 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                 options = {}
                 if schema_path is not None:
                     options["repair_structured"] = repair_structured
+                stderr_reader = threading.Thread(target=read_zcode_stderr, args=(process.stderr, events), daemon=True)
+                stderr_reader.start()
                 threading.Thread(target=run_zcode, args=args, kwargs=options, daemon=True).start()
             while True:
                 if cancelled():
@@ -2191,6 +2215,8 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                 if now - started >= request.budget["timeoutSeconds"]:
                     timed_out = True
                     break
+                if output:
+                    send_output(now)
                 if now >= next_status:
                     self.send_event("status", text=f"{label} 仍在处理，连接或执行可能需要一点时间…")
                     next_status = now + 12
@@ -2200,10 +2226,18 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                     continue
                 if kind == "eof":
                     break
-                if kind == "answer" and value.strip():
+                if kind == "output" and backend == "zcode":
+                    output += value
+                    next_status = now + 12
+                elif kind == "stderr" and backend == "zcode":
+                    send_stderr(value)
+                elif kind == "answer" and value.strip():
+                    send_output(now, final=True)
+                    output = ""
                     answer = value
                     repair_answer_received = repairing
                 elif kind == "structured_repair":
+                    output = sent_output = ""
                     repairing = True
                     initial_answer = answer
                     self.send_event("status", text=f"ZCode 正在自动修正{operation}结果（1 次）…", phase="repair")
@@ -2221,6 +2255,14 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     timed_out = backend == "codex" or not answer
+            if not cancelled():
+                send_output(time.monotonic(), final=True)
+                if stderr_reader is not None:
+                    stderr_reader.join(timeout=0.25)
+                    while not events.empty():
+                        kind, value = events.get_nowait()
+                        if kind == "stderr":
+                            send_stderr(value)
         finally:
             terminate(process)
             with ACTIVE_REQUESTS_LOCK:

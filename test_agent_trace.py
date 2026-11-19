@@ -2,6 +2,7 @@ import io
 import json
 import queue
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +10,7 @@ from unittest.mock import patch
 
 from agent_trace import DETAIL_LIMIT, codex_trace
 from server import CancellationToken, WhiteboardHandler, apply_staged_edits, read_events, source_hashes
-from zcode_backend import read_turn
+from zcode_backend import OUTPUT_LIMIT, read_turn, read_zcode_stderr
 
 
 def encoded_source(path, source):
@@ -98,6 +99,70 @@ class AgentTraceTests(unittest.TestCase):
         self.assertEqual(seen[0]["step"], seen[1]["step"])
         self.assertEqual((seen[1]["path"], seen[1]["detail"]), ("repository/src/main.py", "value = 61"))
         self.assertNotIn("detail", seen[-1])
+
+    def test_zcode_stream_only_emits_public_text_and_real_retries(self):
+        def event(kind, payload, session="session"):
+            return {"method": "session/event", "params": {"sessionId": session, "type": kind, "payload": payload}}
+
+        messages = iter([
+            event("model.streaming", {"kind": "reasoning_delta", "delta": "internal reasoning"}),
+            event("model.streaming", {"kind": "tool_input_delta", "delta": "private tool arguments"}),
+            event("model.streaming", {"kind": "text_delta", "delta": "other request"}, "other"),
+            event("model.streaming", {"kind": "text_delta", "delta": "公开预览"}),
+            event("streamRecovery.updated", {"checkpointId": "normal anchor"}),
+            event("streamRecovery.updated", {"retryNumber": 1, "message": "private network message"}),
+            event("model.streaming", {"kind": "text_delta", "delta": "Z" * (OUTPUT_LIMIT + 50)}),
+            event("model.streaming", {"kind": "text_delta", "delta": "outside preview limit"}),
+            event("turn.completed", {"resultType": "success", "response": "Final result"}),
+        ])
+        events = queue.SimpleQueue()
+        answer = read_turn(SimpleNamespace(receive=lambda: next(messages)), 7, "session", "ask", events)
+        self.assertEqual(answer, "Final result")
+        self.assertEqual(events.get_nowait(), ("output", "公开预览"))
+        self.assertEqual(events.get_nowait(), ("status", "ZCode 正在恢复模型输出流（第 1 次）…"))
+        self.assertEqual(events.get_nowait(), ("output", "Z" * (OUTPUT_LIMIT + 1 - len("公开预览"))))
+        self.assertTrue(events.empty())
+
+    def test_zcode_stderr_is_drained_and_only_reports_known_diagnostics(self):
+        stream = io.BytesIO(
+            b'Fatal: HTTP 429 token=fixture\n'
+            b'Fatal: {"statusCode":429,"data":"PRIVATE_PAYLOAD"}\n'
+            b'ECONNREFUSED from https://private-endpoint\n'
+            b'arbitrary plugin stdout secret=value\n'
+        )
+        events = queue.SimpleQueue()
+        read_zcode_stderr(stream, events)
+        self.assertEqual(events.get_nowait(), ("stderr", "HTTP 429"))
+        self.assertEqual(events.get_nowait(), ("stderr", "连接被拒绝（ECONNREFUSED）"))
+        self.assertEqual(events.get_nowait(), ("stderr", "CLI 写入诊断信息"))
+        self.assertTrue(events.empty())
+
+    def test_zcode_http_emits_live_preview_and_stderr_before_final_answer(self):
+        from unittest.mock import Mock
+
+        observed = threading.Event()
+        handler = SimpleNamespace(events=[], headers_for=lambda *args: None)
+        def record(kind, **fields):
+            handler.events.append((kind, fields))
+            if kind == "output":
+                observed.set()
+        handler.send_event = record
+        process = Mock(returncode=0, stderr=io.BytesIO(b'HTTP 502 auth=fixture-not-visible\n'))
+        streamed = []
+        def emit(_process, _prompt, _model, _mode, _workspace, events, _attachments):
+            events.put(("output", "可见阶段\nAPI_KEY = '*secret fixture*'"))
+            streamed.append(observed.wait(3))
+            events.put(("answer", "最终答案"))
+            events.put(("eof", ""))
+        with patch("server.ZCODE_COMMAND", ["fake-zcode"]), patch("server.subprocess.Popen", return_value=process), \
+             patch("server.run_zcode", emit), patch("server.terminate"):
+            WhiteboardHandler.run_agent(handler, "zcode", "", "ask", "fixture", {}, None, Path.cwd(), {}, [])
+        self.assertEqual(streamed, [True])
+        self.assertIn(("output", {"text": "可见阶段\n〔敏感内容已隐藏〕"}), handler.events)
+        self.assertIn(("log", {"channel": "stderr", "text": "HTTP 502"}), handler.events)
+        self.assertNotIn("fixture-not-visible", str(handler.events))
+        self.assertEqual(handler.events[-2], ("answer", {"text": "最终答案"}))
+        self.assertEqual(handler.events[-1][0], "done")
 
     def test_edit_diff_only_describes_committed_changes(self):
         with tempfile.TemporaryDirectory() as folder:

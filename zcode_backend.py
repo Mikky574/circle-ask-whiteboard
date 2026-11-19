@@ -3,6 +3,7 @@
 import json
 import mimetypes
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -11,6 +12,44 @@ from agent_trace import zcode_trace
 
 
 MAX_FRAME = 16 * 1024 * 1024
+OUTPUT_LIMIT = 4800
+STDERR_CAUSES = {
+    "ECONNREFUSED": "连接被拒绝", "ECONNRESET": "连接被重置",
+    "ENOTFOUND": "无法解析服务器地址", "EAI_AGAIN": "DNS 暂时不可用",
+    "ETIMEDOUT": "连接超时", "UND_ERR_CONNECT_TIMEOUT": "连接超时",
+    "CERT_HAS_EXPIRED": "TLS 证书已过期", "UNABLE_TO_VERIFY_LEAF_SIGNATURE": "TLS 证书验证失败",
+}
+HTTP_DIAGNOSTIC = re.compile(
+    r'\b(?:HTTP(?:/\d(?:\.\d)?)?\s+|(?:status(?:Code)?|httpStatus)["\']?\s*[:=]\s*)'
+    r'(400|401|403|404|408|429|500|502|503|504)\b', re.I,
+)
+
+
+def read_zcode_stderr(stream, events):
+    # stderr may contain URLs, request bodies, headers, or plugin output. Emit
+    # only detected codes and fixed descriptions, and always drain the pipe.
+    seen = set()
+    try:
+        while isinstance(raw := stream.readline(4096), bytes) and raw:
+            line = raw.decode("utf-8", errors="replace")
+            match = HTTP_DIAGNOSTIC.search(line)
+            cause = next((code for code in STDERR_CAUSES if code in line), None)
+            if match:
+                detail = f"HTTP {match[1]}"
+            elif cause:
+                detail = f"{STDERR_CAUSES[cause]}（{cause}）"
+            else:
+                detail = {
+                    "login required": "登录或鉴权失败",
+                    "rate limit": "模型供应商限流或额度不足",
+                    "model_unavailable": "模型或供应商配置异常",
+                }.get(safe_diagnostic(line), "CLI 写入诊断信息")
+            if detail not in seen and len(seen) < 16:
+                seen.add(detail)
+                events.put(("stderr", detail))
+    except (OSError, ValueError):
+        pass
+
 NATIVE_ATTACHMENTS = {"image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf"}
 READ_TOOLS = ("mcp__whiteboard__list_files", "mcp__whiteboard__read_file")
 EDIT_TOOLS = (*READ_TOOLS, "mcp__whiteboard__replace_text")
@@ -146,6 +185,7 @@ def run_zcode(process, prompt, model, mode, workspace, events, attachments=(), r
         workspace_args = ["-I", str(workspace_tool), str(workspace), mode]
         if repository is not None:
             workspace_args.append(str(repository))
+        events.put(("status", "ZCode 正在创建会话并加载模型配置…"))
         snapshot = connection.request("session/create", {
             "workspace": {"workspacePath": str(workspace), "workspaceKey": str(workspace)},
             "mode": "edit" if mode == "edit" else "plan",
@@ -168,6 +208,7 @@ def run_zcode(process, prompt, model, mode, workspace, events, attachments=(), r
             connection.request("session/setModel", {**session, "model": selection,
                                                     "persistAsWorkspaceLastUsed": False})
         connection.request("session/subscribe", {**session, "deliveryKind": "desktop-continuous"})
+        events.put(("status", "ZCode 会话已连接，正在发送模型请求…"))
         send_id = connection.begin_request("session/send", {**session, "content": prompt,
                                              "attachments": list(native_attachments(workspace, attachments))})
         answer = read_turn(connection, send_id, session_id, mode, events)
@@ -191,6 +232,8 @@ def run_zcode(process, prompt, model, mode, workspace, events, attachments=(), r
 
 def read_turn(connection, send_id, session_id, mode, events):
     reported_tool = False
+    output_length = 0
+    recovery_attempt = 0
     pending = {}
     while True:
         message = connection.receive()
@@ -208,6 +251,18 @@ def read_turn(connection, send_id, session_id, mode, events):
         payload = params.get("payload", {})
         if kind == "turn.started":
             events.put(("status", "ZCode 正在处理当前白板上下文…"))
+        elif kind == "model.streaming" and isinstance(payload, dict) and payload.get("kind") == "text_delta":
+            delta = payload.get("delta")
+            remaining = OUTPUT_LIMIT + 1 - output_length
+            if isinstance(delta, str) and delta and remaining > 0:
+                chunk = delta[:remaining]
+                output_length += len(chunk)
+                events.put(("output", chunk))
+        elif kind == "streamRecovery.updated" and isinstance(payload, dict):
+            retry = payload.get("retryNumber")
+            if type(retry) is int and recovery_attempt < retry <= 100:
+                recovery_attempt = retry
+                events.put(("status", f"ZCode 正在恢复模型输出流（第 {retry} 次）…"))
         elif kind == "tool.updated":
             if not reported_tool:
                 reported_tool = True

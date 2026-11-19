@@ -671,15 +671,17 @@ class ExplanationAcceptanceTests(unittest.TestCase):
         self.assertEqual(sends[1]["attachments"], [])
         self.assertIn("本次收到 1 张", sends[1]["content"])
         self.assertEqual([event["type"] for event in events],
-                         ["status", "context", "status", "explanation", "done"])
-        self.assertIn("自动修正", events[2]["text"])
+                         ["status", "context", "status", "status", "status", "explanation", "done"])
+        self.assertIn("创建会话", events[2]["text"])
+        self.assertIn("会话已连接", events[3]["text"])
+        self.assertIn("自动修正", events[4]["text"])
         self.assertEqual(events[-2]["explanation"], explanation)
 
     def test_zcode_valid_explanation_does_not_request_repair(self):
         explanation = self.explanation()
         events, sends = self.zcode_repair_run(json.dumps(explanation), "不得使用的第二次结果")
         self.assertEqual(len(sends), 1)
-        self.assertEqual([event["type"] for event in events], ["status", "context", "explanation", "done"])
+        self.assertEqual([event["type"] for event in events], ["status", "context", "status", "status", "explanation", "done"])
         self.assertEqual(events[-2]["explanation"], explanation)
 
     def test_zcode_repairs_flat_output_when_explicit_depth_is_requested(self):
@@ -692,7 +694,7 @@ class ExplanationAcceptanceTests(unittest.TestCase):
         self.assertEqual(len(sends), 2)
         self.assertIn("多级说明", sends[1]["content"])
         self.assertEqual([event["type"] for event in events],
-                         ["status", "context", "status", "explanation", "done"])
+                         ["status", "context", "status", "status", "status", "explanation", "done"])
         self.assertEqual(events[-2]["explanation"], nested)
 
     def test_zcode_invalid_repair_keeps_diagnostic_without_partial_cards(self):
@@ -701,7 +703,7 @@ class ExplanationAcceptanceTests(unittest.TestCase):
         invalid = json.dumps({**explanation, "sections": duplicate}, ensure_ascii=False)
         events, sends = self.zcode_repair_run("原回答没有 JSON。", invalid)
         self.assertEqual(len(sends), 2)
-        self.assertEqual([event["type"] for event in events], ["status", "context", "status", "error"])
+        self.assertEqual([event["type"] for event in events], ["status", "context", "status", "status", "status", "error"])
         self.assertIn("标题与前面的卡片重复", events[-1]["text"])
         self.assertIn("白板初始化", events[-1]["responsePreview"])
         self.assertEqual(events[-1]["changedFiles"], [])
@@ -710,7 +712,7 @@ class ExplanationAcceptanceTests(unittest.TestCase):
         original = "原回答没有 JSON，仍需保留用于诊断。"
         events, sends = self.zcode_repair_run(original, zcode_backend.ZCodeError("fixture turn failed"))
         self.assertEqual(len(sends), 2)
-        self.assertEqual([event["type"] for event in events], ["status", "context", "status", "error"])
+        self.assertEqual([event["type"] for event in events], ["status", "context", "status", "status", "status", "error"])
         self.assertIn("自动修正未返回可用", events[-1]["text"])
         self.assertEqual(events[-1]["responsePreview"], original)
 
@@ -718,7 +720,7 @@ class ExplanationAcceptanceTests(unittest.TestCase):
         invalid = "仍然只返回普通文字。"
         events, sends = self.zcode_repair_run(invalid, invalid)
         self.assertEqual(len(sends), 2)
-        self.assertEqual([event["type"] for event in events], ["status", "context", "status", "error"])
+        self.assertEqual([event["type"] for event in events], ["status", "context", "status", "status", "status", "error"])
         self.assertIn("找不到可解析的 JSON", events[-1]["text"])
         self.assertEqual(events[-1]["responsePreview"], invalid)
 
@@ -1021,9 +1023,9 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
                     self.assertEqual(sends[1]["attachments"], [])
                     self.assertIn("JSON", sends[1]["content"])
                     self.assertEqual([event["type"] for event in events],
-                                     ["status", "context", "status", kind, "done"])
-                    self.assertEqual(events[2].get("phase"), "repair")
-                    self.assertIn("自动修正", events[2]["text"])
+                                     ["status", "context", "status", "status", "status", kind, "done"])
+                    self.assertEqual(events[4].get("phase"), "repair")
+                    self.assertIn("自动修正", events[4]["text"])
                     self.assert_result(events, kind, expected)
 
     def test_branch_repair_rejects_a_second_invalid_result_without_partial_events(self):
@@ -1037,7 +1039,7 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
             with self.subTest(second=second):
                 events, sends = self.exchange(fields, "首轮只有说明文字", second)
                 self.assertEqual(len(sends), 2)
-                self.assertEqual([event["type"] for event in events], ["status", "context", "status", "error"])
+                self.assertEqual([event["type"] for event in events], ["status", "context", "status", "status", "status", "error"])
                 self.assertIn(expected_preview, events[-1]["responsePreview"])
                 if isinstance(second, str):
                     self.assertIn("原有的父节点", events[-1]["text"])
@@ -1061,7 +1063,7 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
         answer = "这是一段普通回答，用户没有要求生成卡片。"
         events, sends = self.exchange({}, answer)
         self.assertEqual(len(sends), 1)
-        self.assertEqual([event["type"] for event in events], ["status", "context", "answer", "done"])
+        self.assertEqual([event["type"] for event in events], ["status", "context", "status", "status", "answer", "done"])
         self.assertEqual(events[-2]["text"], answer)
 
 

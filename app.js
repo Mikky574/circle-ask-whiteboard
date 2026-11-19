@@ -249,6 +249,8 @@
   let maxConcurrentRequests = 4;
   let maxExpansionSummaryLength = 240;
   let traceOwner = null;
+  const executionTraces = new Map();
+  let displayedTrace = null;
   let composerSubmission = 0;
   let relayAvailable = false;
   let relayState = "connecting";
@@ -3978,45 +3980,119 @@
       }
     }
     entry.detail.hidden = !entry.preview.textContent;
-    if (trace.list.hidden) {
-      trace.list.hidden = false;
-      trace.empty.hidden = true;
-      trace.panel.open = true;
+    trace.list.hidden = false;
+    if (follow) trace.list.scrollTop = trace.list.scrollHeight;
+  }
+
+  function trimExecutionTraces() {
+    for (const [id, trace] of executionTraces) {
+      if (executionTraces.size <= 12) break;
+      if (trace.finished && trace !== displayedTrace) {
+        executionTraces.delete(id);
+        trace.option.remove();
+      }
     }
-    if (follow && trace.panel.open) trace.list.scrollTop = trace.list.scrollHeight;
+    $("execution-request-picker").hidden = executionTraces.size < 2;
+  }
+
+  function updateOutputBox(box, text) {
+    if (box.textContent === text) return;
+    const follow = box.scrollHeight - box.clientHeight - box.scrollTop < 20;
+    const top = box.scrollTop;
+    box.textContent = text;
+    box.scrollTop = follow ? box.scrollHeight : top;
+  }
+
+  function renderExecutionTrace(trace) {
+    if (trace !== displayedTrace) return;
+    const line = $("execution-trace-status");
+    const label = `${backendLabels[trace.backend]} · ${trace.state}`;
+    if (line.textContent !== label) line.textContent = label;
+    $("execution-trace-empty").hidden = !trace.list.hidden;
+    $("execution-trace-empty").textContent = trace.finished ? "本轮没有收到工具操作。" : "等待工具操作…";
+    $("execution-trace-repair").textContent = trace.repair || "";
+    $("execution-trace-repair").hidden = !trace.repair;
+    $("execution-trace-failure").hidden = !trace.error;
+    $("execution-trace-error").textContent = trace.error || "";
+    $("execution-trace-preview").hidden = !trace.preview;
+    $("execution-output").hidden = trace.backend !== "zcode";
+    $("execution-output-text").hidden = !trace.output;
+    updateOutputBox($("execution-log"), trace.logs.join("\n") || "等待 ZCode 输出…");
+    updateOutputBox($("execution-output-text"), trace.output);
+  }
+
+  function selectExecutionTrace(trace) {
+    if (!trace) return;
+    const panel = $("execution-trace");
+    const previous = displayedTrace;
+    displayedTrace = trace;
+    panel.hidden = false;
+    if (previous !== trace) {
+      $("execution-trace-list").replaceWith(trace.list);
+      $("execution-output-copy").textContent = "复制日志";
+      $("execution-log").scrollTop = $("execution-output-text").scrollTop = 0;
+      panel.open = trace.backend === "zcode" || !trace.list.hidden || Boolean(trace.error || trace.repair);
+    }
+    renderExecutionTrace(trace);
+  }
+
+  $("execution-request").addEventListener("change", (event) => {
+    selectExecutionTrace(executionTraces.get(event.target.value) || [...executionTraces.values()].at(-1));
+    $("execution-trace").open = true;
+  });
+  $("execution-trace-preview").addEventListener("click", () => {
+    if (displayedTrace?.preview) showResponsePreview(displayedTrace.error, displayedTrace.preview);
+  });
+  $("execution-output-copy").addEventListener("click", async () => {
+    const trace = displayedTrace;
+    if (!trace) return;
+    try {
+      await navigator.clipboard.writeText([
+        `${trace.label} · ${trace.state}`, `请求 ID ${trace.id}`, ...trace.logs, trace.error, trace.output,
+      ].filter(Boolean).join("\n"));
+      if (trace === displayedTrace) $("execution-output-copy").textContent = "已复制";
+    } catch {
+      status("无法访问剪贴板，可直接选中日志复制。");
+    }
+  });
+
+  function beginExecutionTrace(run, request) {
+    if (request.backend !== "codex" && request.backend !== "zcode") return null;
+    const phases = { plan: "判断意图", expandCard: "展开卡片", explain: "拆分说明", organize: "整理白板",
+      organizeBranch: "整理分支", decompose: "拆解任务", initialize: "初始化工程介绍" };
+    const phase = phases[request.scope] || (request.mode === "edit" ? "修改源码" : "处理问题");
+    const id = request.requestId;
+    const label = `${backendLabels[request.backend]} · ${phase} · ${excerpt(run.question || request.question, 48)}`;
+    const picker = $("execution-request");
+    const option = new Option(label, id);
+    picker.append(option);
+    const list = $("execution-trace-list").cloneNode(false);
+    list.hidden = true;
+    const trace = { id, label, option, list, steps: new Map(), backend: request.backend, started: performance.now(),
+      state: "运行中", finished: false, logs: [], output: "" };
+    executionTraces.set(id, trace);
+    if (!picker.value) selectExecutionTrace(trace);
+    trimExecutionTraces();
+    return trace;
+  }
+
+  function recordExecutionLog(trace, text, stderr = false) {
+    if (typeof text !== "string" || !text.trim()) return;
+    const elapsed = ((performance.now() - trace.started) / 1000).toFixed(1);
+    trace.logs.push(`+${elapsed}s ${stderr ? "[stderr] " : ""}${text.slice(0, 400)}`);
+    if (trace.logs.length > 36) trace.logs.shift();
   }
 
   async function readExecution(run, request, receive) {
-    const panel = $("execution-trace");
-    const label = backendLabels[request.backend];
-    const show = request.backend === "codex" || request.backend === "zcode";
     traceOwner = run;
-    const ownsTrace = () => traceOwner === run && show;
-    const trace = { panel, list: $("execution-trace-list"), empty: $("execution-trace-empty"), steps: new Map() };
-    const statusLine = $("execution-trace-status");
-    const repair = $("execution-trace-repair");
-    const failure = $("execution-trace-failure");
-    const reason = $("execution-trace-error");
-    const previewButton = $("execution-trace-preview");
-    panel.hidden = !show;
-    panel.open = false;
-    repair.hidden = failure.hidden = previewButton.hidden = true;
-    repair.textContent = reason.textContent = "";
-    previewButton.onclick = null;
-    trace.list.replaceChildren();
-    trace.list.hidden = true;
-    trace.empty.hidden = false;
-    trace.empty.textContent = "等待工具操作…";
-    statusLine.textContent = `${label} · 运行中`;
+    const trace = beginExecutionTrace(run, request);
     let terminal = "";
     const showFailure = (message, preview) => {
-      if (!ownsTrace() || request.scope === "explain" || !acceptsRunEvent(run)) return;
-      reason.textContent = message;
-      failure.hidden = false;
-      const text = typeof preview === "string" ? preview.slice(0, 2800) : "";
-      previewButton.hidden = !text;
-      previewButton.onclick = text ? () => showResponsePreview(message, text) : null;
-      panel.open = true;
+      if (!trace || !acceptsRunEvent(run) || (request.scope === "explain" && request.backend !== "zcode")) return;
+      trace.error = message;
+      trace.preview = typeof preview === "string" ? preview.slice(0, 2800) : "";
+      if (trace === displayedTrace) $("execution-trace").open = true;
+      renderExecutionTrace(trace);
     };
     try {
       const response = await fetch("/api/codex", {
@@ -4024,34 +4100,52 @@
         body: JSON.stringify(request),
       });
       await readEvents(response, request, (event) => {
+        if (["trace", "output", "log"].includes(event.type) &&
+            (!trace || event.requestId !== request.requestId || !acceptsRunEvent(run))) return;
         if (event.type === "trace") {
-          if (ownsTrace() && event.requestId === request.requestId && acceptsRunEvent(run)) showTraceStep(trace, event);
+          const first = trace.list.hidden;
+          showTraceStep(trace, event);
+          if (first && !trace.list.hidden && trace === displayedTrace) $("execution-trace").open = true;
+          renderExecutionTrace(trace);
+          return;
+        }
+        if (event.type === "output" || event.type === "log") {
+          if (request.backend === "zcode") {
+            if (event.type === "output" && typeof event.text === "string") trace.output = event.text.slice(0, 4800);
+            else if (event.channel === "stderr") recordExecutionLog(trace, event.text, true);
+            renderExecutionTrace(trace);
+          }
           return;
         }
         if (event.type === "done" || event.type === "error") terminal = event.type;
-        if (ownsTrace() && acceptsRunEvent(run) && event.type === "status" && event.phase === "repair") {
-          repair.textContent = event.text;
-          repair.hidden = false;
-          panel.open = true;
+        if (trace && acceptsRunEvent(run) && event.type === "status") {
+          if (request.backend === "zcode") recordExecutionLog(trace, event.text);
+          if (event.phase === "repair") {
+            trace.repair = event.text;
+            if (trace === displayedTrace) $("execution-trace").open = true;
+          }
+          renderExecutionTrace(trace);
         }
         if (event.type === "error") showFailure(event.text || "执行失败。", event.responsePreview);
         receive(event);
       });
     } catch (error) {
       terminal = "error";
-      if (failure.hidden) showFailure(error.message);
+      if (!trace?.error) showFailure(error.message);
       throw error;
     } finally {
-      if (ownsTrace()) {
-        statusLine.textContent = `${label} · ${run.stopping ? "已停止" : terminal === "done" ? "执行结束" : "执行失败"}`;
-        if (!repair.hidden) repair.textContent = "本轮已尝试修正输出格式。";
-        trace.empty.textContent = "本轮没有收到工具操作。";
+      if (trace) {
+        trace.finished = true;
+        trace.state = run.stopping ? "已停止" : terminal === "done" ? "执行结束" : "执行失败";
+        if (trace.repair) trace.repair = "本轮已尝试修正输出格式。";
         for (const entry of trace.steps.values()) {
           if (entry.row.dataset.state === "running") {
             entry.row.dataset.state = run.stopping ? "stopped" : "incomplete";
             entry.state.textContent = traceStates[entry.row.dataset.state];
           }
         }
+        renderExecutionTrace(trace);
+        trimExecutionTraces();
       }
     }
   }

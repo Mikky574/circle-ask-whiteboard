@@ -98,7 +98,9 @@ async function relay(req, res) {
     const label = [slowPlan, nextPlan].find(question => payload.question.endsWith(JSON.stringify(question)));
     if (payload.scope === "plan" && label) {
       stream({ type: "status", text: "正在等待意图验收放行" });
-      heldPlans.set(label, { payload, complete() {
+      stream({ type: "output", text: `还未结束的模型输出 · ${label} <fixture-tag>` });
+      stream({ type: "log", channel: "stderr", text: label === slowPlan ? "HTTP 429" : "HTTP 502" });
+      heldPlans.set(label, { payload, stream, complete() {
         stream({ type: "answer", text: '{"action":"ask"}' });
         stream({ type: "done", changedFiles: [] });
         res.end();
@@ -369,12 +371,27 @@ try {
   assert.deepEqual(heldPlans.get(slowPlan).payload.anchor.elementIds, ["E04"]);
   assert.deepEqual(heldPlans.get(nextPlan).payload.anchor.elementIds, [idB]);
   assert.equal(heldPlans.get(nextPlan).payload.attachments, undefined);
+  const executionPicker = page.locator("#execution-request");
+  const cliPreview = page.locator("#execution-output-text");
+  const cliLog = page.locator("#execution-log");
+  await cliPreview.getByText(new RegExp(nextPlan)).waitFor();
+  assert.equal(await cliPreview.locator("fixture-tag").count(), 0, "The stream is displayed as text");
+  assert.match(await cliLog.innerText(), /\[stderr\] HTTP 502/);
+  await executionPicker.selectOption(heldPlans.get(slowPlan).payload.requestId);
+  assert.match(await cliPreview.innerText(), new RegExp(slowPlan));
+  assert.match(await cliLog.innerText(), /\[stderr\] HTTP 429/);
+  heldPlans.get(nextPlan).stream({ type: "output", text: "并行请求的新流式文字" });
+  assert.doesNotMatch(await cliPreview.innerText(), /并行请求/);
+  await executionPicker.selectOption(heldPlans.get(nextPlan).payload.requestId);
+  await cliPreview.getByText("并行请求的新流式文字").waitFor();
   completeUpload();
   await waitForRelay(() => requests.some(({ question }) => question === slowUpload));
   const withFile = requests.find(({ question }) => question === slowUpload);
   assert.equal(withFile.backend, "zcode");
   assert.deepEqual(withFile.anchor.elementIds, [idA]);
   assert.deepEqual(withFile.attachments, [uploaded]);
+  assert.equal(await executionPicker.inputValue(), heldPlans.get(nextPlan).payload.requestId);
+  assert.equal(await cliPreview.innerText(), "并行请求的新流式文字", "A new request must not replace a manually selected log");
 
   await selectCards(page, ["E04"]);
   await page.locator("#ask-open").click();
@@ -395,7 +412,12 @@ try {
   await task(slowPlan).getByRole("button", { name: "恢复草稿" }).click();
   assert.equal(await page.locator("#question").inputValue(), slowPlan);
   await page.locator("#ask-close").click();
-  pass("ZCode can submit during another planner and file upload; per-run cancellation and attachments preserve the current draft and source card");
+  await executionPicker.selectOption(heldPlans.get(slowPlan).payload.requestId);
+  assert.match(await page.locator("#execution-trace-status").innerText(), /已停止/);
+  assert.match(await cliPreview.innerText(), new RegExp(slowPlan));
+  assert.doesNotMatch(await page.evaluate(() => JSON.stringify(Object.entries(localStorage))), /HTTP 429|并行请求的新流式文字/);
+  pass("ZCode planners stream independently, retain their output on cancellation, and never store the execution log on the board");
+  await executionPicker.selectOption("");
 
   await selectCards(page, ["E04"]);
   await page.locator("#expand-card-open").click();

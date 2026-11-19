@@ -577,6 +577,15 @@
           <p id="organization-status" role="status"></p>
           <details id="execution-trace" class="sidebar-disclosure" hidden>
             <summary>执行过程 <span id="execution-trace-status" role="status"></span></summary>
+            <label id="execution-request-picker" hidden>查看请求
+              <select id="execution-request"><option value="">最新请求</option></select>
+            </label>
+            <details id="execution-output" open hidden>
+              <summary>实时输出</summary>
+              <pre id="execution-log" aria-label="运行日志" tabindex="0"></pre>
+              <pre id="execution-output-text" aria-label="模型流式输出" tabindex="0" hidden></pre>
+              <button id="execution-output-copy" class="tool-button" type="button">复制日志</button>
+            </details>
             <p id="execution-trace-repair" role="status" hidden></p>
             <div id="execution-trace-failure" hidden>
               <p id="execution-trace-error"></p>

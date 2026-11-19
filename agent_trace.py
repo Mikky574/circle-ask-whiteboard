@@ -42,20 +42,20 @@ def safe_path(value):
     return value
 
 
-def bounded_detail(value):
+def bounded_detail(value, *, limit=DETAIL_LIMIT, line_limit=DETAIL_LINES):
     if not isinstance(value, str) or not value.strip():
         return ""
     if SECRET_BLOCK.search(value):
         return "〔敏感内容已隐藏〕"
-    lines = value.splitlines()[:DETAIL_LINES + 1]
-    clipped = len(lines) > DETAIL_LINES or len(value) > DETAIL_LIMIT
+    lines = value.splitlines()[:line_limit + 1]
+    clipped = len(lines) > line_limit or len(value) > limit
     preview = "\n".join(
         "〔敏感内容已隐藏〕" if SECRET_LINE.search(line) else
         "".join(character for character in line if character == "\t" or character.isprintable())
-        for line in lines[:DETAIL_LINES]
+        for line in lines[:line_limit]
     )
     suffix = "\n…" if clipped else ""
-    return preview[:DETAIL_LIMIT - len(suffix)].rstrip() + suffix
+    return preview[:limit - len(suffix)].rstrip() + suffix
 
 
 def diff_preview(previous, updated):
