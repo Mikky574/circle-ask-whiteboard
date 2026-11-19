@@ -23,6 +23,12 @@ const bodyA = "甲".repeat(650) + tailA;
 const bodyB = "乙".repeat(650) + tailB;
 const requests = [];
 const heldQuestions = new Map();
+const heldPlans = new Map();
+const slowPlan = "意图并发验收-第一条 ZCode";
+const slowUpload = "意图并发验收-含附件";
+const nextPlan = "意图并发验收-第二条 ZCode";
+const uploaded = { id: "e".repeat(32), name: "concurrent.txt", size: 10 };
+let completeUpload;
 const cancellations = [];
 const browserErrors = [];
 const unexpectedRequests = [];
@@ -78,12 +84,26 @@ async function relay(req, res) {
     json(res, { requestId, cancelled: true }, 202);
     return;
   }
+  if (url.pathname === "/api/attachments" && req.method === "POST") {
+    for await (const _ of req) { /* Drain the isolated upload fixture. */ }
+    assert.equal(req.headers["x-attachment-name"], uploaded.name);
+    completeUpload = () => json(res, uploaded);
+    return;
+  }
   if (url.pathname === "/api/codex" && req.method === "POST") {
     const payload = await body(req);
     requests.push(payload);
     res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
     const stream = event => res.write(JSON.stringify({ ...event, requestId: payload.requestId, baseRevision: payload.baseRevision }) + "\n");
-    if (payload.question.startsWith("并发验收-")) {
+    const label = [slowPlan, nextPlan].find(question => payload.question.endsWith(JSON.stringify(question)));
+    if (payload.scope === "plan" && label) {
+      stream({ type: "status", text: "正在等待意图验收放行" });
+      heldPlans.set(label, { payload, complete() {
+        stream({ type: "answer", text: '{"action":"ask"}' });
+        stream({ type: "done", changedFiles: [] });
+        res.end();
+      } });
+    } else if (payload.question.startsWith("并发验收-")) {
       stream({ type: "status", text: "正在等待验收放行" });
       heldQuestions.set(payload.question, { payload, complete() {
         stream({ type: "answer", text: `答复 ${payload.question}` });
@@ -273,7 +293,7 @@ try {
     await page.locator("#ask-open").click();
     await page.locator("#question").fill(text);
     await page.locator("#submit-question").click();
-    const task = page.locator("#running-questions li").filter({ hasText: text });
+    const task = page.locator("#running-questions li[data-question-run]").filter({ hasText: text });
     await task.waitFor({ state: "visible" });
     return task.getAttribute("data-question-run");
   }
@@ -325,6 +345,58 @@ try {
   pass("Three overlapping CLI questions finish independently, cancellation targets one, and responses retain their anchors on reload");
 
   await switchBackend("zcode");
+  const task = text => page.locator("#running-questions li").filter({ hasText: text });
+  async function sendOn(card, text, file) {
+    await selectCards(page, [card]);
+    await page.locator("#ask-open").click();
+    await page.locator("#question").fill(text);
+    if (file) await page.locator("#attachment-input").setInputFiles(file);
+    await page.locator("#submit-question").click();
+  }
+  async function waitForRelay(predicate) {
+    const deadline = Date.now() + 12000;
+    while (!predicate() && Date.now() < deadline) await new Promise(resolveWait => setTimeout(resolveWait, 25));
+    assert.ok(predicate(), "The expected request must reach the isolated relay");
+  }
+  await sendOn("E04", slowPlan);
+  await waitForRelay(() => heldPlans.has(slowPlan));
+  await task(slowPlan).getByText(/判断意图/).waitFor();
+  await sendOn(idA, slowUpload, { name: uploaded.name, mimeType: "text/plain", buffer: Buffer.from("attachment") });
+  await waitForRelay(() => completeUpload);
+  await task(slowUpload).getByText(/上传附件/).waitFor();
+  await sendOn(idB, nextPlan);
+  await waitForRelay(() => heldPlans.has(nextPlan));
+  assert.deepEqual(heldPlans.get(slowPlan).payload.anchor.elementIds, ["E04"]);
+  assert.deepEqual(heldPlans.get(nextPlan).payload.anchor.elementIds, [idB]);
+  assert.equal(heldPlans.get(nextPlan).payload.attachments, undefined);
+  completeUpload();
+  await waitForRelay(() => requests.some(({ question }) => question === slowUpload));
+  const withFile = requests.find(({ question }) => question === slowUpload);
+  assert.equal(withFile.backend, "zcode");
+  assert.deepEqual(withFile.anchor.elementIds, [idA]);
+  assert.deepEqual(withFile.attachments, [uploaded]);
+
+  await selectCards(page, ["E04"]);
+  await page.locator("#ask-open").click();
+  await page.locator("#question").fill("手头正在写的 ZCode 问题");
+  await task(slowPlan).getByRole("button", { name: /停止问答/ }).click();
+  await task(slowPlan).getByRole("button", { name: "恢复草稿" }).waitFor();
+  heldPlans.get(slowPlan).complete();
+  heldPlans.get(nextPlan).complete();
+  await waitForRelay(() => requests.some(({ question }) => question === nextPlan));
+  await page.locator("#running-questions li[data-question-run]").waitFor({ state: "hidden" });
+  assert.equal(cancellations.at(-1), heldPlans.get(slowPlan).payload.requestId);
+  assert.equal(requests.some(({ question }) => question === slowPlan), false);
+  const answered = requests.find(({ question }) => question === nextPlan);
+  assert.equal(answered.backend, "zcode");
+  assert.deepEqual(answered.anchor.elementIds, [idB]);
+  assert.equal(await page.locator("#question").inputValue(), "手头正在写的 ZCode 问题");
+  await page.locator("#question").fill("");
+  await task(slowPlan).getByRole("button", { name: "恢复草稿" }).click();
+  assert.equal(await page.locator("#question").inputValue(), slowPlan);
+  await page.locator("#ask-close").click();
+  pass("ZCode can submit during another planner and file upload; per-run cancellation and attachments preserve the current draft and source card");
+
   await selectCards(page, ["E04"]);
   await page.locator("#expand-card-open").click();
   await page.locator("#expand-card-submit").click();

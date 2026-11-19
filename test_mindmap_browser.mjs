@@ -1036,9 +1036,10 @@ try {
   await page.locator("#question").fill("请解释当前 E27 附件与事件流的实现边界。");
   heldPlan = new Promise(resolvePlan => { releasePlan = resolvePlan; });
   await page.locator("#submit-question").click();
-  await page.waitForFunction(() => document.querySelector("#submit-question").disabled);
-  await page.locator("#presentation-cards").evaluate(button => button.click());
-  assert.equal(await page.locator("#presentation-mindmap").getAttribute("aria-pressed"), "true", "Planning should keep the in-flight selection presentation stable");
+  await page.locator("#running-questions").getByText(/判断意图/).waitFor();
+  await page.locator("#presentation-cards").click();
+  assert.equal(await page.locator("#presentation-cards").getAttribute("aria-pressed"), "true", "A held planner should allow switching the active presentation");
+  await page.locator("#presentation-mindmap").click();
   releasePlan();
   heldPlan = null;
   await page.locator('#threads [data-anchor="E27"] .thread-answer').filter({ hasText: "合成问答" }).waitFor({ state: "attached" });

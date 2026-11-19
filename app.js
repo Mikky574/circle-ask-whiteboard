@@ -245,6 +245,7 @@
   let cardBoxes = [];
   let activeRun = null;
   const questionRuns = new Map();
+  const deferredQuestions = new Set();
   let maxConcurrentRequests = 4;
   let maxExpansionSummaryLength = 240;
   let traceOwner = null;
@@ -1187,34 +1188,20 @@
     $("attach-files").disabled = Boolean(activeRun) || count >= attachmentLimit;
   }
 
-  async function uploadAttachments(entries, target) {
-    if (entries.every((entry) => entry.ref)) return entries.map((entry) => entry.ref);
-    const controller = new AbortController();
-    const run = { controller, mode: "upload", target, stopping: false };
-    activeRun = run;
-    attachmentMessage("正在上传附件…");
-    renderInspector();
-    try {
-      for (const entry of entries) {
-        if (entry.ref) continue;
-        const response = await fetch("/api/attachments", {
-          method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Attachment-Name": encodeURIComponent(entry.file.name) },
-          body: entry.file, signal: controller.signal,
-        });
-        const data = await response.json().catch(() => null);
-        const [ref] = memory.cleanAttachments([data]);
-        if (!response.ok || !ref) throw new Error(data?.error || data?.text || `附件 ${entry.file.name} 上传失败（HTTP ${response.status}）`);
-        entry.ref = ref;
-      }
-      attachmentMessage();
-      return entries.map((entry) => entry.ref);
-    } catch (error) {
-      attachmentMessage(error.message);
-      return null;
-    } finally {
-      if (activeRun === run) activeRun = null;
-      renderInspector();
+  async function uploadAttachments(entries, signal) {
+    for (const entry of entries) {
+      if (entry.ref) continue;
+      signal.throwIfAborted();
+      const response = await fetch("/api/attachments", {
+        method: "POST", headers: { "Content-Type": "application/octet-stream", "X-Attachment-Name": encodeURIComponent(entry.file.name) },
+        body: entry.file, signal,
+      });
+      const data = await response.json().catch(() => null);
+      const [ref] = memory.cleanAttachments([data]);
+      if (!response.ok || !ref) throw new Error(data?.error || data?.text || `附件 ${entry.file.name} 上传失败（HTTP ${response.status}）`);
+      entry.ref = ref;
     }
+    return entries.map((entry) => entry.ref);
   }
 
   function dismissDeletionStatus() {
@@ -2121,10 +2108,6 @@
     return selected.length === 1 ? replies.get(selected[0].id) : undefined;
   }
 
-  function preparingQuestion() {
-    return activeRun?.mode === "upload" || activeRun?.mode === "plan";
-  }
-
   function questionUnavailable() {
     return activeRun || deletionPreparing || sourceChanged || storageStale || !relayAvailable ||
       (window.BoardSync && !window.BoardSync.writable) || questionRuns.size >= maxConcurrentRequests;
@@ -2136,18 +2119,20 @@
     stopAi.hidden = !single;
     stopAi.disabled = !single || Boolean(single.stopping);
     stopAi.textContent = single?.stopping ? "正在停止…" : "停止";
-    list.hidden = !questionRuns.size;
+    list.hidden = !questionRuns.size && !deferredQuestions.size;
     for (const run of questionRuns.values()) {
       if (!run.row) {
-        const id = run.reply.note.dataset.elementId;
+        const id = run.reply?.note.dataset.elementId;
         run.row = appendText(list, "li", "", "");
-        run.row.dataset.questionRun = id;
-        appendText(run.row, "span", "", `${backendLabels[run.target.backend]} · ${id} · ${excerpt(run.question, 72)}`);
+        if (id) run.row.dataset.questionRun = id;
+        run.label = appendText(run.row, "span", "", "");
         run.stopButton = appendText(run.row, "button", "tool-button", "停止");
         run.stopButton.type = "button";
-        run.stopButton.setAttribute("aria-label", `停止问答 ${id}`);
+        run.stopButton.setAttribute("aria-label", `停止问答 ${id || excerpt(run.question, 72)}`);
         run.stopButton.addEventListener("click", () => void stopRun(run));
       }
+      const phase = run.reply ? run.reply.note.dataset.elementId : run.mode === "upload" ? "上传附件" : "判断意图";
+      run.label.textContent = `${backendLabels[run.target.backend]} · ${phase} · ${excerpt(run.question, 72)}`;
       run.stopButton.hidden = single === run;
       run.stopButton.disabled = Boolean(run.stopping);
       run.stopButton.textContent = run.stopping ? "正在停止…" : "停止";
@@ -2184,12 +2169,9 @@
     expandCardOpen.disabled = unavailable;
     expandCardFocus.readOnly = Boolean(activeRun?.expandCard);
     expandCardSubmit.disabled = unavailable;
-    const preparing = preparingQuestion();
-    moveSelection.disabled = preparing || deleting || storageStale || activeRun?.mode === "organize";
-    question.readOnly = preparing;
-    $("ask-close").disabled = $("pin-mode").disabled = preparing;
-    $("ask-board").disabled = preparing || mode === "connect";
-    $("ask-independent").disabled = preparing || mode === "connect";
+    moveSelection.disabled = deleting || storageStale || activeRun?.mode === "organize";
+    $("ask-board").disabled = mode === "connect";
+    $("ask-independent").disabled = mode === "connect";
     submitQuestion.disabled = mode === "connect" || !selected.length || (!text && !draftAttachments.length) ||
       Boolean(questionUnavailable()) || attachmentCount(inherited) > attachmentLimit;
     submitQuestion.title = questionRuns.size >= maxConcurrentRequests
@@ -2272,7 +2254,7 @@
   async function stopRun(run) {
     if (!run || run.stopping) return;
     run.stopPromise = runGate.stop(run, async () => {
-      if (!run.requestId) return;
+      if (!run.requestId || run.mode === "upload") return;
       const response = await fetch("/api/cancel", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -2298,7 +2280,6 @@
     const changed = items.length !== selected.length || items.some((item, index) =>
       item.id !== selected[index].id || item.quote !== selected[index].quote || item.independent !== selected[index].independent);
     if (changed) {
-      if (preparingQuestion()) return;
       invalidateSourceEditAuthorization();
       askFeedback();
     }
@@ -2408,11 +2389,9 @@
       if (connectionDrag || !blank) return;
     }
     const panning = temporaryPan || grip || mode === "pan" || (blank && !(mode === "select" && event.shiftKey));
-    const preparing = preparingQuestion();
-    if (preparing && !panning) return;
     if (canvasSpace) canvasSpace.used = true;
     const id = item?.dataset.elementId;
-    const selecting = !temporaryPan && !preparing && (mode === "pan" || grip || (blank && mode === "select"));
+    const selecting = !temporaryPan && (mode === "pan" || grip || (blank && mode === "select"));
     let drag = null;
     if (selecting && visibleRect(id) && organizationEngine && !deletionPreparing &&
         activeRun?.mode !== "organize" && !storageStale && memory.storageIsCurrent()) {
@@ -3067,15 +3046,15 @@
     };
   }
 
-  function createReply(payload, kind) {
-    const anchor = unionRects(selected.map((item) => item.box));
+  function createReply(payload, kind, anchors = selected.map(rawAnchor)) {
+    const anchor = payload.anchor.box;
     const id = `A${String(nextReplyId++).padStart(2, "0")}`;
     const rect = { x: anchor.x, y: anchor.y, ...(kind === "branch" ? branchSize : noteSize) };
     const branchId = kind === "branch" ? id :
       payload.anchor.elementIds.map((parent) => replies.get(parent)?.branchId).find(Boolean) || null;
     return mountReply({
       id, rect, payload, kind, branchId, sourceCardIds: sourceCardIds(payload.anchor.elementIds), answer: "",
-      anchors: payload.scope === "independent" ? [] : selected.map(rawAnchor),
+      anchors: payload.scope === "independent" ? [] : anchors,
     });
   }
 
@@ -4173,7 +4152,16 @@
     }
   }
 
-  async function runCodex(reply, payload, mode, branch, target) {
+  function protectedQuestionCards(ids, nodes = boardForOrganization()) {
+    const parents = new Map(nodes.map(({ id, parentIds }) => [id, parentIds]));
+    const protectedCards = new Set(ids.filter(Boolean));
+    for (const id of protectedCards) {
+      for (const parentId of parents.get(id) || []) protectedCards.add(parentId);
+    }
+    return protectedCards;
+  }
+
+  async function runCodex(reply, payload, mode, branch, target, ownsComposer = () => true) {
     deletionUndo = null;
     reply.responsePreview = "";
     const { note, questionLine, answer } = reply;
@@ -4218,15 +4206,11 @@
     const nodes = boardForOrganization();
     const parent = nodes.find(({ id }) => id === note.dataset.elementId)?.layoutParentId;
     if (mode === "ask" && !explaining) {
-      const parents = new Map(nodes.map(({ id, parentIds }) => [id, parentIds]));
-      run.protectedCards = new Set([note.dataset.elementId, ...payload.anchor.elementIds,
+      run.protectedCards = protectedQuestionCards([note.dataset.elementId, ...payload.anchor.elementIds,
         ...reply.payload.anchor.elementIds, ...reply.sourceCardIds, reply.branchId, previous?.sectionOf,
         payload.revisionContext?.elementId, reply.payload.revisionContext?.elementId,
         ...(payload.anchor.noteContexts || []).flatMap(({ elementId, sourceCardIds }) => [elementId, ...sourceCardIds]),
-      ].filter(Boolean));
-      for (const id of run.protectedCards) {
-        for (const parentId of parents.get(id) || []) run.protectedCards.add(parentId);
-      }
+      ], nodes);
     }
     if (reply.kind === "branch" && !explaining) {
       if (openBranchPath(note.dataset.elementId).layoutChanged) saveOrganization();
@@ -4258,7 +4242,7 @@
     }
     layoutReplies(true);
     const noteRect = visibleRect(note.dataset.elementId) || reply.rect;
-    focusDiscussion(noteRect, visibleRect(parent));
+    if (ownsComposer()) focusDiscussion(noteRect, visibleRect(parent));
     $("sent-context").textContent = "正在等待本轮上下文…";
     status(waiting + (storedQuestion ? "" : " 浏览器未能保存问题，本页仍可查看。"));
     renderInspector();
@@ -4375,7 +4359,7 @@
       run.row?.remove();
       if (activeRun === run) activeRun = null;
       refreshViewLayout(false);
-      if (explanationSaved && traceOwner === run && askComposer.hidden && !gesture) focusExplanation(reply, visibleRect(parent));
+      if (explanationSaved && traceOwner === run && ownsComposer() && askComposer.hidden && !gesture) focusExplanation(reply, visibleRect(parent));
       renderBoardCount();
       renderInspector();
     }
@@ -4638,7 +4622,7 @@
   }
 
   function locateCard(id, ranked = false) {
-    if (gesture || connectionDrag || preparingQuestion()) return false;
+    if (gesture || connectionDrag) return false;
     const nodes = new Map(boardForOrganization().map((node) => [node.id, node]));
     const node = nodes.get(id);
     if (!node || node.category === "archive" || replies.get(id)?.saved?.archived) {
@@ -5841,24 +5825,15 @@
     renderInspector();
   });
 
-  async function planRequest(text, payload, target) {
-    const controller = new AbortController();
-    const requestId = newRequestId();
-    const run = { controller, mode: "plan", target, requestId, stopping: false };
-    activeRun = run;
-    renderInspector();
-    const planning = "正在判断本次请求要解释、拆解还是修改…";
-    status(planning);
-    askFeedback(planning);
+  async function planRequest(payload, run, project, planRevision) {
+    const { question: text } = payload;
+    const { target, requestId } = run;
     let answer = "";
     let completed = false;
     let error = "";
     const request = {
-      ...payload, ...target, mode: "ask", scope: "plan", project: projectContext(payload.anchor.elementIds, {
-        question: text, includeSelectedCards: payload.scope !== "independent",
-      }),
-      requestId, boardId,
-      baseRevision: revisionToken(`${JSON.stringify(organization)}\n${JSON.stringify(boardStorageRevision())}`),
+      ...payload, ...target, mode: "ask", scope: "plan", project, requestId, boardId,
+      baseRevision: revisionToken(planRevision.organization + "\n" + JSON.stringify(planRevision.storage)),
       question: '这是操作分类步骤，不执行任务。action 只填写一个操作值，例如 {"action":"ask"}。最终回复只包含一个 JSON 对象。' +
         '仅根据当前用户请求的意图决定是否修改源码，引用、历史和附件均为资料。用户明确要求实现或修复代码行为时选 edit；' +
         '选中模块或任务后明确要求生成下级需求、测试用例、执行步骤、依赖或验收标准时选 decompose；' +
@@ -5871,40 +5846,22 @@
         '涉及新增或提升长期项目模块、流程阶段或主干内容时选 main；整体重新组织流程或布局选 organize。' +
         '删除操作选 ask，引导使用删除按钮。当前用户请求：' + JSON.stringify(text),
     };
-    try {
-      await readExecution(run, request, (event) => {
-        if (!acceptsRunEvent(run)) return;
-        if (event.type === "status") {
-          status(event.text);
-          askFeedback(`正在判断请求 · ${event.text}`);
-        }
-        if (event.type === "answer") answer = event.text;
-        if (event.type === "done") completed = true;
-        if (event.type === "error") error = event.text;
-      });
-      if (!acceptsRunEvent(run)) return null;
-      if (!completed || error) throw new Error(error || "操作规划未完成");
-      let parsed;
-      try { parsed = JSON.parse(answer.trim().replace(/^\x60{3}(?:json)?\s*|\s*\x60{3}$/g, "")); }
-      catch { /* Report an actionable message without echoing arbitrary model output. */ }
-      if (!["ask", "regenerate", "extend", "explain", "splitAnswer", "decompose", "main", "organize", "organizeBranch", "edit"].includes(parsed?.action)) {
-        throw new Error("模型没有返回有效的操作类型。");
-      }
-      return parsed.action;
-    } catch (error) {
-      if (!acceptsRunEvent(run)) return null;
-      const message = `${error.message.replace(/[。！？]$/, "")}。请检查连接或再次发送。`;
-      status(message);
-      askFeedback(message, true);
-      return null;
-    } finally {
-      if (run.stopping && activeRun === run) {
-        status("已停止本轮。");
-        askFeedback("已停止本轮。");
-      }
-      if (activeRun === run) activeRun = null;
-      renderInspector();
+    await readExecution(run, request, (event) => {
+      if (!acceptsRunEvent(run)) return;
+      if (event.type === "status" && traceOwner === run) status(event.text);
+      if (event.type === "answer") answer = event.text;
+      if (event.type === "done") completed = true;
+      if (event.type === "error") error = event.text;
+    });
+    if (!acceptsRunEvent(run)) return null;
+    if (!completed || error) throw new Error(error || "操作规划未完成");
+    let parsed;
+    try { parsed = JSON.parse(answer.trim().replace(/^\x60{3}(?:json)?\s*|\s*\x60{3}$/g, "")); }
+    catch { /* Report an actionable message without echoing arbitrary model output. */ }
+    if (!["ask", "regenerate", "extend", "explain", "splitAnswer", "decompose", "main", "organize", "organizeBranch", "edit"].includes(parsed?.action)) {
+      throw new Error("模型没有返回有效的操作类型，请再次发送。");
     }
+    return parsed.action;
   }
 
   function explanationSource(reply) {
@@ -6657,7 +6614,7 @@
   viewport.addEventListener("dblclick", (event) => {
     if (event.defaultPrevented || event.button !== 0 || event.shiftKey || event.ctrlKey || event.metaKey ||
         event.altKey || mode === "pin" || mode === "connect" || gesture || connectionDrag ||
-        canvasSpace || preparingQuestion()) return;
+        canvasSpace) return;
     // Pointer capture keeps board gestures responsive and can retarget the mouse event to the viewport.
     const target = event.target === viewport ? document.elementFromPoint(event.clientX, event.clientY) : event.target;
     if (!target || target.closest(canvasControls)) return;
@@ -6745,7 +6702,7 @@
   }, { passive: false });
   cards.forEach(makeSelectable);
   function activateCanvasItem(target, additive) {
-    if (gesture || connectionDrag || preparingQuestion()) return false;
+    if (gesture || connectionDrag) return false;
     const path = target.closest(".connection-hit");
     if (mode === "connect" && path) {
       selectConnection(path);
@@ -6843,7 +6800,7 @@
     if (cardSearch.open && !cardSearch.contains(event.target)) cardSearch.open = false;
   });
   returnOverview.addEventListener("click", () => {
-    if (gesture || connectionDrag || preparingQuestion()) return;
+    if (gesture || connectionDrag) return;
     resetCardSearch();
     searchOpenBranches.clear();
     cardSearch.open = false;
@@ -7470,7 +7427,6 @@
   function askIndependent(point = {
     x: (viewport.clientWidth / 2 - offsetX) / scale, y: (viewport.clientHeight / 2 - offsetY) / scale,
   }) {
-    if (preparingQuestion()) return;
     if (mode === "connect" || mode === "pin") setMode("select");
     drawLasso([]);
     applySelection([{
@@ -7530,7 +7486,7 @@
     status("已记入项目主线。后续 Codex 会读到这条决定。");
   });
   askOpen.addEventListener("click", () => {
-    if (preparingQuestion() || mode === "connect" || !selected.length) return;
+    if (mode === "connect" || !selected.length) return;
     if (!askAt) {
       const box = unionRects(selected.map((item) => visibleRect(item.id) || item.box));
       askAt = { x: box.x + box.width, y: box.y + box.height / 2 };
@@ -7601,7 +7557,7 @@
     askOpen.focus();
   });
   askPopover.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || askComposer.hidden || preparingQuestion()) return;
+    if (event.key !== "Escape" || askComposer.hidden) return;
     event.preventDefault();
     showAsk();
     askOpen.focus();
@@ -7723,192 +7679,207 @@
     });
   }
 
+  function showQuestionDraft(selection, draft, entries, message) {
+    if (mode === "connect" || question.value.trim() || draftAttachments.length) return false;
+    if (selection.some(({ id }) => id !== "board" && !visibleRect(id))) return false;
+    const current = selection.map((item) => {
+      const rect = visibleRect(item.id);
+      return rect && !item.highlights.length ? { ...item, box: rect } : item;
+    });
+    applySelection(current);
+    question.value = draft;
+    draftAttachments.push(...entries);
+    showAsk(true);
+    askFeedback(message, true);
+    renderInspector();
+    return true;
+  }
+
+  function retainQuestionDraft(run, selection, draft, entries, message) {
+    const list = $("running-questions");
+    const row = appendText(list, "li", "", "");
+    deferredQuestions.add(row);
+    const text = appendText(row, "span", "", `${excerpt(run.question, 72)} · ${message}`);
+    text.setAttribute("role", "status");
+    const restore = appendText(row, "button", "tool-button", "恢复草稿");
+    const dismiss = appendText(row, "button", "tool-button", "移除");
+    restore.type = dismiss.type = "button";
+    const remove = () => {
+      deferredQuestions.delete(row);
+      row.remove();
+      renderInspector();
+    };
+    restore.addEventListener("click", () => {
+      if (showQuestionDraft(selection, draft, entries, message)) remove();
+      else status(question.value.trim() || draftAttachments.length ? "请先发送或清空当前草稿。" : "请先展开原选区并退出连线模式。");
+    });
+    dismiss.addEventListener("click", remove);
+    renderInspector();
+  }
+
   $("question-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const draft = question.value.trim();
-    if (!selected.length || questionUnavailable() || !memory.storageIsCurrent()) return;
-    const approvedContext = sourceEditContext();
-    const approvedRevision = sourceEditRevision;
-    const allowSourceEdit = $("allow-source-edit").checked && sourceEditAuthorization === approvedContext && sourceEditAvailable();
-    clearSourceEditAuthorization();
     const entries = [...draftAttachments];
-    if (!draft && !entries.length) return;
-    const submission = ++composerSubmission;
-    const text = draft || "请阅读本轮附件，概括与当前选区相关的内容。";
-    const ids = selected.map((item) => item.id);
-    const independent = Boolean(selected[0]?.independent);
-    const count = attachmentCount(inheritedAttachments(ids), entries);
+    if ((!draft && !entries.length) || !selected.length || mode === "connect" || questionUnavailable() || !memory.storageIsCurrent()) return;
+    const selection = selected;
+    const ids = selection.map((item) => item.id);
+    const inherited = inheritedAttachments(ids);
+    const count = attachmentCount(inherited, entries);
     if (count > attachmentLimit) {
       attachmentMessage(attachmentLimitMessage(count));
       return;
     }
-    const quotes = selected.map((item) => item.quote);
-    const sameAnchor = () => Boolean(selected[0]?.independent) === independent && selected.length === ids.length &&
-      selected.every((item, index) => item.id === ids[index] && item.quote === quotes[index]);
-    const unchanged = () => sameAnchor() && question.value.trim() === draft;
-    const takeAttachments = () => {
-      for (const entry of entries) {
-        const index = draftAttachments.indexOf(entry);
-        if (index !== -1) draftAttachments.splice(index, 1);
+
+    const target = connectionTarget();
+    const approvedRevision = sourceEditRevision;
+    const allowSourceEdit = $("allow-source-edit").checked && sourceEditAuthorization === sourceEditContext() && sourceEditAvailable();
+    const text = draft || "请阅读本轮附件，概括与当前选区相关的内容。";
+    const independent = Boolean(selection[0].independent);
+    const submission = ++composerSubmission;
+    const ownsComposer = () => submission === composerSubmission && !question.value && !draftAttachments.length && askComposer.hidden &&
+      Boolean(selected[0]?.independent) === independent && selected.length === selection.length &&
+      selected.every((item, index) => item.id === ids[index] && item.quote === selection[index].quote);
+    const anchors = selection.map(rawAnchor);
+    const planRevision = independent ? null : captureBoardRevision();
+    const project = independent ? null : projectContext(ids, { question: text, includeSelectedCards: true });
+    let payload = getPayload(text);
+    const alreadyUploaded = entries.every((entry) => entry.ref);
+    const run = {
+      parallel: true, mode: alreadyUploaded ? "plan" : "upload", requestId: newRequestId(),
+      controller: new AbortController(), question: text, target,
+      protectedCards: protectedQuestionCards([
+        ...ids, ...sourceCardIds(ids),
+        ...(payload.anchor.noteContexts || []).flatMap(({ elementId, sourceCardIds }) => [elementId, ...sourceCardIds]),
+      ]),
+    };
+    questionRuns.set(run.requestId, run);
+    const restore = (message) => {
+      status(message);
+      if (!ownsComposer() || !showQuestionDraft(selection, draft, entries, message)) {
+        retainQuestionDraft(run, selection, draft, entries, message);
       }
     };
+    clearSourceEditAuthorization();
+    question.value = "";
+    draftAttachments.length = 0;
+    attachmentMessage();
+    askAt = null;
+    showAsk();
     askFeedback();
-    const target = connectionTarget();
-    const uploads = await uploadAttachments(entries, target);
-    if (!uploads || !unchanged()) return;
-    if (!repositoryMatches(target)) {
-      askFeedback("项目目录已切换，请确认后再次发送。", true);
+    renderInspector();
+
+    let attachments;
+    let action;
+    let preparationError;
+    try {
+      const uploads = alreadyUploaded ? entries.map((entry) => entry.ref) : await uploadAttachments(entries, run.controller.signal);
+      if (!acceptsRunEvent(run)) throw new Error("已停止本轮。");
+      attachments = memory.cleanAttachments([...uploads, ...inherited]);
+      if (attachments.length) payload = { ...payload, attachments };
+      if (!repositoryMatches(target)) throw new Error("项目目录已切换，请确认后再次发送。");
+      run.mode = "plan";
+      if (!independent) {
+        renderInspector();
+        action = await planRequest(payload, run, project, planRevision);
+      } else action = "ask";
+      if (!action || !acceptsRunEvent(run)) throw new Error("已停止本轮。");
+      if (!repositoryMatches(target)) throw new Error("项目目录已切换，请确认后再次发送。");
+      if (!memory.storageIsCurrent()) throw new Error("白板已发生变化，请刷新后重试。");
+    } catch (error) {
+      if (run.stopping) await run.stopPromise;
+      preparationError = run.stopping ? "已停止本轮。" : error.message || "请求准备失败，请重试。";
+    } finally {
+      questionRuns.delete(run.requestId);
+      run.row?.remove();
+    }
+    if (preparationError) {
+      restore(preparationError);
       return;
     }
-    const attachments = memory.cleanAttachments([...uploads, ...inheritedAttachments(ids)]);
-    let payload = { ...getPayload(text), ...(attachments.length ? { attachments } : {}) };
-    if (independent) {
-      const reply = unfinishedReply(payload, "note") || createReply(payload, "note");
-      question.value = "";
-      takeAttachments();
-      askAt = null;
-      showAsk();
-      reply.note.focus({ preventScroll: true });
-      if (await runCodex(reply, payload, "ask", undefined, target)) {
-        if (submission === composerSubmission && sameAnchor() && askComposer.hidden &&
-            !question.value && visibleRect(reply.note.dataset.elementId)) {
-          applySelection([describe(reply.note)]);
-          status("已保存到独立草稿。可以继续提问，验收后再整合。");
-        }
-      } else if (submission === composerSubmission && sameAnchor() && !question.value && askComposer.hidden) {
-        question.value = draft;
-        if (!draftAttachments.length) draftAttachments.push(...entries);
-        askAt = payload.anchor.box;
-        showAsk(true);
-      }
-      renderInspector();
+
+    if (action === "edit" && (!allowSourceEdit || approvedRevision !== sourceEditRevision)) {
+      restore(target.repositoryPath
+        ? "绑定的项目目录用于只读分析。可以让 AI 给出修改建议。"
+        : "本轮未允许修改代码，或原授权已失效。请勾选「允许本次修改代码」后再次发送。");
       return;
     }
-    const planRevision = captureBoardRevision();
-    let action = await planRequest(text, payload, target);
-    if (!action) return;
-    if (!unchanged()) {
-      const message = "选区或问题已变化，请确认后再次发送。";
-      status(message);
-      askFeedback(message);
-      return;
-    }
-    if (!memory.storageIsCurrent()) {
-      const message = "判断请求期间白板已发生变化，本轮未执行。请保留问题草稿后刷新重试。";
-      status(message);
-      askFeedback(message, true);
-      return;
-    }
-    if (action === "edit" && (!allowSourceEdit || approvedRevision !== sourceEditRevision || approvedContext !== sourceEditContext())) {
-      const message = target.repositoryPath
-        ? "绑定的项目目录用于只读分析，已保留本轮问题。可以让 AI 给出修改建议。"
-        : "本轮未允许修改代码或请求内容已变化，已保留问题。需要改码时，请勾选「允许本次修改代码」后再次发送。";
-      status(message);
-      askFeedback(message, true);
-      return;
-    }
+    const nodes = boardForOrganization();
     if (action === "organize" || action === "main") {
-      const drafts = draftMembership(boardForOrganization());
+      const drafts = draftMembership(nodes);
       if (ids.some((id) => drafts.has(id))) action = ids.length === 1 ? "organizeBranch" : "ask";
     }
-    askFeedback();
-    const branch = discussionBranch(ids, { visibleOnly: target.backend === "api" });
+    const branch = independent ? undefined : discussionBranch(ids, { nodes, visibleOnly: target.backend === "api" });
     const asksForMultipleLevels = /(?:生成|拆|展开|分成|细化)[^，。！？\n]{0,12}(?:多级|多层|[二两三四2-4](?:级|层))|(?:多级|多层)(?:拆解|拆分|说明卡|任务卡)|逐级(?:展开|拆解|拆分)|孙(?:节点|卡片)|子节点(?:下|再)/u.test(text);
-    if (asksForMultipleLevels && (action === "decompose" || action === "explain" || action === "splitAnswer")) {
-      payload.minimumDepth = 2;
-    }
-    const selectedNote = selectedReply();
-    const rootId = selectedModuleId();
+    if (asksForMultipleLevels && ["decompose", "explain", "splitAnswer"].includes(action)) payload.minimumDepth = 2;
+    const selectedNote = ids.length === 1 ? replies.get(ids[0]) : null;
+    const rootId = ids.length === 1 && ids[0] !== "board" ? ids[0] : null;
     const regenerateTree = action === "regenerate" && rootId && (!selectedNote || selectedNote.saved?.outline ||
-      subtreeIds(hierarchyItems(boardForOrganization()), rootId).size > 1);
+      subtreeIds(hierarchyItems(nodes), rootId).size > 1);
     if (["edit", "decompose", "organizeBranch", "organize", "main"].includes(action) || regenerateTree) {
-      if (questionRuns.size || !sameBoardRevision(planRevision)) {
-        const message = questionRuns.size
-          ? "这次需要修改源码或重组卡片。请等进行中的问答结束后再次发送，本次草稿已保留。"
-          : "判断请求期间白板已发生变化，请基于当前白板再次发送。本次草稿已保留。";
-        status(message);
-        askFeedback(message, true);
+      if (questionRuns.size || activeRun || !ownsComposer() || !sameBoardRevision(planRevision) ||
+          gesture || connectionDrag || mode === "connect" || sourceChanged || storageStale || deletionPreparing) {
+        restore(questionRuns.size || activeRun
+          ? "本轮需要改动源码或白板结构。请等进行中的任务结束后重新发送。"
+          : "本轮需要改动源码或白板结构。请确认当前选区和白板后重新发送。");
         return;
       }
-    }
-    if (action === "decompose") {
-      if (await decomposeBoard(payload, target, branch)) {
-        takeAttachments();
-        renderInspector();
+      let saved = true;
+      if (action === "decompose") saved = await decomposeBoard(payload, target, branch);
+      else if (action === "organizeBranch" || regenerateTree) {
+        saved = await organizeSelectedBranch(text, target, attachments, Boolean(regenerateTree));
+      } else if (action === "organize" || action === "main") {
+        saved = await organizeBoard(text, false, { action, payload, target });
       }
-      return;
-    }
-    if (action === "organizeBranch" || regenerateTree) {
-      if (await organizeSelectedBranch(text, target, attachments, Boolean(regenerateTree))) {
-        takeAttachments();
-        renderInspector();
-      }
-      return;
-    }
-    if (action === "organize" || action === "main") {
-      if (await organizeBoard(text, false, { action, payload, target })) {
-        takeAttachments();
-        renderInspector();
-      }
-      return;
+      if (!saved) restore("本轮尚未保存，请检查任务提示后重新发送。");
+      if (action !== "edit") return;
     }
     if (action === "regenerate" && !selectedNote) action = "ask";
-    if (action === "regenerate" && selectedNote?.saved?.outline) action = "explain";
     if (action === "splitAnswer" && !selectedNote) action = "explain";
-    deletionUndo = null;
-    const mode = action === "edit" ? "edit" : "ask";
-    const extend = action === "extend";
-    const explain = action === "explain";
     let reply;
     if (action === "splitAnswer") {
       reply = selectedNote;
       if (!reply.saved?.answer || (reply.saved.delivery && !reply.saved.retryPayload) || reply.saved.outline) {
-        const message = reply.saved?.outline ? "这张总览已有说明卡。可以选中一张说明卡继续拆分。"
-          : "请选中一张已有完整回答的批注，再要求拆成说明卡。";
-        status(message);
-        askFeedback(message, true);
+        restore(reply.saved?.outline ? "这张总览已有说明卡。可以选中一张说明卡继续拆分。"
+          : "请选中一张已有完整回答的批注，再要求拆成说明卡。");
         return;
       }
       payload = { ...payload, scope: "explain", sourceAnswer: explanationSource(reply) };
     } else if (action === "regenerate") {
       reply = selectedNote;
-      if (!reply || reply.note.getAttribute("aria-busy") === "true") return;
       payload = {
         ...reply.payload,
         question: text,
         ...(attachments.length ? { attachments } : {}),
-        revisionContext: { elementId: selected[0].id, quote: selected[0].quote.slice(0, 600) },
+        revisionContext: { elementId: ids[0], quote: selection[0].quote.slice(0, 600) },
       };
-      drawLasso([]);
+      if (ownsComposer()) drawLasso([]);
     } else {
-      if (extend) payload.scope = "extend";
-      if (explain) payload.scope = "explain";
-      const kind = extend || explain ? "branch" : "note";
-      reply = unfinishedReply(payload, kind) || createReply(payload, kind);
+      if (action === "extend" || action === "explain") payload.scope = action;
+      const kind = action === "extend" || action === "explain" ? "branch" : "note";
+      reply = unfinishedReply(payload, kind) || createReply(payload, kind, anchors);
     }
-    question.value = "";
-    takeAttachments();
-    askAt = null;
-    showAsk();
-    reply.note.focus({ preventScroll: true });
-    const answered = await runCodex(reply, payload, mode, branch, target);
-    if (!answered && submission === composerSubmission && sameAnchor() && !question.value && askComposer.hidden) {
-      question.value = draft;
-      if (!draftAttachments.length) draftAttachments.push(...entries);
-      const box = unionRects(selected.map((item) => item.box));
-      askAt = { x: box.x + box.width, y: box.y + box.height / 2 };
-      showAsk(true);
+    if (reply.note.getAttribute("aria-busy") === "true") {
+      restore("该卡片有一个进行中的任务，请在它结束后重试。");
+      return;
+    }
+    if (ownsComposer()) reply.note.focus({ preventScroll: true });
+    const answered = await runCodex(reply, payload, action === "edit" ? "edit" : "ask", branch, target, ownsComposer);
+    if (!answered && ownsComposer()) showQuestionDraft(selection, draft, entries, reply.saved?.deliveryMessage || "本轮问答未完成。");
+    if (independent && answered && ownsComposer() && visibleRect(reply.note.dataset.elementId)) {
+      applySelection([describe(reply.note)]);
+      status("已保存到独立草稿。可以继续提问，验收后再整合。");
     }
     renderInspector();
   });
   new ResizeObserver(() => {
     if (gesture?.drag) layoutReplies(true);
-    else if (mindmap?.active || preparingQuestion()) refreshViewLayout(false);
+    else if (mindmap?.active) refreshViewLayout(false);
     else layoutReplies();
     if (autoFit) fit();
   }).observe(viewport);
   mindmap?.init({
-    isBusy: () => Boolean(gesture || connectionDrag || preparingQuestion() || deletionPreparing),
+    isBusy: () => Boolean(gesture || connectionDrag || deletionPreparing),
     canAsk: () => Boolean(selected.length) && !activeRun && !gesture && !connectionDrag &&
       !deletionPreparing && !sourceChanged && !storageStale && mode !== "connect",
     canSplit: () => Boolean(selectedModuleId()) && !expandCardOpen.disabled,
@@ -7980,7 +7951,7 @@
     },
   });
   function changeMindmapDepth(expanded) {
-    if (gesture || preparingQuestion() || deletionPreparing) return;
+    if (gesture || deletionPreparing) return;
     const revision = prepareLayoutChange();
     if (!revision) return;
     const items = hierarchyItems(boardForOrganization());
@@ -8038,7 +8009,7 @@
   window.BoardSync?.setRemoteRefresh(() => {
     const editing = workbenchDraft && cardEditorFields().some((value, index) => value !== workbenchDraft.originalFields[index]);
     const focusedInput = document.activeElement?.matches("input, textarea, select, [contenteditable='true']");
-    if (activeRun || questionRuns.size || deletionPreparing || gesture || connectionDrag || boardControls.isBusy() ||
+    if (activeRun || questionRuns.size || deferredQuestions.size || deletionPreparing || gesture || connectionDrag || boardControls.isBusy() ||
         autosaveFailures.size || (storageStale && !cacheStorageStale) || question.value.trim() || draftAttachments.length || editing ||
         decisionText.value.trim() || organizeOpinionDraft?.trim() || [...regenerateDrafts.values()].some((value) => value.trim()) ||
         expandCardFocus.value.trim() || document.querySelector("dialog[open]") || focusedInput ||

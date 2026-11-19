@@ -1885,8 +1885,9 @@ async function testLassoAnswerRetry() {
     await draft.fill(question);
     await send.click();
     try {
-      await feedback.filter({ hasText: /正在判断|正在识别/ }).waitFor();
-      assert.equal(await send.isEnabled(), false);
+      await page.locator("#running-questions").getByText(/判断意图/).waitFor();
+      assert.equal(await draft.inputValue(), "");
+      assert.equal(await draft.isVisible(), false, "The empty composer is closed after submitting");
     } finally {
       finishFirstPlan();
     }
@@ -2145,19 +2146,18 @@ async function testQuestionDuringPlanning() {
     await lassoTitle(page, "E05");
     await page.locator("#question").fill(question);
     await page.locator("#submit-question").click();
-    await page.locator("#ask-feedback").filter({ hasText: /正在判断|正在识别/ }).waitFor();
+    const task = page.locator("#running-questions li").filter({ hasText: question });
+    await task.getByText(/判断意图/).waitFor();
     const viewport = await page.locator("#viewport").boundingBox();
     await page.mouse.click(viewport.x + 6, viewport.y + 6);
-    assert.equal(await page.locator("#question").isVisible(), true);
-    assert.equal(await page.locator("#question").inputValue(), question);
+    assert.equal(await task.isVisible(), true);
     const camera = () => page.locator("#board").evaluate((board) => board.style.transform);
     const beforePan = await camera();
     await page.mouse.down();
     await page.mouse.move(viewport.x + 48, viewport.y + 42, { steps: 8 });
     await page.mouse.up();
     assert.notEqual(await camera(), beforePan, "The canvas can still pan while question planning is pending");
-    assert.equal(await page.locator("#question").isVisible(), true);
-    assert.equal(await page.locator("#question").inputValue(), question);
+    assert.equal(await task.isVisible(), true);
     releasePlan();
     const note = page.locator('#threads .thread-note[data-anchor="E05"]');
     await note.locator(".thread-answer").filter({ hasText: answer }).waitFor();
