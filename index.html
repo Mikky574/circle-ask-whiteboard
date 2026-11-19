@@ -52,6 +52,7 @@
       </div>
       <nav class="workspace-nav" aria-label="工作区导航">
         <a id="local-project-link" class="tool-button" href="./">首页</a>
+        <a class="tool-button" href="/guide" target="_blank" rel="noopener">使用指南</a>
         <a id="close-project" class="tool-button" href="./" hidden>关闭项目</a>
         <div class="board-picker" role="group" aria-label="白板管理">
           <label for="board-switcher">切换白板</label>
@@ -959,7 +960,7 @@
       "layout":{"flow":"vertical","density":"normal"},
       "collapsedBranches":["E05","E06","E07","E08","E09","E10","E14","E17","E20","E24","E33","E36","E39","E42","E48"],
       "items":[
-        {"id":"E04","parentId":null,"category":"main","title":"圈问白板｜项目工作台","summary":"个人开发者在本地白板读懂仓库、圈选发问、逐级改需求并复验。运行 python -B server.py 后打开 127.0.0.1:8791。板和讨论保存在本机服务数据库，浏览器只缓存；任务依赖是文字。展开任一章，沿需求找到实现和测试。","sources":["index.html","app.js","server.py","memory.js"]},
+        {"id":"E04","parentId":null,"category":"main","title":"圈问白板｜项目工作台","summary":"个人开发者在本地白板读懂仓库、圈选发问、逐级改需求并复验。运行 python -B server.py 后打开 127.0.0.1:8797。板和讨论保存在本机服务数据库，浏览器只缓存；任务依赖是文字。展开任一章，沿需求找到实现和测试。","sources":["index.html","app.js","server.py","memory.js"]},
         {"id":"E05","parentId":"E04","category":"main","title":"01｜圈选、提问和追问","summary":"从一段原文开始，核对 AI 实际收到的内容，再沿着原讨论继续问。","sources":["app.js","geometry.js","memory.js"]},
         {"id":"E06","parentId":"E04","category":"main","title":"02｜拆任务和摆放分支","summary":"把目标拆到可以执行的粒度，再折叠或移动分支，随时返回项目总览。","sources":["app.js","organization.js","server.py"]},
         {"id":"E07","parentId":"E04","category":"main","title":"03｜纠正一整支回答","summary":"指出偏差，重写所选卡和全部后代，核对保存和撤销是否符合预期。","sources":["app.js","server.py","organization.js"]},

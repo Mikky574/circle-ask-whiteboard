@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>圈问白板使用指南</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="guide-page">
+    <header class="guide-header">
+      <a class="tool-button" href="/">返回项目首页</a>
+      <h1>圈问白板使用指南</h1>
+      <p>给项目建白板、沿卡片追问，或用技能把 Codex／ZCode 的工作成果写回原板。</p>
+      <nav class="guide-nav" aria-label="指南章节">
+        <a href="#start">开始使用</a>
+        <a href="#skills">选择技能</a>
+        <a href="#files">文件工作流</a>
+      </nav>
+    </header>
+
+    <section id="start" aria-labelledby="guide-start">
+      <h2 id="guide-start">开始使用</h2>
+      <ol>
+        <li>在项目首页打开或添加本机项目。打开已有画布时，保留链接里的 <code>board</code> 编号。</li>
+        <li>点选卡片或圈住一段文字，再点「问选中内容」。要补下级，用卡片旁的「+」；要调整已有结构，选中根卡后用「整理分支」。</li>
+        <li>在右上角「连接设置」选择 Codex、ZCode 或 API 直连。等到页面显示已保存到本机服务，再把白板链接交给别人或其他会话。</li>
+      </ol>
+      <a href="/?board=repo-manual#E27">打开示例卡片 · 附件、连接设置和事件流</a>
+    </section>
+
+    <section id="skills" aria-labelledby="guide-skills">
+      <h2 id="guide-skills">选择技能</h2>
+      <p>以下是白板仓库提供的四个技能。在外部 Codex／ZCode 会话中，可以直接报技能名，并附上白板链接、目标卡号和你希望完成的事。</p>
+      <dl class="guide-skills">
+        <div>
+          <dt>本机初始化 <code>whiteboard-local-setup</code></dt>
+          <dd>启动白板、扫描指定工程目录、登记项目及子项目。适合第一次接入本机项目。</dd>
+          <dd><a href="/guide/skills/whiteboard-local-setup">查看技能原文</a></dd>
+        </div>
+        <div>
+          <dt>项目源码分析 <code>whiteboard-project-analysis</code></dt>
+          <dd>从使用场景追到源码入口、方法、参数、边界和验收。适合整理可逐级展开的项目手册。</dd>
+          <dd><a href="/guide/skills/whiteboard-project-analysis">查看技能原文</a></dd>
+        </div>
+        <div>
+          <dt>把工作成果落板 <code>whiteboard-content-handoff</code></dt>
+          <dd>找到正确的白板和父卡，判断应更新现有卡还是增加下级，再核对实际保存结果。</dd>
+          <dd><a href="/guide/skills/whiteboard-content-handoff">查看技能原文</a></dd>
+        </div>
+        <div>
+          <dt>从外部直接读写 <code>whiteboard-service</code></dt>
+          <dd>通过本机服务查板、导出分支、预览并提交修改。适合已有内容，只需更新或追加到现有分支。</dd>
+          <dd><a href="/guide/skills/whiteboard-service">查看技能原文</a></dd>
+        </div>
+      </dl>
+      <p>可以这样交给 AI：「用 <code>whiteboard-service</code> 打开这张白板，把本轮验收结果补到 E27 的对应子卡。先核对已有内容，提交后告诉我卡号和保存版本。」</p>
+    </section>
+
+    <section id="files" aria-labelledby="guide-files">
+      <h2 id="guide-files">文件工作流</h2>
+      <p>在白板仓库根目录执行。示例使用代码仓库详解手册的 E27，实际操作时替换成你要改的板号和卡号。</p>
+      <ol>
+        <li>导出目标分支、祖先、项目规则和此次读取的版本。
+          <pre><code>python scripts/whiteboard_service.py checkout --board repo-manual --node E27 --out board-work</code></pre>
+        </li>
+        <li>阅读 <code>context.json</code>，只编辑 <code>proposal.json</code>。用 <code>updates</code> 更新卡片，用 <code>children</code> 增加下级。</li>
+        <li>先预览范围与父子关系，再提交。服务保存后，用 <code>receipt.json</code> 核对卡号和版本。
+          <pre><code>python scripts/whiteboard_service.py submit --workspace board-work
+python scripts/whiteboard_service.py submit --workspace board-work --commit</code></pre>
+        </li>
+      </ol>
+      <p>工作文件用来准备修改，最新白板由本机服务保存。版本有变化时，重新导出分支并合并差异。</p>
+    </section>
+  </main>
+</body>
+</html>

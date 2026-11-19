@@ -27,7 +27,7 @@
 新增卡自动分配 `E` 编号，`ref` 用于回执和本提案的 `parentId:"@stream"` 引用；嵌套 `children` 自动挂在直接父卡下面。需要先展示章节、稍后深入时，给新增章节设 `collapsed:true`，原有分支的展开状态保持不变。先预览：
 
 ```text
-python scripts/whiteboard_service.py --url http://127.0.0.1:8791 apply --board BOARD_ID --expected-revision 12 --file proposal.json
+python scripts/whiteboard_service.py --url http://127.0.0.1:8797 apply --board BOARD_ID --expected-revision 12 --file proposal.json
 ```
 
 核对根卡、受影响卡和新增关系后，用户已经要求写入时直接执行同一命令并加 `--commit --receipt receipt.json`。预览不写服务，不需要为了例行提交再次向用户索要批准。版本号用刚读到的 `revision`。出现版本冲突就停止，重新读取并合并差异；不能用最新版本号盲目重试旧提案。

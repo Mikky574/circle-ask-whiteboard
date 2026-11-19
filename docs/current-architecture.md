@@ -36,10 +36,10 @@
 6. 读取服务端回执和保存后的文档，再用独立浏览器打开同一板号。
 
 ```text
-python scripts/whiteboard_service.py --url http://127.0.0.1:8791 list
-python scripts/whiteboard_service.py --url http://127.0.0.1:8791 read --board BOARD_ID --node E27
-python scripts/whiteboard_service.py --url http://127.0.0.1:8791 apply --board BOARD_ID --expected-revision N --file proposal.json
-python scripts/whiteboard_service.py --url http://127.0.0.1:8791 apply --board BOARD_ID --expected-revision N --file proposal.json --commit --receipt receipt.json
+python scripts/whiteboard_service.py --url http://127.0.0.1:8797 list
+python scripts/whiteboard_service.py --url http://127.0.0.1:8797 read --board BOARD_ID --node E27
+python scripts/whiteboard_service.py --url http://127.0.0.1:8797 apply --board BOARD_ID --expected-revision N --file proposal.json
+python scripts/whiteboard_service.py --url http://127.0.0.1:8797 apply --board BOARD_ID --expected-revision N --file proposal.json --commit --receipt receipt.json
 ```
 
 这版技能处理已整理的 `organization.current.items`，不初始化空板、不删除、不重挂接现有节点、不修改项目绑定或凭据。CLI 回执记录本次根卡、修改卡号、创建卡号和前后版本；真正持久化的依据是服务端版本快照，当前没有独立的模块操作审计表。

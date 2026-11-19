@@ -7,14 +7,14 @@ description: 通过圈问白板本机服务读取白板、导出分支上下文�
 
 用于外部 Codex／ZCode 把已完成的说明或验收结果写到用户指定的白板。卡片通过本机 HTTP `/api/board-store` 保存到服务数据库，浏览器只是缓存。不需要模型 Key、代理浏览器，也不直接编辑 SQLite、localStorage、初始模板或目标仓库源码来交付卡片。
 
-先核对用户链接的服务地址、板号、标题与项目目录。默认地址 `http://127.0.0.1:8791`，以用户实际地址为准。用 `probe` 确认共享接口，用 `list`、`find --board ID --query 主题` 定位已有父卡。所有命令都会检查接口；404、HTML 或找不到目标板号时停止核对，不退回浏览器私有缓存，也不另建同名板冒充更新。
+先核对用户链接的服务地址、板号、标题与项目目录。默认地址 `http://127.0.0.1:8797`，以用户实际地址为准。用 `probe` 确认共享接口，用 `list`、`find --board ID --query 主题` 定位已有父卡。所有命令都会检查接口；404、HTML 或找不到目标板号时停止核对，不退回浏览器私有缓存，也不另建同名板冒充更新。
 
 ## 推荐：文件工作目录
 
 以下命令从仓库根目录运行；使用已安装技能时，改用本技能内的 `scripts/whiteboard_service.py` 绝对路径。
 
 ```text
-python scripts/whiteboard_service.py --url http://127.0.0.1:8791 checkout --board BOARD_ID --node E27 --out board-work
+python scripts/whiteboard_service.py --url http://127.0.0.1:8797 checkout --board BOARD_ID --node E27 --out board-work
 python scripts/whiteboard_service.py submit --workspace board-work
 python scripts/whiteboard_service.py submit --workspace board-work --commit
 ```

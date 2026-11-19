@@ -11,7 +11,7 @@ description: Initialize the Circle Ask Whiteboard service, scan chosen local dir
 python -B server.py
 ```
 
-如果端口 8791 已占用，先访问 `http://127.0.0.1:8791/api/status` 检查是否已有白板服务。项目入口为 `http://127.0.0.1:8791/?board=project-workbench`。浏览、搜索和打开 Windows 文件夹无需 AI 连接。生成工程介绍时，在项目自己的「项目画布」中配置可用的 Codex 或 ZCode，点「初始化工程介绍」。
+如果端口 8797 已占用，先访问 `http://127.0.0.1:8797/api/status` 检查是否已有白板服务。项目入口为 `http://127.0.0.1:8797/?board=project-workbench`。浏览、搜索和打开 Windows 文件夹无需 AI 连接。生成工程介绍时，在项目自己的「项目画布」中配置可用的 Codex 或 ZCode，点「初始化工程介绍」。
 
 ## 扫描和登记
 

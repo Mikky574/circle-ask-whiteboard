@@ -14,6 +14,24 @@
 *, *::before, *::after { box-sizing: border-box; }
 
 body { margin: 0; }
+.guide-page { max-width: 920px; margin: 0 auto; padding: clamp(18px, 5vw, 52px); line-height: 1.7; }
+.guide-header { margin-bottom: 30px; }
+.guide-header h1 { margin: 16px 0 0; font-size: clamp(28px, 5vw, 44px); line-height: 1.2; }
+.guide-page h2 { margin: 0 0 12px; font-size: 21px; }
+.guide-page p { margin: 10px 0 14px; color: var(--muted); }
+.guide-page section { padding: 22px 0; border-top: 1px solid var(--panel-border); }
+.guide-page a { color: var(--mint); }
+.guide-header > a { display: inline-flex; align-items: center; text-decoration: none; }
+.guide-nav { display: flex; flex-wrap: wrap; gap: 10px 22px; }
+.guide-page ol { padding-inline-start: 1.5em; }
+.guide-page li + li { margin-top: 8px; }
+.guide-skills { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 305px), 1fr)); gap: 12px; }
+.guide-skills > div, .guide-page pre { background: var(--surface); border: 1px solid var(--panel-border); border-radius: 10px; padding: 13px 15px; }
+.guide-skills dt { font-weight: 700; }
+.guide-skills dt code { display: block; font-weight: 400; overflow-wrap: anywhere; }
+.guide-skills dd { margin: 4px 0; color: var(--muted); }
+.guide-page code { font-family: var(--mono); font-size: .88em; }
+.guide-page pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 .board-sync-status { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; padding: 7px clamp(16px, 3.4vw, 54px); color: var(--muted); font-size: 12px; }
 .board-sync-status[data-state="error"] { color: #f1c9a7; }
 .board-sync-status[hidden] { display: none; }

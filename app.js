@@ -290,8 +290,7 @@
   }
 
   function projectCanvasUrl(project) {
-    if (project.boardUrl && new URL(project.boardUrl).origin !== location.origin) return project.boardUrl;
-    return projectUrl(project.id);
+    return project.boardUrl || projectUrl(project.id);
   }
 
   function readCardRequirements(entries) {

@@ -9,12 +9,13 @@ import urllib.request
 
 MAX_RESPONSE = 2 * 1024 * 1024
 DEFAULT_BUDGET = {"timeoutSeconds": 180, "maxRounds": 12, "maxToolCalls": 40}
+DEFAULT_WHITEBOARD_PORT = 8797
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise ValueError("API redirects are disabled to protect the API key.")
 
-def validate_settings(value, model):
+def validate_settings(value, model, *, whiteboard_port=DEFAULT_WHITEBOARD_PORT):
     if not isinstance(value, dict):
         raise ValueError("请填写 API 接口地址和 Key。")
     url, key = value.get("baseUrl", ""), value.get("apiKey", "")
@@ -26,8 +27,8 @@ def validate_settings(value, model):
     if (not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment
             or len(url) > 2048 or (parsed.scheme != "https" and not (parsed.scheme == "http" and local))):
         raise ValueError("接口地址须为 HTTPS；仅本机服务允许 HTTP，不能包含账号、查询参数或片段。")
-    if local and parsed.port == 8791:
-        raise ValueError("接口地址不能是白板自身的 8791 端口。")
+    if local and parsed.port == whiteboard_port:
+        raise ValueError(f"接口地址不能是白板自身的 {whiteboard_port} 端口。")
     if not model:
         raise ValueError("API 直连必须填写模型 ID。")
     if not key or len(key) > 8192 or any(ord(c) < 32 or ord(c) > 126 for c in key):

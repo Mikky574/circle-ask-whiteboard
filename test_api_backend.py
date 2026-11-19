@@ -10,8 +10,10 @@ import server
 class Tests(unittest.TestCase):
     def test_settings(self):
         self.assertEqual(api.validate_settings({"baseUrl":"https://example.com/v1/", "apiKey":"test"},"m")["url"], "https://example.com/v1/chat/completions")
-        for url in ("http://example.com/v1", "https://u:p@example.com", "https://example.com?key=x", "http://127.0.0.1:8791"):
+        for url in ("http://example.com/v1", "https://u:p@example.com", "https://example.com?key=x", "http://127.0.0.1:8797"):
             with self.assertRaises(ValueError): api.validate_settings({"baseUrl":url,"apiKey":"test"},"m")
+        with self.assertRaisesRegex(ValueError, "9910"):
+            api.validate_settings({"baseUrl": "http://localhost:9910/v1", "apiKey": "test"}, "m", whiteboard_port=9910)
         for model,key in (("","test"),("m","a\nb")):
             with self.assertRaises(ValueError): api.validate_settings({"baseUrl":"https://example.com/v1","apiKey":key},model)
     def test_request(self):

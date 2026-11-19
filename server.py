@@ -21,7 +21,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote
 
-from api_backend import validate_settings, run_api
+from api_backend import DEFAULT_WHITEBOARD_PORT, validate_settings, run_api
 from board_tools import BoardTools
 from board_store import BoardStoreError, MAX_STORE_REQUEST_BYTES, board_store_request
 from backends import FACTORY, BackendRequest, CancellationToken
@@ -37,7 +37,7 @@ from zcode_workspace import READABLE as MAP_SOURCE_FILES, REPOSITORY_PREFIX, cal
 
 ROOT = Path(__file__).resolve().parent
 HOST = "127.0.0.1"
-PORT = 8791
+PORT = DEFAULT_WHITEBOARD_PORT
 ALLOWED_HOSTS = {f"{HOST}:{PORT}", f"localhost:{PORT}"}
 STATIC = {
     "index.html": "text/html; charset=utf-8",
@@ -55,6 +55,12 @@ STATIC = {
     "project_finder.js": "text/javascript; charset=utf-8",
     "workbench_activity.js": "text/javascript; charset=utf-8",
 }
+GUIDE_FILES = {
+    "/guide": ("guide.html", "text/html; charset=utf-8"),
+    "/guide/": ("guide.html", "text/html; charset=utf-8"),
+}
+for _skill in ("whiteboard-local-setup", "whiteboard-project-analysis", "whiteboard-content-handoff", "whiteboard-service"):
+    GUIDE_FILES[f"/guide/skills/{_skill}"] = (f".agents/skills/{_skill}/SKILL.md", "text/plain; charset=utf-8")
 SOURCE_ID = re.compile(r"[A-Z][0-9]{2,8}")
 DECOMPOSITION_ID = re.compile(r"[AE][0-9]{2,8}")
 DECOMPOSITION_MAX_DEPTH = 3
@@ -1768,17 +1774,36 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                                  "backends": FACTORY.status(sys.modules[__name__]),
                                  "resetRecovered": RESET_RECOVERED.is_set()})
             return
-        name = "index.html" if path == "/" else path.removeprefix("/")
-        if not path.startswith("/") or name not in STATIC:
-            self.send_json(404, {"type": "error", "text": "资源不存在。"})
+        self.serve_page(path)
+
+    def do_HEAD(self):
+        if not self.host_allowed():
+            self.headers_for(403, "text/plain; charset=utf-8", 0)
+            return
+        self.serve_page(self.path.partition("?")[0])
+
+    def serve_page(self, path):
+        if path in GUIDE_FILES:
+            name, mime = GUIDE_FILES[path]
+        else:
+            name = "index.html" if path == "/" else path.removeprefix("/")
+            mime = STATIC.get(name) if path.startswith("/") else None
+        def not_found():
+            if self.command == "HEAD":
+                self.headers_for(404, "text/plain; charset=utf-8", 0)
+            else:
+                self.send_json(404, {"type": "error", "text": "资源不存在。"})
+        if not mime:
+            not_found()
             return
         try:
             content = public_file(name).read_bytes()
         except OSError:
-            self.send_json(404, {"type": "error", "text": "资源不存在。"})
+            not_found()
             return
-        self.headers_for(200, STATIC[name], len(content))
-        self.wfile.write(content)
+        self.headers_for(200, mime, len(content))
+        if self.command != "HEAD":
+            self.wfile.write(content)
 
     def do_POST(self):
         origins = self.headers.get_all("Origin", [])

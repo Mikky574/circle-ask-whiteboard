@@ -8,7 +8,7 @@ from pathlib import Path
 import threading
 import uuid
 from typing import Any, Callable, Protocol, TypedDict
-from api_backend import validate_settings
+from api_backend import DEFAULT_WHITEBOARD_PORT, validate_settings
 
 class BackendEvent(TypedDict, total=False):
     type: str
@@ -175,7 +175,7 @@ class ApiAdapter(BackendAdapter):
     def validate(self,request,runtime):
         super().validate(request,runtime)
         raw_options = request.backendOptions.get("api", request.api)
-        request.api=validate_settings(raw_options,request.model)
+        request.api = validate_settings(raw_options, request.model, whiteboard_port=getattr(runtime, "PORT", DEFAULT_WHITEBOARD_PORT))
         # Keep the normalised address as backend metadata but leave the
         # request-local key only in the non-repr transport settings.
         request.backendOptions = {**request.backendOptions, "api": {"baseUrl": request.api["url"]}}
