@@ -5679,19 +5679,19 @@
     const nodes = boardForOrganization();
     const plan = memory.deletionPlan(nodes, ids);
     if (!plan.removed.length || deletionBlock(plan) || !memory.storageIsCurrent()) return;
+    if (!mindmap?.active) {
+      // In card mode only, keep the displayed card geometry across a deletion.
+      const positions = organization.current?.positions || organization.rawPositions;
+      for (const node of nodes) {
+        const rect = visibleRect(node.id);
+        if (rect) positions[node.id] = { x: rect.x, y: rect.y, width: rect.width };
+      }
+    }
     deletionUndo = structuredClone({
       notes: savedNotes(), organization, deletedIds: [...deletedIds],
       pinnedIds: [...pinnedIds], decisions: project.decisions, pendingRepair,
       activeRequests: [...questionRuns.keys(), ...(activeRun ? [activeRun.requestId] : [])],
     });
-    // Persist existing coordinates so deletion and later reloads cannot compact the board.
-    const positions = organization.current ? organization.current.positions : organization.rawPositions;
-    for (const node of nodes) {
-      const rect = visibleRect(node.id);
-      if (rect) positions[node.id] = { x: rect.x, y: rect.y };
-    }
-    // Undo restores the exact pre-delete positions too, without a fresh layout.
-    deletionUndo.organization = structuredClone(organization);
     const removed = new Set(plan.removed);
     const keep = (ids) => (ids || []).filter((id) => !removed.has(id));
     const removedOutlines = new Map(deletionUndo.notes.filter((note) => note.outline && removed.has(note.id)).map((note) => [note.id, note]));
@@ -6696,6 +6696,13 @@
         return;
       }
     }
+    if (event.key === "Delete" && mindmap?.active && mode !== "connect" && !event.repeat &&
+        !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !$("delete-selection").disabled) {
+      event.preventDefault();
+      deleteSelection();
+      viewport.focus({ preventScroll: true });
+      return;
+    }
     if (mode !== "connect") return;
     if (event.key === "Escape") {
       clearConnectionDrag();
@@ -6936,13 +6943,18 @@
     renderInspector();
   }
 
-  function openCardEditor(item, position, starter = false) {
-    const task = item?.taskDetails;
-    const anchor = position ? { ...position, width: 0, height: 0 } : visibleRect(selectedModuleId()) || {
+  function newCardAnchor(position) {
+    return position ? { ...position, width: 0, height: 0 } : visibleRect(selectedModuleId()) || {
       x: (viewport.clientWidth / 2 - offsetX) / scale, y: (viewport.clientHeight / 2 - offsetY) / scale,
       width: 0, height: 0,
     };
-    workbenchDraft = item ? { id: item.id, revision: workbenchContentRevision(item) } : { creating: true, anchor, position, starter };
+  }
+
+  function openCardEditor(item, position, starter = false) {
+    const task = item?.taskDetails;
+    workbenchDraft = item
+      ? { id: item.id, revision: workbenchContentRevision(item) }
+      : { creating: true, anchor: newCardAnchor(position), position, starter, inMindmap: Boolean(mindmap?.active) };
     $("workbench-card-form-title").textContent = item ? "编辑卡片" : "新建卡片";
     workbenchCardTitle.value = item?.title || "";
     workbenchCardBody.value = task?.task ?? item?.summary ?? "";
@@ -7192,6 +7204,11 @@
     const items = creating ? [...previousItems, item] : previousItems.map((entry) => entry.id === id ? item : entry);
     const positions = { ...(previous.current?.positions || previous.rawPositions) };
     const beforeRects = previous.current ? organizedRects : rawRects;
+    const previousMindmapPositions = mindmapPositions;
+    const inMindmap = Boolean(mindmap?.active);
+    const originalPresentation = workbenchDraft.inMindmap === inMindmap;
+    const point = originalPresentation ? workbenchDraft.position : undefined;
+    const anchor = creating && (originalPresentation ? workbenchDraft.anchor : newCardAnchor());
     const draft = question.value;
     const askWasOpen = !askComposer.hidden;
     organization = previous.current
@@ -7204,30 +7221,39 @@
       if (creating) {
         const rect = visibleRect(id);
         if (!rect) throw new Error("未能放置新卡片。");
-        const point = workbenchDraft.position;
-        const occupied = point && [...beforeRects.values()].some((other) =>
+        const currentRects = previous.current ? organizedRects : rawRects;
+        const neighbors = inMindmap
+          ? [...currentRects].filter(([otherId]) => otherId !== id).map(([, bounds]) => bounds)
+          : [...beforeRects.values()];
+        const occupied = point && neighbors.some((other) =>
           point.x < other.x + other.width && point.x + rect.width > other.x &&
           point.y < other.y + other.height && point.y + rect.height > other.y);
-        const placement = point && !occupied ? point : placeNote(workbenchDraft.anchor, beforeRects.values(), rect, null);
-        positions[id] = { x: placement.x, y: placement.y, width: rect.width };
+        const placement = point && !occupied ? point : placeNote(anchor, neighbors, rect, null);
         movedFromPoint = Boolean(occupied);
-        for (const [cardId, { x, y, width }] of beforeRects) {
-          const next = visibleRect(cardId);
-          if (next && (next.x !== x || next.y !== y || next.width !== width)) positions[cardId] = { x, y, width };
+        if (inMindmap) {
+          mindmapPositions = { ...mindmapPositions, [id]: { x: placement.x, y: placement.y } };
+        } else {
+          positions[id] = { x: placement.x, y: placement.y, width: rect.width };
+          for (const [cardId, { x, y, width }] of beforeRects) {
+            const next = visibleRect(cardId);
+            if (next && (next.x !== x || next.y !== y || next.width !== width)) positions[cardId] = { x, y, width };
+          }
         }
         layoutReplies(true);
       }
       if (!saveOrganization()) throw new Error("卡片未能保存。可以复制草稿后刷新重试。");
+      const positionStored = !creating || !inMindmap || mindmap.savePositions(mindmapPositions);
       stored = true;
       deletionUndo = null;
       workbenchDraft = null;
-      workbenchEditFeedback(id, starter ? "第一张卡片已保存到主干。" :
+      workbenchEditFeedback(id, (starter ? "第一张卡片已保存到主干。" :
         creating ? (movedFromPoint ? "指定位置会盖住其他卡片，草稿已保存到附近空位。" : "草稿已保存，可继续细化，验收后再整合。")
         : item.spec?.kind === "case" && item.spec.status === "pending" && old?.spec?.status !== "pending"
         ? "卡片已保存，测试用例待验证。"
-        : "卡片已保存。");
+        : "卡片已保存。") + (positionStored ? "" : " 导图位置仅保留在本页。"));
     } catch (error) {
       organization = previous;
+      mindmapPositions = previousMindmapPositions;
       applyOrganization(true);
       report(error.message);
     } finally {

@@ -743,6 +743,119 @@ async function rootOutlineOverview() {
   }
 }
 
+async function mindmapCardLifecycle() {
+  const previousPage = page;
+  const id = `board-${"d".repeat(32)}`;
+  const prefix = `whiteboard.codex.${id}`;
+  const items = [
+    { id: "E04", parentId: null, title: "卡片管理验收", category: "main" },
+    { id: "E40", parentId: "E04", title: "父节点", category: "reference" },
+    { id: "E41", parentId: "E40", title: "子节点", category: "reference" },
+    { id: "E55", parentId: null, title: "保留的独立节点", category: "reference" },
+  ].map(item => ({ ...item, summary: `${item.title}的正文` }));
+  const positions = { E04: { x: 400, y: 70, width: 400 }, E40: { x: 150, y: 320, width: 360 },
+    E41: { x: 180, y: 470, width: 335 }, E55: { x: 620, y: 310, width: 348 } };
+  const isolated = await browser.newContext({ viewport: { width: 1600, height: 1000 }, serviceWorkers: "block" });
+  const requestCount = requests.length;
+  await isolated.addCookies([{ name: "mindmap-case", value: "card-lifecycle", url: origin }]);
+  await isolated.addInitScript(({ id, prefix, items, positions }) => {
+    if (sessionStorage.getItem("lifecycle-seeded")) return;
+    localStorage.setItem("whiteboard.codex.boards.v1", JSON.stringify([{ id, title: "卡片管理验收" }]));
+    localStorage.setItem(`${prefix}.organization.v1`, JSON.stringify({ current: {
+      title: "卡片管理验收", items, positions, collapsedBranches: [], layout: { flow: "vertical", density: "compact" },
+    } }));
+    sessionStorage.setItem("lifecycle-seeded", "yes");
+  }, { id, prefix, items, positions });
+  try {
+    page = await isolated.newPage();
+    page.on("pageerror", error => errors.push(error.message));
+    await page.goto(`${origin}/?board=${id}&view=canvas`, { waitUntil: "networkidle" });
+    await ready("E04");
+    await page.locator("#presentation-mindmap").click();
+    const card = identity => page.locator(`#board [data-element-id="${identity}"]`);
+    const openAndSave = async title => {
+      await page.locator("#workbench-card-title").fill(title);
+      await page.locator("#workbench-card-body").fill(`${title}的完整正文`);
+      await page.locator("#save-workbench-card").click();
+      const created = (await state()).organization.current.items.find(item => item.title === title);
+      assert.ok(created, "New card should be saved in the real board document");
+      assert.equal(created.parentId, null);
+      assert.equal(await card(created.id).getAttribute("aria-pressed"), "true");
+      assert.ok((await page.locator("#mindmap-inspector").innerText()).includes(created.summary));
+      return created.id;
+    };
+    await selectCard("E04");
+    await page.locator("#new-card").click();
+    const toolbarId = await openAndSave("用工具栏新建卡片");
+    assert.deepEqual((await state()).organization.current.positions, positions,
+      "Creating in mindmap must not persist title-node coordinates or widths in the card layout");
+
+    await clearSelection();
+    const point = await page.locator("#viewport").evaluate(viewport => {
+      const bounds = viewport.getBoundingClientRect();
+      const matrix = new DOMMatrix(getComputedStyle(document.getElementById("board")).transform);
+      const cards = [...viewport.querySelectorAll("[data-map-level]:not([hidden])")].map(card => card.getBoundingClientRect());
+      for (let y = bounds.top + 24; y < bounds.bottom - 100; y += 35) {
+        for (let x = bounds.left + 24; x < bounds.right - 240 * matrix.a - 32; x += 42) {
+          if (cards.some(box => x - 18 < box.right && x + 240 * matrix.a + 18 > box.left &&
+              y - 18 < box.bottom && y + 100 * matrix.a + 18 > box.top)) continue;
+          if (document.elementFromPoint(x, y)?.closest("[data-element-id], button, #ask-popover, #expand-card")) continue;
+          return { x, y, sceneX: (x - bounds.left - matrix.e) / matrix.a, sceneY: (y - bounds.top - matrix.f) / matrix.a };
+        }
+      }
+      return null;
+    });
+    assert.ok(point, "A clear placement point is required");
+    await page.mouse.click(point.x, point.y, { button: "right" });
+    await page.locator("#canvas-menu-new").click();
+    const placedId = await openAndSave("在空白处新建卡片");
+    const assertPoint = async () => {
+      const placed = (await cards()).find(rect => rect.id === placedId);
+      assert.ok(placed && Math.abs(placed.x - point.sceneX) < 2 && Math.abs(placed.y - point.sceneY) < 2,
+        `Right-click placement should stay at the chosen mindmap point, got ${JSON.stringify(placed)}`);
+    };
+    await assertPoint();
+    await flush();
+    await page.reload({ waitUntil: "networkidle" });
+    await ready("E04");
+    await assertPoint();
+
+    await card(placedId).press("Shift+F10");
+    await page.locator("#canvas-menu-delete").click();
+    await card(placedId).waitFor({ state: "detached" });
+    assert.equal(await card(toolbarId).isVisible(), true);
+    assert.deepEqual((await state()).organization.current.positions, positions, "Deleting a leaf must preserve the card layout");
+    await page.locator("#undo-delete").click();
+    await assertPoint();
+    await selectCard(toolbarId);
+    await card(toolbarId).press("Delete");
+    await card(toolbarId).waitFor({ state: "detached" });
+    await page.locator("#undo-delete").click();
+    await card(toolbarId).waitFor();
+
+    await selectCard("E40");
+    await card("E41").press("Shift+Enter");
+    await page.locator("#delete-selection").click();
+    const after = await state();
+    assert.deepEqual(after.memory.deletedIds, ["E40", "E41"]);
+    assert.deepEqual(after.organization.current.positions, { E04: positions.E04, E55: positions.E55 });
+    assert.equal(after.memory.pendingRepair, "");
+    await page.locator("#presentation-cards").click();
+    await flush();
+    await page.reload({ waitUntil: "networkidle" });
+    await ready("E04");
+    assert.equal(await card("E40").count(), 0);
+    assert.equal(await card("E41").count(), 0);
+    assert.equal(await card("E55").isVisible(), true);
+    assert.deepEqual((await state()).organization.current.positions, { E04: positions.E04, E55: positions.E55 });
+    assert.equal(requests.length, requestCount, "Creating, deleting a leaf or a complete selection, and undoing require no model calls");
+    pass("Mindmap creation, free-point placement, deletion and undo share the board document without changing its card coordinates");
+  } finally {
+    await isolated.close();
+    page = previousPage;
+  }
+}
+
 try {
   server = createServer((req, res) => { void relay(req, res).catch(error => json(res, { text: error.message }, 500)); });
   await new Promise(resolveListen => server.listen(0, "127.0.0.1", resolveListen));
@@ -751,6 +864,7 @@ try {
     "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
   ].find(existsSync);
   browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
+  await mindmapCardLifecycle();
   await branchCameraStability();
   const context = await browser.newContext({ viewport: { width: 1900, height: 1200 }, serviceWorkers: "block" });
   context.setDefaultTimeout(12000);

@@ -5049,7 +5049,8 @@ async function testCanvasContextModesAndDeletion() {
       .evaluateAll((elements) => elements.map((element) => element.dataset.elementId).sort());
     const modelPosts = [];
     page.on("request", (request) => {
-      if (request.method() === "POST") modelPosts.push(new URL(request.url()).pathname);
+      const path = new URL(request.url()).pathname;
+      if (request.method() === "POST" && path === "/api/codex") modelPosts.push(path);
     });
 
     // Independent cards let the test exercise both deletion scopes without a relationship repair.
