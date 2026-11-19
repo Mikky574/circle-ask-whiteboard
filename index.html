@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#101816">
   <title>圈问白板</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="mindmap.css">
   <script defer src="geometry.js"></script>
   <script defer src="board_sync.js"></script>
   <script defer src="memory.js"></script>
@@ -14,6 +15,7 @@
   <script defer src="run_gate.js"></script>
   <script defer src="project_finder.js"></script>
   <script defer src="workbench_activity.js"></script>
+  <script defer src="mindmap.js"></script>
   <script defer src="app.js"></script>
   <script defer src="board_versions.js"></script>
 </head>
@@ -331,6 +333,14 @@
             <p id="board-repository-label" hidden></p>
           </div>
           <div class="toolbar" aria-label="画布操作">
+            <div class="tool-group presentation-switch" role="group" aria-label="白板呈现方式">
+              <button id="presentation-cards" type="button" class="tool-button" aria-pressed="true">卡片</button>
+              <button id="presentation-mindmap" type="button" class="tool-button" aria-pressed="false" title="标题导图、双侧分支，点选节点阅读完整说明">导图阅读</button>
+            </div>
+            <div id="mindmap-tools" class="tool-group" role="group" aria-label="导图层级" hidden>
+              <button id="mindmap-overview" type="button" class="tool-button">只看主干</button>
+              <button id="mindmap-expand-all" type="button" class="tool-button">全部展开</button>
+            </div>
             <div class="tool-group" role="group" aria-label="交互模式">
               <button id="select-mode" type="button" class="tool-button mode-button" aria-pressed="true" title="自由圈选">
                 <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M16.6 8.6c0 3.6-3.7 6.1-7.1 6.1-3 0-5.7-1.3-5.7-3.8 0-3.3 3.7-6.2 7.4-6.2 3 0 5.4 1.6 5.4 3.9Z"/><path d="M7.7 14.6 5.2 17"/></svg>
@@ -572,6 +582,7 @@
         </header>
 
         <div class="context-body">
+          <section id="mindmap-inspector" aria-label="节点说明" hidden></section>
           <section class="selection-section" aria-labelledby="selection-heading">
             <h3 id="selection-heading">选中的内容 <span id="branch-label" hidden></span></h3>
             <ul id="selection-list" aria-live="polite"><li class="empty-selection">点选一张卡片可拆分、整理或重新生成。圈选文字可就地提问。</li></ul>

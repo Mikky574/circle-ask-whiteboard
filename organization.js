@@ -2,6 +2,7 @@
   const storageKey = window.BoardMemory?.storageKeys?.organization ?? "whiteboard.codex.organization.v1";
   const categories = new Set(["main", "done", "optimize", "reference", "archive"]);
   const sourceFiles = new Set([
+    "mindmap.js", "mindmap.css",
     "index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "run_gate.js", "project_finder.js",
     "server.py", "zcode_backend.py", "zcode_workspace.py", "attachments.py", "backends.py", "api_backend.py", "board_tools.py",
     "local_projects.py", "board_transfer.js",

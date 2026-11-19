@@ -82,6 +82,9 @@
   const draftAttachments = [];
   const memory = window.BoardMemory;
   const organizationEngine = window.BoardOrganization;
+  const mindmap = window.BoardMindmap;
+  let mindmapPositions = mindmap?.positions || {};
+  let mindmapUndo = null;
   const adaptiveLayout = window.BoardGeometry.layoutAdaptive;
   let repositoryPath = memory.activeBoardInfo?.repositoryPath || "";
   let onRepositoryChange = () => {};
@@ -2162,6 +2165,7 @@
       ? "切换到 Codex 或 ZCode 后可读取本地源码。"
       : repositoryPath ? "读取绑定目录，生成可逐级展开的工程手册。" : "未绑定目录，将读取白板项目的源码。";
     const selectedIds = selected.map(({ id }) => id);
+    mindmap?.inspect(selectedIds, hierarchyItems(nodes), new Map(boardElements().map((element) => [element.dataset.elementId, element])));
     const drafts = draftMembership(nodes);
     const draftRoot = selectedDraftRoot(selectedIds, drafts);
     renderDraftBadges(drafts);
@@ -2188,6 +2192,11 @@
       ? `重排 ${quickRoots.join("、")} 及其下级，父卡保持原位。`
       : "重排整张白板。") + "每次点击切换紧凑树形、横向展开、双侧展开";
     adaptiveReorder.disabled = !adaptiveLayout || quickReorder.disabled;
+    if (mindmap?.active) {
+      quickReorder.textContent = quickRoots.length ? "快速重排导图分支" : "快速重排整个导图";
+      quickReorder.title = "只重排当前导图的标题节点，保留卡片视图中的原布局";
+    }
+    adaptiveReorder.hidden = Boolean(mindmap?.active);
     adaptiveReorder.textContent = quickRoots.length ? "四向快速重排选中分支" : "四向快速重排整张白板";
     adaptiveReorder.title = quickRoots.length ? "在父卡周围重新排布可见下级" : "根据当前画布宽高重新排布可见分支";
     $("install-project-template").disabled = $("restore-project-template").disabled =
@@ -2196,6 +2205,11 @@
     undoOrganization.hidden = !organization.undoAvailable && !organization.quickUndo && !rawLinkUndo;
     undoOrganization.disabled = storageStale || Boolean((activeRun || deleting) && !organization.quickUndo);
     undoOrganization.textContent = organization.quickUndo ? "撤销重排" : rawLinkUndo ? "撤销连线" : "撤销整理";
+    if (mindmap?.active && mindmapUndo) {
+      undoOrganization.hidden = false;
+      undoOrganization.disabled = false;
+      undoOrganization.textContent = "撤销导图重排";
+    }
     $("adopt-selection").disabled = !selected.length;
     const editableSource = sourceEditAvailable();
     $("allow-source-edit").disabled = Boolean(activeRun || storageStale || !editableSource);
@@ -2299,7 +2313,7 @@
   function togglePin(element) {
     const id = element.dataset.elementId;
     const pinned = !pinnedIds.has(id);
-    const pinRect = pinned && hasAdaptiveLayout() ? visibleRect(id) : null;
+    const pinRect = pinned && !mindmap?.active && hasAdaptiveLayout() ? visibleRect(id) : null;
     if (pinned) pinnedIds.add(id);
     else pinnedIds.delete(id);
     if (pinRect) {
@@ -2361,7 +2375,7 @@
     if (selecting && visibleRect(id) && organizationEngine && !deletionPreparing &&
         activeRun?.mode !== "organize" && !storageStale && memory.storageIsCurrent()) {
       const before = organization.current ? organizedRects : rawRects;
-      const positions = organization.current?.positions || organization.rawPositions;
+      const positions = mindmap?.active ? mindmapPositions : organization.current?.positions || organization.rawPositions;
       const selectedIds = new Set(selected.map((entry) => entry.id));
       const fromSelection = selectedIds.has(id);
       const elements = grip ? gripCards : fromSelection ? boardElements().filter((element) =>
@@ -2454,6 +2468,32 @@
   }
 
   function saveMovedCards(drag) {
+    if (mindmap?.active) {
+      mindmapUndo = { ...mindmapPositions };
+      const targets = new Map(drag.targets.map(({ id }) => [id, drag.positions[id]]));
+      const parents = new Map(hierarchyItems(boardForOrganization()).map((item) => [item.id, item.parentId]));
+      // Explicit reading positions may have been created by a local reflow. Carry
+      // those hidden and visible descendants with their moved ancestor as well.
+      for (const [id, point] of Object.entries(mindmapPositions)) {
+        if (targets.has(id)) continue;
+        const seen = new Set([id]);
+        for (let parent = parents.get(id); parent && !seen.has(parent); parent = parents.get(parent)) {
+          seen.add(parent);
+          if (!targets.has(parent) || !drag.before.has(parent)) continue;
+          const previous = drag.before.get(parent);
+          const next = targets.get(parent);
+          mindmapPositions[id] = { x: point.x + next.x - previous.x, y: point.y + next.y - previous.y };
+          break;
+        }
+      }
+      for (const { id } of drag.targets) {
+        const { x, y } = drag.positions[id];
+        mindmapPositions[id] = { x, y };
+      }
+      if (mindmap.savePositions(mindmapPositions)) return true;
+      mindmapPositions = mindmapUndo;
+      return false;
+    }
     const positions = organization.current?.positions || organization.rawPositions;
     const ids = [...drag.targets.map(({ id }) => id), ...drag.fixed.map(([id]) => id)];
     const previous = new Map(ids.map((id) => [id, positions[id]]));
@@ -3098,6 +3138,7 @@
   }
 
   function placeOpenedBranch(id, before) {
+    if (mindmap?.active) return false;
     const current = organization.current;
     const positions = current?.positions || organization.rawPositions;
     if (!positions[id] || !before.has(id)) return false;
@@ -3178,7 +3219,73 @@
     return { layoutChanged, openedOutlines };
   }
 
+  function layoutMindmap(preserveSelection = false) {
+    const elements = new Map(boardElements().filter((element) => !deletedIds.has(element.dataset.elementId))
+      .map((element) => [element.dataset.elementId, element]));
+    const items = hierarchyItems(boardForOrganization()).filter((item) => elements.has(item.id)).map((item) => ({
+      ...item, parentId: boardParentId(item.id, elements, item), pinned: pinnedIds.has(item.id), inlineAnnotation: false,
+    }));
+    const collapsed = visibleCollapsedBranches();
+    const { counts, hidden } = organizationEngine.branchVisibility(items, collapsed);
+    for (const item of items) {
+      const element = elements.get(item.id);
+      element.hidden = item.category === "archive" || hidden.has(item.id);
+      renderBranchToggle(element, counts.get(item.id), collapsed.has(item.id));
+      element.dataset.mapCount = String(counts.get(item.id) || 0);
+    }
+    mindmap.decorate(items, elements);
+    const visible = items.filter((item) => !elements.get(item.id).hidden);
+    const sizes = mindmap.measure(visible, elements);
+    // Reading geometry is derived from the same tree; saved card coordinates are untouched.
+    const placements = organizationEngine.directionalLayout(visible.map((item) => ({ ...item, sectionOf: undefined })),
+      sizes, organization.current?.projectGuide, "balanced");
+    const positions = gesture?.drag?.positions || mindmapPositions;
+    const byId = new Map(visible.map((item) => [item.id, item]));
+    const automatic = new Map([...placements].map(([id, rect]) => [id, { ...rect }]));
+    for (const [id, rect] of placements) {
+      const seen = new Set();
+      for (let ancestor = id; ancestor && !seen.has(ancestor); ancestor = byId.get(ancestor)?.parentId) {
+        seen.add(ancestor);
+        if (!positions[ancestor] || !automatic.has(ancestor)) continue;
+        rect.x += positions[ancestor].x - automatic.get(ancestor).x;
+        rect.y += positions[ancestor].y - automatic.get(ancestor).y;
+        break;
+      }
+      placeElement(elements.get(id), rect);
+      const parent = placements.get(byId.get(id)?.parentId);
+      elements.get(id).dataset.mapSide = parent && rect.x < parent.x ? "left" : "right";
+    }
+    $("organization-labels").replaceChildren();
+    $("connections").replaceChildren();
+    for (const item of visible) {
+      const parent = placements.get(item.parentId);
+      const child = placements.get(item.id);
+      if (!parent || !child) continue;
+      const right = child.x + child.width / 2 >= parent.x + parent.width / 2;
+      const start = { x: right ? parent.x + parent.width : parent.x, y: parent.y + parent.height / 2 };
+      const end = { x: right ? child.x : child.x + child.width, y: child.y + child.height / 2 };
+      const bend = (start.x + end.x) / 2;
+      const path = drawEdge(`M ${start.x},${start.y} C ${bend},${start.y} ${bend},${end.y} ${end.x},${end.y}`,
+        "mindmap-connection", item.parentId, item.id);
+      path.style.setProperty("--map-color", elements.get(item.id).style.getPropertyValue("--map-color"));
+      path.dataset.mapLevel = elements.get(item.id).dataset.mapLevel;
+    }
+    if (organization.current) organizedRects = placements;
+    else rawRects = placements;
+    guideRects = new Map();
+    guideOverviewBounds = null;
+    updateContentBounds([...placements.values()]);
+    renderConnectionFocus();
+    if (!preserveSelection && selected.length && !gesture?.drag) {
+      // Selection boxes are rebuilt by refreshViewLayout when a reading action keeps them.
+      drawLasso([]);
+      applySelection([]);
+    }
+    return visible;
+  }
+
   function layoutOrganized(preserveSelection = false) {
+    if (mindmap?.active) return layoutMindmap(preserveSelection);
     const elements = new Map(boardElements().filter((element) => !deletedIds.has(element.dataset.elementId)).map((element) => [element.dataset.elementId, element]));
     const discussionFields = (id, parentId, inlineEligible) => {
       const reply = replies.get(id);
@@ -3456,6 +3563,7 @@
   }
 
   function layoutReplies(preserveSelection = false) {
+    if (mindmap?.active) return layoutMindmap(preserveSelection);
     if (organization.current) {
       return layoutOrganized(preserveSelection);
     }
@@ -4556,6 +4664,32 @@
 
   function reorderQuickly(requestedMode = null) {
     if (gesture || !organizationEngine || (requestedMode === "adaptive" && !adaptiveLayout)) return;
+    if (mindmap?.active) {
+      const visible = organization.current ? organizedRects : rawRects;
+      const roots = quickReorderRoots();
+      mindmapUndo = { ...mindmapPositions };
+      if (roots.length) {
+        const items = hierarchyItems(boardForOrganization()).map((item) => ({ ...item, pinned: pinnedIds.has(item.id), sectionOf: undefined }));
+        const moving = new Set(roots.flatMap((id) => [...subtreeIds(items, id)]));
+        const fixed = [...visible.keys()].filter((id) => !moving.has(id) || roots.includes(id) || pinnedIds.has(id));
+        const positions = Object.fromEntries([...visible].filter(([id]) => fixed.includes(id))
+          .map(([id, { x, y }]) => [id, { x, y }]));
+        const moves = new Map();
+        for (const id of roots) {
+          for (const [cardId, rect] of organizationEngine.reflowQuickBranch(items, visible, id, "balanced", {
+            fixedIds: fixed,
+          })) moves.set(cardId, { x: rect.x, y: rect.y });
+        }
+        mindmapPositions = { ...positions, ...Object.fromEntries(moves) };
+      } else {
+        mindmapPositions = Object.fromEntries([...visible].filter(([id]) => pinnedIds.has(id))
+          .map(([id, { x, y }]) => [id, { x, y }]));
+      }
+      mindmap.savePositions(mindmapPositions);
+      refreshViewLayout(!roots.length);
+      status(roots.length ? "已快速重排选中导图分支，其他分支保持原位。" : "已快速重排导图，卡片布局保持原样。");
+      return;
+    }
     const result = $("organization-status");
     const { current } = organization;
     const visible = current ? organizedRects : rawRects;
@@ -7151,6 +7285,13 @@
     if (organizationEngine) saveOrganization();
   });
   undoOrganization.addEventListener("click", () => {
+    if (mindmap?.active && mindmapUndo && !gesture) {
+      mindmapPositions = mindmapUndo;
+      mindmapUndo = null;
+      mindmap.savePositions(mindmapPositions);
+      refreshViewLayout(false);
+      return;
+    }
     const quick = organization.quickUndo;
     const rawLinkUndo = !organization.current && organization.rawLinkUndo;
     if (gesture || !memory.storageIsCurrent() ||
@@ -7279,6 +7420,11 @@
     status("已记入项目主线。后续 Codex 会读到这条决定。");
   });
   askOpen.addEventListener("click", () => {
+    if (preparingQuestion() || mode === "connect" || !selected.length) return;
+    if (!askAt) {
+      const box = unionRects(selected.map((item) => visibleRect(item.id) || item.box));
+      askAt = { x: box.x + box.width, y: box.y + box.height / 2 };
+    }
     setCardExpansionOpen(null);
     showAsk(true);
     question.focus();
@@ -7608,6 +7754,63 @@
     else layoutReplies();
     if (autoFit) fit();
   }).observe(viewport);
+  mindmap?.init({
+    isBusy: () => Boolean(gesture || connectionDrag || preparingQuestion() || deletionPreparing),
+    canAsk: () => Boolean(selected.length) && !preparingQuestion() && mode !== "connect",
+    canSplit: () => Boolean(selectedModuleId()) && !expandCardOpen.disabled,
+    onChange: () => {
+      const selection = selected;
+      const draft = question.value;
+      const composerOpen = !askComposer.hidden;
+      applyOrganization(true);
+      selected = selection.flatMap((item) => {
+        const rect = visibleRect(item.id);
+        if (!rect) return item.id === "board" ? [item] : [];
+        return [{ ...item, box: { ...rect }, highlights: item.highlights.length ? [{ ...rect }] : [] }];
+      });
+      refreshViewLayout(false);
+      question.value = draft;
+      renderInspector();
+      showAsk(composerOpen);
+      fit(visibleCardBounds);
+      status(mindmap.active ? "导图阅读：点节点读完整说明，仍可提问、追问和拆分。" : "已回到卡片白板，保留原来的布局。");
+    },
+    onOverview: () => changeMindmapDepth(false),
+    onExpandAll: () => changeMindmapDepth(true),
+    onAsk: () => askOpen.click(),
+    onSplit: () => openCardExpansion(),
+    onShowCard: () => {
+      const id = selectedModuleId();
+      mindmap.setActive(false);
+      const element = boardElements().find((entry) => entry.dataset.elementId === id);
+      if (!element) return;
+      const fold = element.querySelector(".module-fold[aria-expanded='false']");
+      fold?.click();
+      if (visibleRect(id)) focusCard(visibleRect(id));
+    },
+  });
+  function changeMindmapDepth(expanded) {
+    if (gesture || preparingQuestion() || deletionPreparing) return;
+    const revision = prepareLayoutChange();
+    if (!revision) return;
+    const items = hierarchyItems(boardForOrganization());
+    const ids = expanded ? [] : items.filter((item) => item.parentId && items.some((child) => child.parentId === item.id)).map(({ id }) => id);
+    const current = organization.current;
+    if (current) current.collapsedBranches = ids;
+    else organization.rawCollapsedBranches = ids;
+    for (const reply of replies.values()) {
+      if (reply.saved?.outline) {
+        const parent = items.find((item) => item.id === reply.note.dataset.elementId)?.parentId;
+        reply.saved.outlineCollapsed = !expanded && Boolean(parent);
+      }
+    }
+    searchOpenBranches.clear();
+    refreshViewLayout(true);
+    const stored = saveLayoutChange(revision);
+    const notesStored = persist();
+    status((expanded ? "已展开所有现有节点。" : "已收起细节，只看项目主干。") +
+      (stored && notesStored ? "" : " 部分状态仅保留在本页。"));
+  }
   saved.notes.forEach((note) => mountReply(note, true));
   cardBoxes = cards.map((element) => rectInScene(element.getBoundingClientRect()));
   applyOrganization();

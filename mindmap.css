@@ -1,0 +1,156 @@
+/* A reading presentation of the same editable board; no separate map data. */
+.presentation-switch { display: inline-flex; align-items: center; gap: 2px; }
+.presentation-switch .tool-button[aria-pressed="true"] { background: #315345; border-color: #739e88; color: #f1f6ef; }
+:is(#mindmap-tools, #mindmap-toolbar) { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+:is(#mindmap-tools, #mindmap-toolbar, #mindmap-inspector)[hidden] { display: none; }
+
+body.mindmap-view #viewport { background: #fbfcf8; background-image: none; }
+body.mindmap-view #board > :is(.board-caption, .notes-guide),
+body.mindmap-view #organization-labels { display: none; }
+/* Whole-node actions live in the inspector; a partial-text lasso keeps its local toolbar. */
+body.mindmap-view #viewport:has(#selection-highlights:empty) #ask-popover:has(#ask-composer[hidden]),
+body.mindmap-view #expand-card:has(#expand-card-form[hidden]) { display: none; }
+
+body.mindmap-view #board :is(.board-card, .thread-note)[data-map-level] {
+  --guide-heading: #304540;
+  --guide-text: #40574e;
+  --guide-control: #304540;
+  --guide-border: var(--map-color, #7d9d8e);
+  --guide-control-surface: #fbfcf8;
+  --guide-branch-surface: #fbfcf8;
+  display: block;
+  box-sizing: border-box;
+  width: 180px !important;
+  height: auto !important;
+  min-height: 0 !important;
+  padding: 9px 13px;
+  border: 1px solid transparent;
+  border-bottom-color: var(--map-color, #7d9d8e);
+  border-radius: 4px;
+  color: #304540;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+body.mindmap-view #board :is(.board-card, .thread-note)[data-map-level="module"] {
+  width: 210px !important;
+  padding: 12px 17px;
+  border: 1px solid var(--map-color, #7d9d8e);
+  border-radius: 9px;
+  background: var(--map-tint, #e3f1ed);
+}
+body.mindmap-view #board :is(.board-card, .thread-note)[data-map-level="root"] {
+  --guide-heading: #ffffff;
+  width: 240px !important;
+  padding: 18px 23px;
+  border: 1px solid #23483f;
+  border-radius: 12px;
+  background: #23483f;
+  color: #ffffff;
+}
+body.mindmap-view #board :is(.board-card, .thread-note)[hidden] { display: none !important; }
+body.mindmap-view #board [data-map-level] .organized-face { display: block; }
+body.mindmap-view #board [data-map-level] .organized-head,
+body.mindmap-view #board [data-map-level] > .card-meta,
+body.mindmap-view #board [data-map-level] > .thread-heading {
+  position: static;
+  display: block;
+  margin: 0;
+  padding: 0;
+  font-size: 0;
+}
+body.mindmap-view #board [data-map-level] :is(.organized-meta, .organized-body, .guide-detail-preview, .module-fold),
+body.mindmap-view #board [data-map-level] > :is(.element-content, .card-foot, .thread-answer, .thread-attachments, .thread-original),
+body.mindmap-view #board [data-map-level] > .card-meta > span,
+body.mindmap-view #board [data-map-level] .organized-face > .organized-evidence { display: none !important; }
+body.mindmap-view #board [data-map-level] :is(.organized-title, .element-title, .thread-question) {
+  margin: 0;
+  padding: 0;
+  color: inherit;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-size: 15px;
+  font-weight: 550;
+  line-height: 1.5;
+  letter-spacing: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+body.mindmap-view #board [data-map-level="root"] :is(.organized-title, .element-title, .thread-question) { font-size: 20px; font-weight: 650; }
+body.mindmap-view #board [data-map-level="module"] :is(.organized-title, .element-title, .thread-question) { font-size: 16px; font-weight: 600; }
+body.mindmap-view #board [data-map-level].organized-item > :is(.thread-heading, .thread-question) { display: none; }
+body.mindmap-view #board [data-map-level] .branch-toggle {
+  position: absolute;
+  right: -8px;
+  top: 50%;
+  transform: translate(100%, -50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 28px;
+  min-height: 23px;
+  margin: 0;
+  padding: 2px 5px;
+  border: 1px solid var(--map-color, #7d9d8e);
+  border-radius: 12px;
+  background: #fbfcf8;
+  color: var(--map-color, #517e67);
+  font-size: 0;
+  line-height: 1;
+  z-index: 3;
+}
+body.mindmap-view #board [data-map-level] .branch-toggle::before { content: "−"; font-size: 15px; font-weight: 650; }
+body.mindmap-view #board [data-map-level] .branch-toggle[aria-expanded="false"]::before { content: "+"; }
+body.mindmap-view #board [data-map-level] .branch-toggle::after { content: attr(data-map-count); font-size: 10px; }
+body.mindmap-view #board [data-map-level] .branch-toggle:hover { background: var(--map-tint, #e3f1ed); }
+body.mindmap-view #board [data-map-level][data-map-side="left"] .branch-toggle {
+  left: -8px;
+  right: auto;
+  transform: translate(-100%, -50%);
+}
+body.mindmap-view #board [data-map-level].is-selected {
+  outline: 2px solid #3b8c77;
+  outline-offset: 4px;
+  box-shadow: 0 0 0 5px #3b8c7710;
+}
+body.mindmap-view #board [data-map-level].board-pinned::after { top: -9px; right: -7px; }
+body.mindmap-view #board [data-map-level]:focus-visible { outline: 2px solid #3b8c77; outline-offset: 4px; }
+body.mindmap-view #board .thread-status { margin-top: 7px; color: #596b61; font-size: 11px; }
+body.mindmap-view #board :is(.thread-retry, .thread-response-preview) { color: #375d4c; background: #f1f5ed; border-color: #adc6b5; }
+body.mindmap-view #connections > path:not(.connection-hit, .connection-selected) {
+  stroke: var(--map-color, #6d9c87);
+  stroke-width: 1.6px;
+  stroke-opacity: .82;
+  stroke-dasharray: none;
+  marker-end: none;
+}
+body.mindmap-view #connections > path[data-map-level="module"] { stroke-width: 2.3px; }
+body.mindmap-view #connections > path.connection-related { stroke-opacity: 1; stroke-width: 2.4px; }
+
+body.mindmap-view #mindmap-inspector {
+  margin: 0 0 19px;
+  padding: 18px;
+  border: 1px solid #cbd9ca;
+  border-radius: 11px;
+  background: #f7f9f4;
+  color: #304540;
+}
+#mindmap-inspector .mindmap-detail-kicker { margin: 0; font-size: 12px; font-weight: 650; color: #486459; }
+#mindmap-inspector .mindmap-detail-breadcrumb { margin: 11px 0 0; font-size: 11px; line-height: 1.6; color: #647c6f; overflow-wrap: anywhere; }
+#mindmap-inspector .mindmap-detail-title { margin: 12px 0 7px; font-size: 20px; font-weight: 650; line-height: 1.45; color: #203c36; overflow-wrap: anywhere; }
+#mindmap-inspector .mindmap-detail-id { margin: 0 0 15px; color: #607a6a; font-size: 11px; }
+#mindmap-inspector .mindmap-detail-hint { margin: 10px 0 0; color: #52665f; font-size: 13px; line-height: 1.75; }
+#mindmap-inspector :is(.mindmap-detail-description, .mindmap-detail-content, .mindmap-detail-content p, .organized-summary) { margin: 0; color: #304540; font-size: 14px; line-height: 1.85; white-space: pre-line; overflow-wrap: anywhere; }
+#mindmap-inspector .mindmap-detail-body { margin: 13px 0; }
+#mindmap-inspector .mindmap-detail-content { display: grid; gap: 12px; }
+#mindmap-inspector .mindmap-detail-content :is(code, pre),
+#mindmap-inspector .mindmap-detail-code { max-width: 100%; overflow: auto; white-space: pre-wrap; color: #40574e; background: #eaf0e5; border-radius: 5px; padding: 8px; font: 12px/1.7 ui-monospace, monospace; }
+#mindmap-inspector :is(.organized-evidence, .mindmap-detail-codepath) { color: #52705e; font: 12px/1.75 ui-monospace, monospace; overflow-wrap: anywhere; }
+#mindmap-inspector .mindmap-detail-section { margin: 14px 0; }
+#mindmap-inspector .mindmap-detail-section h4 { margin: 0 0 5px; font-size: 13px; color: #486459; }
+#mindmap-inspector .mindmap-detail-section ul { margin: 0; padding-left: 19px; font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; }
+#mindmap-inspector .mindmap-detail-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 17px; padding-top: 14px; border-top: 1px solid #dbe5d6; }
+#mindmap-inspector .tool-button { padding: 7px 10px; border: 1px solid #c1d2c1; border-radius: 6px; background: #fbfcf8; color: #29443d; font-size: 12px; }
+#mindmap-inspector .tool-button:hover:not(:disabled) { background: #e5eee0; }
+#mindmap-inspector a { color: #286757; text-underline-offset: 3px; }
+#mindmap-inspector :is(img, video) { max-width: 100%; height: auto; }
