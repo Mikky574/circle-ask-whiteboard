@@ -249,6 +249,7 @@
   let backends = new Map();
   let sourceChanged = false;
   let storageStale = false;
+  let cacheStorageStale = false;
   let sourceEditAuthorization = null;
   let sourceEditRevision = 0;
   const attachmentIdentities = new WeakMap();
@@ -766,7 +767,7 @@
     window.addEventListener("pageshow", (event) => {
       if (event.persisted) refreshCatalog();
     });
-    return { boardUrl, setBusy(value) { busy = value; refreshControls(); },
+    return { boardUrl, isBusy() { return busy || saving; }, setBusy(value) { busy = value; refreshControls(); },
       setRegisteredProjects(projects) {
         registeredProjects = new Set(projects.map(({ id }) => `board-${id}`));
         refreshOptions();
@@ -1359,9 +1360,10 @@
     clearSourceEditAuthorization();
   }
 
-  function showStorageConflict() {
+  function showStorageConflict(event) {
     if (storageStale) return;
     storageStale = true;
+    cacheStorageStale = event?.detail?.source === "browser-cache";
     invalidateSourceEditAuthorization();
     $("storage-conflict").hidden = false;
     $("reload-board").hidden = false;
@@ -2127,8 +2129,9 @@
     const deletePlan = memory.deletionPlan(nodes, selected.map((item) => item.id));
     const deleting = deletionPreparing || Boolean(activeRun?.repair);
     const deleteBlock = deletionBlock(deletePlan);
-    renderWorkbenchEditor(Boolean(activeRun || deleting || storageStale));
-    $("delete-selection").disabled = !deletePlan.removed.length || Boolean(deleteBlock);
+    const syncBlocked = window.BoardSync && !window.BoardSync.writable;
+    renderWorkbenchEditor(Boolean(activeRun || deleting || storageStale || syncBlocked));
+    $("delete-selection").disabled = !deletePlan.removed.length || Boolean(deleteBlock) || syncBlocked;
     $("delete-selection").title = deleteBlock;
     $("delete-selection").textContent = deleting ? "删除处理中…" : deletePlan.removed.length ? "删除选中（" + deletePlan.removed.length + " 项）" : "删除选中";
     $("delete-selection").setAttribute("aria-busy", String(deleting));
@@ -2140,7 +2143,7 @@
     $("undo-delete").title = "恢复本次删除前的节点和关联，包含 AI 的归档与重新挂接";
     $("repair-delete").hidden = !pendingRepair;
     $("repair-delete").disabled = Boolean(activeRun || deleting);
-    const unavailable = Boolean(activeRun || deleting || sourceChanged || storageStale || !relayAvailable);
+    const unavailable = Boolean(activeRun || deleting || sourceChanged || storageStale || syncBlocked || !relayAvailable);
     expandCardOpen.disabled = unavailable;
     expandCardFocus.readOnly = Boolean(activeRun?.expandCard);
     expandCardSubmit.disabled = unavailable;
@@ -2187,7 +2190,7 @@
     const scope = $("branch-scope");
     scope.hidden = !rootId;
     scope.textContent = rootId ? `范围 ${rootId} · ${subtreeIds(hierarchyItems(nodes), rootId).size - 1} 张下级卡片` : "";
-    quickReorder.disabled = !organizationEngine || storageStale;
+    quickReorder.disabled = !organizationEngine || storageStale || syncBlocked;
     const quickRoots = quickReorderRoots();
     quickReorder.textContent = quickRoots.length ? "快速重排选中分支" : "快速重排整个白板";
     quickReorder.title = (quickRoots.length
@@ -6112,7 +6115,7 @@
       }
       return "";
     } catch {
-      return "项目白板无法保存，请检查浏览器本地存储。";
+      return "项目白板无法保存，请检查页面保存状态和本机白板服务。";
     }
   }
 
@@ -7234,6 +7237,9 @@
   const regenerateOpinion = $("regenerate-branch-opinion");
   let regenerateTarget = null;
   const regenerateDrafts = new Map();
+  regenerateOpinion.addEventListener("input", () => {
+    if (regenerateTarget) regenerateDrafts.set(regenerateTarget, regenerateOpinion.value);
+  });
   function openBranchRegeneration() {
     const id = selectedModuleId();
     if (!id || regenerateBranch.disabled) return;
@@ -7871,6 +7877,39 @@
   if (rebuiltProject) $("organization-status").textContent = rebuiltProject;
   if (projectBoardMessage) $("organization-status").textContent = projectBoardMessage;
   if (recoveredReset) status(`已恢复重置前的 ${saved.notes.length} 条批注和白板排布。`);
+  // A remote service write must reach an already-open reader, without silently
+  // discarding an unsent question, a File object, an editor, or an in-page key.
+  const remoteViewKey = `whiteboard.remote-refresh.${memory.activeBoard}.v1`;
+  window.addEventListener("whiteboard-sync-status", (event) => {
+    if (event.detail.remoteUpdate) renderInspector();
+  });
+  window.BoardSync?.setRemoteRefresh(() => {
+    const editing = workbenchDraft && cardEditorFields().some((value, index) => value !== workbenchDraft.originalFields[index]);
+    const focusedInput = document.activeElement?.matches("input, textarea, select, [contenteditable='true']");
+    if (activeRun || deletionPreparing || gesture || connectionDrag || boardControls.isBusy() ||
+        autosaveFailures.size || (storageStale && !cacheStorageStale) || question.value.trim() || draftAttachments.length || editing ||
+        decisionText.value.trim() || organizeOpinionDraft?.trim() || [...regenerateDrafts.values()].some((value) => value.trim()) ||
+        expandCardFocus.value.trim() || document.querySelector("dialog[open]") || focusedInput ||
+        $("api-key").value || $("api-url").value !== $("api-url").defaultValue) return false;
+    try {
+      sessionStorage.setItem(remoteViewKey, JSON.stringify({ url: location.href, savedAt: Date.now(),
+        scale, offsetX, offsetY, autoFit, mode, selected: selected.map(({ id }) => id) }));
+    } catch { return false; } // Do not turn a background update into a camera jump.
+    return true;
+  });
+  try {
+    const view = JSON.parse(sessionStorage.getItem(remoteViewKey));
+    sessionStorage.removeItem(remoteViewKey);
+    if (view?.url === location.href && Date.now() - view.savedAt < 60000 && view.savedAt <= Date.now() &&
+        [view.scale, view.offsetX, view.offsetY].every(Number.isFinite) && view.scale >= 0.1 && view.scale <= 3) {
+      const ids = new Set(Array.isArray(view.selected) ? view.selected : []);
+      applySelection([...board.querySelectorAll("[data-element-id]")].filter((element) =>
+        ids.has(element.dataset.elementId) && visibleRect(element.dataset.elementId)).map((element) => describe(element)));
+      if (["select", "pan", "pin", "connect"].includes(view.mode)) setMode(view.mode);
+      ({ scale, offsetX, offsetY, autoFit } = view);
+      renderCamera();
+    }
+  } catch { /* A transient view hint never overrides the service document. */ }
   async function checkRelay() {
     relayAvailable = false;
     try {

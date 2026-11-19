@@ -36,7 +36,7 @@
         if (listBoards().some(({ id }) => id === activeBoard) &&
             current.every((value, index) => value === knownStorage[index])) return true;
         storageConflicted = true;
-        window.dispatchEvent(new Event("whiteboard-storage-conflict"));
+        window.dispatchEvent(new CustomEvent("whiteboard-storage-conflict", { detail: { source: "browser-cache" } }));
       }
     } catch { /* Storage errors are reported by the caller as unsaved changes. */ }
     return false;

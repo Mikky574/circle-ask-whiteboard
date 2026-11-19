@@ -29,6 +29,9 @@
   let generation = 0;
   let timer = null;
   let checking = false;
+  let remoteUpdate = null;
+  let remoteRefresh = null;
+  let reloading = false;
   let message = "正在连接本机白板服务…";
   let backups = false;
   const params = new URLSearchParams(location.search);
@@ -132,14 +135,14 @@
     const panel = document.getElementById("board-sync-status");
     if (!panel) return;
     const pending = dirty.size > 0 || Boolean(work);
-    panel.dataset.state = blocked || conflict || failure ? "error" : pending ? "saving" : "saved";
+    panel.dataset.state = blocked || conflict || failure ? "error" : remoteUpdate ? "update" : pending ? "saving" : "saved";
     const text = failure || message;
     document.getElementById("board-sync-message").textContent = text;
-    document.getElementById("board-sync-retry").hidden = !blocked && !conflict && !failure;
-    document.getElementById("board-sync-retry").textContent = conflict || blocked ? "重新加载" : "重试保存";
+    document.getElementById("board-sync-retry").hidden = !blocked && !conflict && !failure && !remoteUpdate;
+    document.getElementById("board-sync-retry").textContent = conflict || blocked || remoteUpdate ? "重新加载" : "重试保存";
     document.getElementById("board-sync-export").hidden = !backups && !blocked && !conflict && !failure;
     panel.hidden = false;
-    window.dispatchEvent(new CustomEvent("whiteboard-sync-status", { detail: { pending, blocked, conflict, failure } }));
+    window.dispatchEvent(new CustomEvent("whiteboard-sync-status", { detail: { pending, blocked, conflict, failure, remoteUpdate } }));
   }
 
   function remoteConflict(text) {
@@ -293,6 +296,7 @@
 
   function ensureWritable() {
     if (blocked || conflict || failure) throw new Error(failure || "白板服务尚未就绪，请保留本页内容后重新加载。");
+    if (remoteUpdate) throw new Error("服务端已有新版本；本页草稿仍保留，请重新加载后继续修改。");
   }
 
   function identify(key) {
@@ -412,7 +416,7 @@
   }
 
   async function refresh() {
-    if (checking || blocked || conflict || failure || work || dirty.size || document.visibilityState === "hidden") return;
+    if (checking || reloading || blocked || conflict || failure || work || dirty.size || document.visibilityState === "hidden") return;
     checking = true;
     const before = generation;
     try {
@@ -425,9 +429,19 @@
       const saved = records.get(active);
       if ((saved && (deleted.has(active) || (remote.get(active)?.revision ?? 0) !== saved.revision)) ||
           (!saved && remote.has(active))) {
-        remoteConflict("这张白板已在其他浏览器更新。本页草稿仍在，请先保留草稿，再点「重新加载」。");
+        // A clean reader is not a conflicting writer. Do not hydrate its cache
+        // underneath app.js's in-memory document: reload the complete document
+        // only after the app has checked every unsaved draft and active run.
+        remoteUpdate = { id: active, revision: remote.get(active)?.revision ?? null, deleted: deleted.has(active) };
+        message = "服务端已有新版本。本页草稿和连接设置仍保留；无未保存内容时自动更新，或先保留草稿再重新加载。";
+        render();
+        if (remoteRefresh?.(remoteUpdate) === true) {
+          reloading = true;
+          location.reload();
+        }
         return;
       }
+      remoteUpdate = null;
       const next = new Map(catalog.filter(({ id }) => !deleted.has(id)).map((entry) => [entry.id, entry]));
       for (const board of remote.values()) {
         next.set(board.id, metadata(board));
@@ -473,14 +487,15 @@
   Storage.prototype.removeItem = function (key) { return cacheWrite(this, key, null, true); };
   window.BoardSync = {
     ready: Promise.resolve(), flush, refresh, exportLocal,
+    setRemoteRefresh(handler) { remoteRefresh = typeof handler === "function" ? handler : null; },
     hasServerBoard(id) { return Boolean(records.get(id)?.storage?.organization); },
     get currentRevision() { return records.get(window.BoardMemory?.activeBoard || requested)?.revision || 0; },
     get pending() { return Boolean(work || dirty.size); },
-    get writable() { return !blocked && !conflict && !failure; },
+    get writable() { return !blocked && !conflict && !failure && !remoteUpdate; },
     get failed() { return Boolean(blocked || conflict || failure); },
   };
   document.getElementById("board-sync-retry")?.addEventListener("click", () => {
-    if (blocked || conflict) {
+    if (blocked || conflict || remoteUpdate) {
       if (window.confirm("重新加载会放弃本页尚未发送的问题和未保存编辑。可先点「导出本机副本」保留白板内容，是否继续？")) {
         if (conflict) {
           let pending;

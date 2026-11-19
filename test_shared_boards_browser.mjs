@@ -162,6 +162,39 @@ async function savedContaining(id, text) {
   }, `Wait for ${id} to be persisted`);
 }
 
+async function updateServiceCard(id, cardId, summary) {
+  const { board } = await store("load", { id });
+  const organization = JSON.parse(board.storage.organization);
+  const card = (organization.current?.items || organization.rawCards).find(item => item.id === cardId);
+  assert.ok(card, "The service-side edit must target an existing card");
+  card.summary = summary;
+  return (await store("save", { id, expectedRevision: board.revision,
+    metadata: { title: board.title, repositoryPath: board.repositoryPath },
+    storage: { ...board.storage, organization: JSON.stringify(organization) } })).board;
+}
+
+async function readerState(page) {
+  return page.evaluate(() => {
+    const matrix = new DOMMatrix(getComputedStyle(document.querySelector("#board")).transform);
+    return { boot: performance.timeOrigin, scale: matrix.a, offsetX: matrix.e, offsetY: matrix.f,
+      mode: document.querySelector("#viewport").dataset.mode,
+      selected: [...document.querySelectorAll('#board [data-element-id][aria-pressed="true"]')].map(element => element.dataset.elementId) };
+  });
+}
+
+async function waitForRemoteCard(page, cardId, text) {
+  await page.locator(`#board [data-element-id="${cardId}"]`).filter({ hasText: text }).waitFor();
+  await ready(page);
+  assert.equal(await page.evaluate(() => window.BoardSync.writable), true);
+}
+
+async function assertDeferred(page, boot) {
+  await page.evaluate(() => window.BoardSync.refresh());
+  assert.equal((await readerState(page)).boot, boot, "A draft must prevent background navigation");
+  assert.equal(await page.evaluate(() => window.BoardSync.writable), false, "An outdated reader must not overwrite the newer service document");
+  assert.match(await page.locator("#board-sync-message").textContent(), /服务端.*新版本/);
+}
+
 try {
   await startService();
   const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || [
@@ -204,6 +237,123 @@ try {
   assert.equal(await external.page.evaluate(() => window.BoardMemory.activeBoardInfo.repositoryPath), repository);
   passed("A board created directly through the backend opens in a browser that never owned its local data");
 
+  // Use an independent origin with no copied localStorage. The edit below is
+  // equivalent to an external Codex/ZCode skill committing over HTTP.
+  const reader = await openContext(origin.replace("127.0.0.1", "localhost"));
+  await openBoard(reader, authoredId);
+  await reader.page.locator("#pan-mode").click();
+  await reader.page.locator(`#board [data-element-id="${cardId}"] .organized-title`).click();
+  await reader.page.locator("#zoom-in").click();
+  const beforeRemote = await readerState(reader.page);
+  assert.deepEqual(beforeRemote.selected, [cardId]);
+  await updateServiceCard(authoredId, cardId, "外部技能通过 HTTP 更新后，已打开的浏览器自动看见正文。");
+  // Deliberately do not call refresh/reload: exercise the real five-second poll.
+  await waitForRemoteCard(reader.page, cardId, "外部技能通过 HTTP 更新后，已打开的浏览器自动看见正文。");
+  const afterRemote = await readerState(reader.page);
+  assert.notEqual(afterRemote.boot, beforeRemote.boot, "The clean reader should adopt a complete fresh document");
+  for (const field of ["scale", "offsetX", "offsetY"]) {
+    assert.ok(Math.abs(afterRemote[field] - beforeRemote[field]) < 0.02, `Remote refresh preserves ${field}`);
+  }
+  assert.deepEqual(afterRemote.selected, beforeRemote.selected);
+  assert.equal(afterRemote.mode, beforeRemote.mode);
+  passed("An already-open independent browser sees HTTP skill writes through natural polling while preserving camera, selection and interaction mode");
+
+  await reader.page.locator("#ask-board").click();
+  await reader.page.locator("#question").fill("保留我还没有发送的问题。");
+  await reader.page.locator("#attachment-input").setInputFiles({ name: "unsent-evidence.txt", mimeType: "text/plain", buffer: Buffer.from("unsent attachment") });
+  const draftBoot = (await readerState(reader.page)).boot;
+  await updateServiceCard(authoredId, cardId, "有问题和附件草稿时，服务的新正文等待安全刷新。");
+  await assertDeferred(reader.page, draftBoot);
+  assert.equal(await reader.page.locator("#question").inputValue(), "保留我还没有发送的问题。");
+  assert.match(await reader.page.locator("#attachment-list").textContent(), /unsent-evidence\.txt/);
+  assert.ok(!(await reader.page.locator(`#board [data-element-id="${cardId}"]`).textContent()).includes("有问题和附件草稿时"));
+  await reader.page.locator("#question").fill("");
+  await reader.page.getByRole("button", { name: "移除附件 unsent-evidence.txt", exact: true }).click();
+  await reader.page.locator("#ask-close").click();
+  await reader.page.evaluate(() => window.BoardSync.refresh());
+  await waitForRemoteCard(reader.page, cardId, "有问题和附件草稿时，服务的新正文等待安全刷新。");
+  passed("Unsent question and File attachment survive external writes; clearing those drafts lets the same reader adopt the new service version");
+
+  await reader.page.locator("#select-mode").click();
+  await reader.page.locator(`#board [data-element-id="${cardId}"] .organized-title`).click();
+  await reader.page.locator("#edit-workbench-card").click();
+  await reader.page.locator("#workbench-card-body").fill("还没有保存的卡片编辑。");
+  const editBoot = (await readerState(reader.page)).boot;
+  await updateServiceCard(authoredId, cardId, "卡片编辑结束后再载入的新版本。");
+  await assertDeferred(reader.page, editBoot);
+  assert.equal(await reader.page.locator("#workbench-card-body").inputValue(), "还没有保存的卡片编辑。");
+  await reader.page.locator("#cancel-workbench-card").click();
+  await reader.page.evaluate(() => window.BoardSync.refresh());
+  await waitForRemoteCard(reader.page, cardId, "卡片编辑结束后再载入的新版本。");
+  passed("An unsaved card editor is protected until explicitly cancelled");
+
+  await reader.page.locator(".connection-settings > summary").click();
+  await reader.page.locator("#backend-select").selectOption("api");
+  await reader.page.locator("#api-key").fill("test-only-not-a-real-key");
+  await reader.page.locator(".connection-settings > summary").click();
+  const keyBoot = (await readerState(reader.page)).boot;
+  await updateServiceCard(authoredId, cardId, "仅当前页面的连接密钥也不能被后台刷新丢弃。");
+  await assertDeferred(reader.page, keyBoot);
+  assert.equal(await reader.page.locator("#api-key").inputValue(), "test-only-not-a-real-key");
+  assert.ok(!JSON.stringify((await store("load", { id: authoredId })).board.storage).includes("test-only-not-a-real-key"));
+  assert.equal(await reader.page.evaluate(() => Object.values(localStorage).some(value => value.includes("test-only-not-a-real-key"))), false);
+  await reader.page.locator(".connection-settings > summary").click();
+  await reader.page.locator("#api-key").fill("");
+  await reader.page.locator(".connection-settings > summary").click();
+  await reader.page.evaluate(() => window.BoardSync.refresh());
+  await waitForRemoteCard(reader.page, cardId, "仅当前页面的连接密钥也不能被后台刷新丢弃。");
+  passed("An in-page API key prevents automatic navigation without being persisted to the server or browser storage");
+
+  await reader.page.locator(".connection-settings > summary").click();
+  await reader.page.locator("#backend-select").selectOption("codex");
+  await reader.page.locator(".connection-settings > summary").click();
+  await reader.page.locator("#ask-board").click();
+  await reader.page.locator("#question").fill("执行期间不能刷新并丢掉本轮问题。");
+  let releasePlan;
+  let planArrived;
+  const heldPlan = new Promise(resolvePlan => { releasePlan = resolvePlan; });
+  const arrival = new Promise(resolveArrival => { planArrived = resolveArrival; });
+  const holdPlan = async route => {
+    planArrived();
+    await heldPlan;
+    return route.fulfill({ status: 418, contentType: "application/json", body: '{"text":"Isolated test deliberately ends the held planner request"}' });
+  };
+  await reader.page.route("**/api/codex", holdPlan);
+  await reader.page.locator("#submit-question").click();
+  await Promise.race([arrival, new Promise((_, reject) => setTimeout(() => reject(new Error("The isolated planner request did not start")), 12000))]);
+  const runBoot = (await readerState(reader.page)).boot;
+  await updateServiceCard(authoredId, cardId, "模型执行时到达的外部版本等待本页处理。");
+  await assertDeferred(reader.page, runBoot);
+  assert.equal(await reader.page.locator("#stop-ai").isVisible(), true, "The held model task stays active instead of navigating away");
+  releasePlan();
+  await reader.page.locator("#stop-ai").waitFor({ state: "hidden" });
+  assert.equal(await reader.page.locator("#question").inputValue(), "执行期间不能刷新并丢掉本轮问题。");
+  await reader.page.unroute("**/api/codex", holdPlan);
+  await reader.page.locator("#question").fill("");
+  await reader.page.locator("#ask-close").click();
+  await reader.page.evaluate(() => window.BoardSync.refresh());
+  await waitForRemoteCard(reader.page, cardId, "模型执行时到达的外部版本等待本页处理。");
+  passed("An active held planner request and its question survive an external update; no provider is called and clearing the retained draft permits refresh");
+
+  // A second tab in the very same context receives native StorageEvents before
+  // the first tab's HTTP acknowledgement. That cache event must not permanently
+  // block an otherwise clean reader from adopting the confirmed service write.
+  const sameOrigin = await openContext();
+  await openBoard(sameOrigin, authoredId);
+  const sibling = await sameOrigin.context.newPage();
+  sibling.setDefaultTimeout(12000);
+  sibling.on("pageerror", error => errors.push(error.message));
+  sibling.on("dialog", dialog => dialog.type() === "beforeunload" ? dialog.accept() : dialog.dismiss());
+  await sibling.goto(`${origin}/?board=${authoredId}`, { waitUntil: "networkidle" });
+  await ready(sibling);
+  const siblingBoot = (await readerState(sibling)).boot;
+  await editCard(sameOrigin.page, cardId, "由后台创建的说明卡", "同源另一标签页的正式保存也要自动可见。");
+  await savedContaining(authoredId, "同源另一标签页的正式保存也要自动可见。");
+  await waitForRemoteCard(sibling, cardId, "同源另一标签页的正式保存也要自动可见。");
+  assert.notEqual((await readerState(sibling)).boot, siblingBoot);
+  assert.equal(await sibling.locator("#storage-conflict").isVisible(), false);
+  passed("Two tabs sharing the same browser storage recover from native cache-change protection after the service confirms the new revision");
+
   await editCard(first.page, cardId, "跨浏览器说明卡", "第一位用户修改后的正文。");
   await savedContaining(id, "第一位用户修改后的正文。");
   await second.page.reload({ waitUntil: "networkidle" });
@@ -212,6 +362,14 @@ try {
   passed("Reload hydrates the latest saved content in an independent origin");
 
   const beforeConflict = (await store("load", { id })).board;
+  // Freeze only this reader's list response to make a genuine stale CAS save
+  // deterministic even when the new automatic background refresh is enabled.
+  const staleListing = await store("list");
+  const holdListing = async route => {
+    if (route.request().postDataJSON().action !== "list") return route.fallback();
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify(staleListing) });
+  };
+  await second.page.route("**/api/board-store", holdListing);
   await editCard(first.page, cardId, "跨浏览器说明卡", "并发胜出版本。");
   const winner = await savedContaining(id, "并发胜出版本。");
   await editCard(second.page, cardId, "跨浏览器说明卡", "过时浏览器版本不可覆盖。");
@@ -226,6 +384,7 @@ try {
   await store("save", { id, metadata: previousMetadata, storage: beforeConflict.storage,
     expectedRevision: beforeConflict.revision }, 409);
   assert.ok(winner.revision > beforeConflict.revision);
+  await second.page.unroute("**/api/board-store", holdListing);
   await second.page.reload({ waitUntil: "networkidle" });
   await ready(second.page);
   await second.page.locator(`#board [data-element-id="${cardId}"]`).filter({ hasText: "并发胜出版本。" }).waitFor();
@@ -357,6 +516,11 @@ try {
 
   const stale = await openContext();
   await openBoard(stale, id);
+  const beforeDeleteListing = await store("list");
+  await stale.page.route("**/api/board-store", async route => {
+    if (route.request().postDataJSON().action !== "list") return route.fallback();
+    return route.fulfill({ contentType: "application/json", body: JSON.stringify(beforeDeleteListing) });
+  });
   await cold.page.locator("#board-manage").click();
   await cold.page.locator("#board-delete").click();
   await cold.page.locator("#board-delete-confirm").click();
