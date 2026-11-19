@@ -39,6 +39,16 @@ function fixture(raw = false) {
   return source;
 }
 const roundtrip = source => transfer.parse(JSON.stringify(transfer.create(source)));
+test("shared-storage implementation sources survive portable export and import", () => {
+  const source = fixture();
+  const files = ["board_store.py", "board_sync.js", "board_versions.js"];
+  source.organization.current.items[1].sources = files;
+  source.memory.notes[0].payload.anchor.sourceFiles = files;
+  const result = roundtrip(source);
+  assert.deepEqual(result.organization.current.items[1].sources, files);
+  assert.deepEqual(result.memory.notes[0].payload.anchor.sourceFiles, files);
+  assert.deepEqual(result.organization.current.positions, source.organization.current.positions);
+});
 function invalid(change, match) {
   const source = fixture();
   change(source);

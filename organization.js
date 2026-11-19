@@ -5,7 +5,7 @@
     "mindmap.js", "mindmap.css",
     "index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "run_gate.js", "project_finder.js",
     "server.py", "zcode_backend.py", "zcode_workspace.py", "attachments.py", "backends.py", "api_backend.py", "board_tools.py",
-    "local_projects.py", "board_transfer.js",
+    "local_projects.py", "board_transfer.js", "board_store.py", "board_sync.js", "board_versions.js",
   ]);
   const flows = new Set(["columns", "vertical", "horizontal"]);
   const sides = new Set(["auto", "left", "right"]);

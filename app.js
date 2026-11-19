@@ -4605,6 +4605,19 @@
     return true;
   }
 
+  function locateLinkedCard() {
+    const match = location.hash.match(/^#([EA]\d+)$/);
+    if (!match) return;
+    const id = match[1];
+    if (activeRun || deletionPreparing || gesture || connectionDrag || question.value.trim() ||
+        draftAttachments.length || workbenchDraft || document.querySelector("dialog[open]")) {
+      status(`暂未跳转到 ${id}，请先完成当前操作或保留提问、附件及卡片编辑草稿，再打开链接。`);
+      return;
+    }
+    if (locateCard(id, true)) status(`已定位 ${id}。查看后可点「回到总览」。`);
+    else status(`当前白板中没有可定位的 ${id} 卡片，请核对白板链接和卡号。`);
+  }
+
   function availableModuleIds(nodes, limit = Math.min(8, 64 - nodes.length)) {
     const occupied = new Set([
       ...nodes.map((node) => node.id), ...pinnedIds, ...deletedIds,
@@ -7834,6 +7847,8 @@
     }
   }
   appendPublishedGuide();
+  locateLinkedCard();
+  window.addEventListener("hashchange", locateLinkedCard);
   if (rebuiltProject) $("organization-status").textContent = rebuiltProject;
   if (projectBoardMessage) $("organization-status").textContent = projectBoardMessage;
   if (recoveredReset) status(`已恢复重置前的 ${saved.notes.length} 条批注和白板排布。`);
