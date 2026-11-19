@@ -55,7 +55,7 @@
   const defaultConstraints = ["保留圈选和就地批注的交互", "项目主线只记录用户确认过的决定"];
   const sourceFiles = new Set(["index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "run_gate.js",
     "project_finder.js", "server.py", "zcode_backend.py", "zcode_workspace.py", "attachments.py", "backends.py", "api_backend.py",
-    "board_tools.py", "local_projects.py"]);
+    "board_tools.py", "local_projects.py", "board_transfer.js"]);
   const branchLabels = {
     E01: "E01 · 圈选与坐标",
     E02: "E02 · 提问与批注定位",
@@ -133,6 +133,41 @@
         byte.toString(16).padStart(2, "0")).join("");
       const id = `board-${token}`;
       saveBoardList([...listBoards(), { id, title: name, repositoryPath: savedRepositoryPath(repositoryPath) }]);
+      return id;
+    });
+  }
+
+  function importBoard(document, title, repositoryPath = "") {
+    return changeBoards(() => {
+      const name = typeof title === "string" ? title.trim() : "";
+      if (!name || name.length > 80) throw new Error("请填写白板名称，最多 80 字。");
+      // Revalidate at the persistence boundary; the catalog is published only
+      // after both documents have been written successfully.
+      const portable = window.BoardTransfer.parse(JSON.stringify(window.BoardTransfer.create(document)));
+      const token = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+        byte.toString(16).padStart(2, "0")).join("");
+      const id = `board-${token}`;
+      const keys = boardStorageKeys(id);
+      if (listBoards().some((entry) => entry.id === id) ||
+          Object.values(keys).some((key) => localStorage.getItem(key) !== null)) {
+        throw new Error("生成的白板编号已存在，请重试。");
+      }
+      const contents = state(portable.memory);
+      for (const note of contents.notes) {
+        note.payload.boardId = id;
+        if (note.retryPayload) note.retryPayload.boardId = id;
+      }
+      const importedOrganization = { ...portable.organization };
+      if (importedOrganization.current) importedOrganization.current.title = name;
+      const storage = window.localStorage;
+      try {
+        storage.setItem(keys.memory, JSON.stringify(contents));
+        storage.setItem(keys.organization, JSON.stringify(importedOrganization));
+        saveBoardList([...listBoards(), { id, title: name, repositoryPath: savedRepositoryPath(repositoryPath) }]);
+      } catch (error) {
+        Object.values(keys).forEach((key) => storage.removeItem(key));
+        throw error;
+      }
       return id;
     });
   }
@@ -507,7 +542,7 @@
   }
 
   window.BoardMemory = { load, save, branchFor, deletionPlan, repairNodes, cleanAttachments,
-    activeBoard, activeBoardInfo, catalogKey, listBoards, createBoard, updateBoardRepository, deleteActiveBoard,
+    activeBoard, activeBoardInfo, catalogKey, listBoards, createBoard, importBoard, updateBoardRepository, deleteActiveBoard,
     localProjectsBoard, openLocalProject,
     storageKeys, boardStorageKeys, initializeProjectBoard, storageIsCurrent, writeStorage,
     templateBackup: () => boardBackup(templateBackupKey),

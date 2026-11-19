@@ -9,6 +9,7 @@
   <script defer src="geometry.js"></script>
   <script defer src="memory.js"></script>
   <script defer src="organization.js"></script>
+  <script defer src="board_transfer.js"></script>
   <script defer src="run_gate.js"></script>
   <script defer src="project_finder.js"></script>
   <script defer src="workbench_activity.js"></script>
@@ -41,6 +42,9 @@
           <button id="board-manage" class="tool-button" type="button" aria-expanded="false" aria-controls="board-actions" title="管理白板">管理</button>
           <div id="board-actions" role="group" aria-label="白板操作" hidden>
             <button id="board-create" class="tool-button" type="button" aria-haspopup="dialog">新建白板</button>
+            <button id="board-fork" class="tool-button" type="button" aria-haspopup="dialog" aria-controls="board-import-dialog">复制白板（Fork）</button>
+            <button id="board-export" class="tool-button" type="button">导出白板</button>
+            <button id="board-import" class="tool-button" type="button" aria-haspopup="dialog" aria-controls="board-import-dialog">导入白板</button>
             <button id="board-repository" class="tool-button" type="button" aria-haspopup="dialog" aria-controls="board-repository-dialog">项目目录</button>
             <button id="board-delete" class="tool-button" type="button" aria-haspopup="dialog">删除当前白板</button>
           </div>
@@ -104,6 +108,29 @@
         <div class="board-dialog-actions">
           <button id="board-create-cancel" class="tool-button" type="button">取消</button>
           <button id="board-create-submit" class="submit-button" type="submit">新建并打开</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="board-import-dialog" class="board-dialog" aria-labelledby="board-import-heading" aria-describedby="board-import-description">
+      <form id="board-import-form">
+        <h2 id="board-import-heading">导入白板</h2>
+        <p id="board-import-description" class="board-field-hint">从白板 JSON 文件创建独立副本，保留卡片、讨论、关系、图钉、折叠和排布。</p>
+        <div id="board-import-file-field" class="board-repository-field">
+          <label for="board-import-file">白板文件（最多 24 MB）</label>
+          <input id="board-import-file" type="file" accept=".json,application/json" aria-describedby="board-import-limits">
+        </div>
+        <p id="board-import-preview" class="board-field-hint" role="status"></p>
+        <label for="board-import-name">新白板名称</label>
+        <input id="board-import-name" type="text" maxlength="80" required>
+        <div class="board-repository-field">
+          <label for="board-import-repository-path">项目目录（可选）</label>
+          <input id="board-import-repository-path" type="text" maxlength="1024" placeholder="C:\Projects\my-repo" autocomplete="off" spellcheck="false">
+        </div>
+        <p id="board-import-limits" class="board-field-hint">附件仅保留引用，跨机器需重新提供文件。代码仓库和本地图片不会打包；连接配置与 API Key 不随白板导出。导入后可另行绑定本机项目目录。</p>
+        <p id="board-import-error" class="board-dialog-error" role="alert" hidden></p>
+        <div class="board-dialog-actions">
+          <button id="board-import-cancel" class="tool-button" type="button">取消</button>
+          <button id="board-import-submit" class="submit-button" type="submit" disabled>导入并打开</button>
         </div>
       </form>
     </dialog>
@@ -213,7 +240,10 @@
             <h3 id="home-boards-heading">独立白板</h3>
             <p>随手记录或讨论，稍后可从这里继续。</p>
           </div>
-          <button id="home-create-board" class="tool-button" type="button" aria-haspopup="dialog" aria-controls="board-create-dialog">新建白板</button>
+          <div class="home-board-actions">
+            <button id="home-import-board" class="tool-button" type="button" aria-haspopup="dialog" aria-controls="board-import-dialog">导入白板</button>
+            <button id="home-create-board" class="tool-button" type="button" aria-haspopup="dialog" aria-controls="board-create-dialog">新建白板</button>
+          </div>
         </header>
         <div id="home-board-list" class="local-project-cards"></div>
       </section>

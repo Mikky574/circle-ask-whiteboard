@@ -220,6 +220,9 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
 
 #local-projects-heading { margin: 0; font-size: clamp(25px, 3vw, 36px); }
 .home-board-header h3 { margin: 0; font-size: 17px; }
+.home-board-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+#board-import-file { max-width: 100%; }
+#board-import-preview:empty { display: none; }
 .project-home-header p, .home-board-header p { margin: 6px 0 0; color: var(--muted); font-size: 14px; line-height: 1.55; }
 .home-board-section { margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--panel-border); }
 .home-board-section > .local-project-cards:not(:empty) { margin-top: 12px; }

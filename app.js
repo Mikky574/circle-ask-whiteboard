@@ -411,6 +411,13 @@
     const manage = $("board-manage");
     const actions = $("board-actions");
     const create = $("board-create");
+    const importButton = $("board-import");
+    const exportButton = $("board-export");
+    const forkButton = $("board-fork");
+    const importDialog = $("board-import-dialog");
+    const importFile = $("board-import-file");
+    const importName = $("board-import-name");
+    const importRepository = $("board-import-repository-path");
     const configureRepository = $("board-repository");
     const remove = $("board-delete");
     const createDialog = $("board-create-dialog");
@@ -428,6 +435,8 @@
     let expectedRepository = "";
     let returnFocus = manage;
     let registeredProjects = new Set();
+    let importDocument = null;
+    let fileRead = 0;
 
     function boardUrl(id) {
       const url = new URL(location.href);
@@ -449,6 +458,10 @@
     function refreshControls() {
       switcher.disabled = busy || saving || !switcher.querySelector("option[value]:not([value=''])");
       manage.disabled = create.disabled = busy || saving;
+      importButton.disabled = $("home-import-board").disabled = busy || saving;
+      exportButton.disabled = forkButton.disabled = busy || saving || !available || projectDirectory || (projectViews && !projectCanvas);
+      $("board-import-submit").disabled = saving || !importDocument;
+      $("board-import-cancel").disabled = importFile.disabled = importName.disabled = importRepository.disabled = saving;
       remove.disabled = busy || saving || !available || projectDirectory || projectViews;
       configureRepository.disabled = busy || saving || !available || projectDirectory || projectViews;
       $("board-empty-create").disabled = busy || saving;
@@ -470,7 +483,8 @@
         onRepositoryChange();
       }
       const personalBoards = boards.filter(({ id, projectId }) => !projectId && !registeredProjects.has(id));
-      const options = personalBoards.map(({ id, title }) => new Option(id === "project-workbench" ? "白板功能示例" : title, id));
+      const options = boards.filter(({ id }) => personalBoards.some((entry) => entry.id === id) || id === active)
+        .map(({ id, title }) => new Option(id === "project-workbench" ? "白板功能示例" : title, id));
       if (!available) options.unshift(new Option(boards.length ? "选择白板" : "暂无白板", ""));
       if (!active) $("board-empty-heading").textContent = boards.length ? "请选择白板" : "还没有白板";
       switcher.replaceChildren(...options);
@@ -516,6 +530,41 @@
       createDialog.showModal();
     }
 
+    function showImportPreview(document) {
+      const { cards, notes, attachments } = document.stats;
+      $("board-import-preview").textContent = `${document.title} · ${cards} 张模块卡、${notes} 张讨论卡` +
+        (attachments ? `；${attachments} 个附件引用（不包含文件）` : "");
+      importName.value = `${document.title.slice(0, 76)} 副本`;
+    }
+
+    function openImport(trigger, fork = false) {
+      if (busy || saving || !allowWorkspaceNavigation()) return;
+      returnFocus = trigger;
+      setMenu(false);
+      fileRead += 1;
+      importDocument = null;
+      importFile.value = "";
+      importName.value = "";
+      importRepository.value = fork ? repositoryPath : "";
+      $("board-import-preview").textContent = "";
+      $("board-import-heading").textContent = fork ? "复制白板（Fork）" : "导入白板";
+      $("board-import-submit").textContent = fork ? "复制并打开" : "导入并打开";
+      $("board-import-file-field").hidden = fork;
+      showError("board-import-error", "");
+      if (fork) {
+        try {
+          importDocument = window.BoardTransfer.parse(JSON.stringify(portableBoard()));
+          showImportPreview(importDocument);
+        } catch (error) {
+          report.textContent = error.message;
+          return;
+        }
+      }
+      refreshControls();
+      importDialog.showModal();
+      (fork ? importName : importFile).focus();
+    }
+
     async function commit(dialog, errorId, change, { replace = false, stay = false } = {}) {
       if (busy || saving) return;
       saving = true;
@@ -543,7 +592,7 @@
     }
 
     $("board-workspace").hidden = !active || projectDirectory || (projectViews && !projectCanvas);
-    if (projectDirectory || projectViews) switcher.closest(".board-picker").hidden = true;
+    if (projectDirectory || (projectViews && !projectCanvas)) switcher.closest(".board-picker").hidden = true;
     $("local-projects").hidden = !projectDirectory;
     if (projectDirectory) $("local-project-link").setAttribute("aria-current", "page");
     close.hidden = projectDirectory || !active;
@@ -581,6 +630,59 @@
       }
     });
     create.addEventListener("click", () => openCreate(manage));
+    importButton.addEventListener("click", () => openImport(manage));
+    forkButton.addEventListener("click", () => openImport(manage, true));
+    $("home-import-board").addEventListener("click", (event) => openImport(event.currentTarget));
+    importFile.addEventListener("change", async () => {
+      const currentRead = ++fileRead;
+      importDocument = null;
+      importName.value = "";
+      $("board-import-preview").textContent = "";
+      showError("board-import-error", "");
+      refreshControls();
+      const file = importFile.files[0];
+      if (!file) return;
+      try {
+        if (file.size > window.BoardTransfer.MAX_BYTES) throw new Error("白板文件不能超过 24 MB。");
+        const contents = await file.text();
+        if (currentRead !== fileRead || !importDialog.open) return;
+        importDocument = window.BoardTransfer.parse(contents);
+        showImportPreview(importDocument);
+      } catch (error) {
+        if (currentRead !== fileRead || !importDialog.open) return;
+        showError("board-import-error", error.message || "无法读取白板文件，请重新选择。");
+      }
+      refreshControls();
+    });
+    $("board-import-form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (!importDocument) return;
+      const contents = importDocument;
+      const title = importName.value;
+      const path = importRepository.value;
+      void commit(importDialog, "board-import-error", async () =>
+        memory.importBoard(contents, title, await validateRepositoryPath(path)));
+    });
+    exportButton.addEventListener("click", () => {
+      if (busy || saving || !available) return;
+      setMenu(false);
+      try {
+        const document = portableBoard();
+        const content = JSON.stringify(document, null, 2);
+        if (new Blob([content]).size > window.BoardTransfer.MAX_BYTES) throw new Error("白板导出文件不能超过 24 MB，请先精简内容。");
+        const url = URL.createObjectURL(new Blob([content], { type: "application/json;charset=utf-8" }));
+        const link = window.document.createElement("a");
+        link.href = url;
+        link.download = `${document.title.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").slice(0, 70) || "白板"}.whiteboard.json`;
+        window.document.body.append(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+        report.textContent = "已导出白板。附件仅保留引用，代码仓库和本地图片不包含在文件中。";
+      } catch (error) {
+        report.textContent = error.message || "导出失败，请重试。";
+      }
+    });
     $("board-empty-create").addEventListener("click", (event) => openCreate(event.currentTarget));
     $("home-create-board").addEventListener("click", (event) => openCreate(event.currentTarget));
     document.addEventListener("click", (event) => {
@@ -622,11 +724,13 @@
       void commit(deleteDialog, "board-delete-error", () => memory.deleteActiveBoard(), { replace: true }));
     for (const [dialog, cancelId] of [
       [createDialog, "board-create-cancel"], [repositoryDialog, "board-repository-cancel"], [deleteDialog, "board-delete-cancel"],
+      [importDialog, "board-import-cancel"],
     ]) {
       $(cancelId).addEventListener("click", () => dialog.close());
       dialog.addEventListener("cancel", (event) => { if (saving) event.preventDefault(); });
       dialog.addEventListener("close", () => returnFocus.focus());
     }
+    importDialog.addEventListener("close", () => { fileRead += 1; importDocument = null; });
     function refreshCatalog() {
       refreshOptions();
       if (!projectDirectory && !projectViews && active && !available) {
@@ -1114,6 +1218,56 @@
 
   function savedNotes() {
     return Array.from(replies.values(), (reply) => reply.saved).filter(Boolean);
+  }
+
+  function portableBoard() {
+    if (storageStale || !memory.storageIsCurrent()) throw new Error("白板已在其他页面更新，请刷新后再导出或复制。");
+    const nodes = boardForOrganization();
+    const planned = new Map((organization.current?.items || organization.rawCards || []).map((item) => [item.id, item]));
+    const native = new Map(cards.map((card) => [card.dataset.elementId, card]));
+    const materialized = nodes.map((node) => {
+      const item = planned.get(node.id);
+      const reply = replies.get(node.id);
+      const element = native.get(node.id);
+      const title = item && !item.nativeFace ? item.title : reply?.payload.question ||
+        element?.querySelector(".element-title")?.textContent.trim() || node.title;
+      const summary = item && !item.nativeFace ? item.summary : reply?.saved?.answer ||
+        (element ? [...element.querySelectorAll("[data-select-part]")]
+          .filter((part) => !part.closest(".organized-face")).map(partQuote).join("\n") : node.text);
+      const result = { ...item, id: node.id, title, summary, parentId: filingParent(node),
+        category: item?.category || (reply?.saved?.archived ? "archive" : node.kind === "card" ? "main" : "reference") };
+      if (node.id.startsWith("E")) {
+        delete result.nativeFace;
+        delete result.localContent;
+      } else {
+        if (!item) result.nativeFace = true;
+        if (result.nativeFace) {
+          // This is only the organized preview. The full question and answer
+          // remain in memory.notes and are rendered by the native note face.
+          result.title = Array.from(title).slice(0, 100).join("");
+          result.summary = Array.from(summary).slice(0, 800).join("");
+        }
+      }
+      return result;
+    });
+    // Materialize implicit seed cards and actual positions too; copying only
+    // localStorage would otherwise create an empty custom board from a sample.
+    const positions = { ...(organization.current?.positions || organization.rawPositions) };
+    for (const node of nodes) {
+      const rect = visibleRect(node.id) || positions[node.id] || originalRect(node.id) || node.box;
+      if (rect && [rect.x, rect.y].every(Number.isFinite)) {
+        positions[node.id] = { x: rect.x, y: rect.y, ...(rect.width > 0 ? { width: rect.width } : {}) };
+      }
+    }
+    const portableOrganization = organization.current
+      ? { ...organization, current: { ...organization.current, items: materialized, positions } }
+      : { ...organization, rawCards: materialized.filter(({ id }) => id.startsWith("E")), rawPositions: positions };
+    return window.BoardTransfer.create({
+      title: memory.listBoards().find(({ id }) => id === memory.activeBoard)?.title || memory.activeBoardInfo.title,
+      sourceBoardId: memory.activeBoard,
+      memory: { project, notes: savedNotes(), pinnedIds: [...pinnedIds], deletedIds: [...deletedIds] },
+      organization: portableOrganization,
+    });
   }
 
   function discussionBranch(ids, { nodes = boardForOrganization(), visibleOnly = false } = {}) {

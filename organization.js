@@ -4,7 +4,7 @@
   const sourceFiles = new Set([
     "index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "run_gate.js", "project_finder.js",
     "server.py", "zcode_backend.py", "zcode_workspace.py", "attachments.py", "backends.py", "api_backend.py", "board_tools.py",
-    "local_projects.py",
+    "local_projects.py", "board_transfer.js",
   ]);
   const flows = new Set(["columns", "vertical", "horizontal"]);
   const sides = new Set(["auto", "left", "right"]);
@@ -168,7 +168,7 @@
       ? value.opinion.slice(0, 1200).replace(/[\uD800-\uDBFF]$/, "") : "";
     const current = clean(value?.current);
     const rawCards = clean({ items: value?.rawCards })?.items.filter(({ id }) => /^E\d+$/.test(id) &&
-      !["E01", "E02", "E03"].includes(id)) || [];
+      (window.BoardMemory?.activeBoardInfo?.custom || !["E01", "E02", "E03"].includes(id))) || [];
     const undo = value?.quickUndo;
     const rawLinks = {};
     for (const [child, parents] of Object.entries(value?.rawLinks || {})) {

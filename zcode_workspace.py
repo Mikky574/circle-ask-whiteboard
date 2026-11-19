@@ -10,7 +10,7 @@ from itertools import islice
 from pathlib import Path
 
 
-EDITABLE = ("index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js")
+EDITABLE = ("index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "board_transfer.js")
 READABLE = (
     *EDITABLE, "run_gate.js", "project_finder.js", "server.py", "attachments.py", "zcode_backend.py", "zcode_workspace.py",
     "backends.py", "api_backend.py", "board_tools.py", "local_projects.py",

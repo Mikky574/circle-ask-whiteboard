@@ -45,6 +45,7 @@ STATIC = {
     "geometry.js": "text/javascript; charset=utf-8",
     "memory.js": "text/javascript; charset=utf-8",
     "organization.js": "text/javascript; charset=utf-8",
+    "board_transfer.js": "text/javascript; charset=utf-8",
     "run_gate.js": "text/javascript; charset=utf-8",
     "project_finder.js": "text/javascript; charset=utf-8",
     "workbench_activity.js": "text/javascript; charset=utf-8",
