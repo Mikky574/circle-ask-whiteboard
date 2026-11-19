@@ -6,7 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agent_trace import DETAIL_LIMIT, codex_trace
 from server import CancellationToken, WhiteboardHandler, apply_staged_edits, read_events, source_hashes
@@ -138,8 +138,6 @@ class AgentTraceTests(unittest.TestCase):
         self.assertTrue(events.empty())
 
     def test_zcode_http_emits_live_preview_and_stderr_before_final_answer(self):
-        from unittest.mock import Mock
-
         observed = threading.Event()
         handler = SimpleNamespace(events=[], headers_for=lambda *args: None)
         def record(kind, **fields):
@@ -163,6 +161,26 @@ class AgentTraceTests(unittest.TestCase):
         self.assertNotIn("fixture-not-visible", str(handler.events))
         self.assertEqual(handler.events[-2], ("answer", {"text": "最终答案"}))
         self.assertEqual(handler.events[-1][0], "done")
+
+    def test_zcode_can_finish_after_the_previous_five_minute_deadline(self):
+        events = []
+        handler = SimpleNamespace(headers_for=lambda *args: None,
+                                  send_event=lambda kind, **fields: events.append((kind, fields)))
+        process = Mock(returncode=0, stderr=io.BytesIO())
+        clock = iter((0, 3600))
+
+        def emit(_process, _prompt, _model, _mode, _workspace, queue, _attachments):
+            queue.put(("answer", "Long-running answer"))
+            queue.put(("eof", ""))
+
+        with patch("server.time", SimpleNamespace(monotonic=lambda: next(clock, 3600))), \
+             patch("server.ZCODE_COMMAND", ["fake-zcode"]), \
+             patch("server.subprocess.Popen", return_value=process), \
+             patch("server.run_zcode", emit), patch("server.terminate"):
+            WhiteboardHandler.run_agent(handler, "zcode", "", "ask", "fixture", {}, None, Path.cwd(), {}, [])
+
+        self.assertTrue(any(kind == "status" and "仍在处理" in fields["text"] for kind, fields in events))
+        self.assertEqual(events[-2:], [("answer", {"text": "Long-running answer"}), ("done", {"changedFiles": []})])
 
     def test_edit_diff_only_describes_committed_changes(self):
         with tempfile.TemporaryDirectory() as folder:

@@ -92,7 +92,6 @@ LAYOUT_SIDES = ("auto", "left", "right")
 PLAN_ACTIONS = ("ask", "regenerate", "extend", "explain", "splitAnswer", "decompose", "main", "organize", "organizeBranch", "edit")
 MAX_BODY = 96 * 1024
 MAX_EVENT = 1024 * 1024
-TURN_TIMEOUT = 300
 MAX_CONCURRENT_REQUESTS = 4
 ACTIVE_PROCESSES = set()
 ACTIVE_REQUESTS = {}
@@ -103,7 +102,6 @@ class RequestBusy(Exception):
     pass
 REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{8,96}")
 API_BUDGET_CAP = {"timeoutSeconds": 180, "maxRounds": 12, "maxToolCalls": 40}
-CLI_BUDGET_CAP = {"timeoutSeconds": TURN_TIMEOUT}
 RESET_RECOVERY_KEYS = {"whiteboard.codex.v1", "whiteboard.codex.organization.v1"}
 RESET_RECOVERY_LOCK = threading.Lock()
 RESET_RECOVERED = threading.Event()
@@ -1205,17 +1203,18 @@ def backend_request_from_body(body, parsed):
 
 
 def normalize_budget(value, backend):
-    """Normalize browser-provided limits; callers may tighten but never raise caps."""
-    cap = API_BUDGET_CAP if backend == "api" else CLI_BUDGET_CAP
+    """API work has capped budgets; a CLI deadline is opt-in."""
+    caps = API_BUDGET_CAP if backend == "api" else {}
+    allowed = caps.keys() if backend == "api" else {"timeoutSeconds"}
     if value is None:
-        return dict(cap)
-    if not isinstance(value, dict) or set(value) - set(cap):
+        return dict(caps)
+    if not isinstance(value, dict) or value.keys() - allowed:
         raise ValueError("本服务不支持所提交的预算字段。")
-    normalized = dict(cap)
+    normalized = dict(caps)
     for name, limit in value.items():
         if type(limit) is not int or limit <= 0:
             raise ValueError("预算必须是正整数。")
-        normalized[name] = min(limit, cap[name])
+        normalized[name] = min(limit, caps.get(name, limit))
     return normalized
 
 
@@ -2058,7 +2057,7 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                  *, request=None, cancellation=None):
         if request is None:
             request = BackendRequest(backend, model, mode, question, context, attachments,
-                                     budget=dict(CLI_BUDGET_CAP), schema_path=schema_path)
+                                     schema_path=schema_path)
         backend, model, mode = request.backend, request.model, request.mode
         question, context, schema_path, attachments = request.question, request.context, request.schema_path, request.attachments
         repository = request.repository_path
@@ -2087,9 +2086,9 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
 
     def run_agent(self, backend, model, mode, question, context, schema_path, workspace, before, files, *, request=None, cancellation=None):
         if request is None:
-            request = BackendRequest(backend, model, mode, question, context, files, budget=dict(CLI_BUDGET_CAP),
-                                     schema_path=schema_path)
+            request = BackendRequest(backend, model, mode, question, context, files, schema_path=schema_path)
         repository = request.repository_path
+        timeout_seconds = (request.budget or {}).get("timeoutSeconds")
         label = BACKEND_LABELS[backend]
         if files:
             attachment_context = codex_attachment_context(workspace, files) if backend == "codex" else files
@@ -2212,13 +2211,13 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                         cancellation.cancel()
                     return
                 now = time.monotonic()
-                if now - started >= request.budget["timeoutSeconds"]:
+                if timeout_seconds is not None and now - started >= timeout_seconds:
                     timed_out = True
                     break
                 if output:
                     send_output(now)
                 if now >= next_status:
-                    self.send_event("status", text=f"{label} 仍在处理，连接或执行可能需要一点时间…")
+                    self.send_event("status", text=f"{label} 仍在处理，可以继续等待或手动停止。")
                     next_status = now + 12
                 try:
                     kind, value = events.get(timeout=0.25)

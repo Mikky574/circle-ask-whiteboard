@@ -33,7 +33,7 @@ class BackendRequest:
     boardId: str = "whiteboard"
     baseRevision: str = ""
     permissions: tuple[str, ...] = ()
-    budget: dict = field(default_factory=lambda: {"timeoutSeconds": 180, "maxRounds": 12, "maxToolCalls": 40})
+    budget: dict | None = None
     backendOptions: dict = field(default_factory=dict, repr=False)
     api: dict | None = field(default=None, repr=False)
     schema_path: Any = None

@@ -1293,9 +1293,12 @@ class ApiLoopAcceptanceTests(unittest.TestCase):
         request = server.backend_request_from_body(raised, server.parse_request(raised))
         self.assertEqual(request.budget, {"timeoutSeconds": 180, "maxRounds": 12, "maxToolCalls": 40})
         cli = {"backend": "codex", "model": "", "mode": "ask", "question": "fixture question"}
-        cli_raised = json.dumps({**cli, "budget": {"timeoutSeconds": 999}}).encode("utf-8")
-        cli_request = server.backend_request_from_body(cli_raised, server.parse_request(cli_raised))
-        self.assertEqual(cli_request.budget, {"timeoutSeconds": 300})
+        for backend in ("codex", "zcode"):
+            for budget in (None, {"timeoutSeconds": 999}):
+                with self.subTest(backend=backend, budget=budget):
+                    body = json.dumps({**cli, "backend": backend, "budget": budget}).encode("utf-8")
+                    cli_request = server.backend_request_from_body(body, server.parse_request(body))
+                    self.assertEqual(cli_request.budget, budget or {})
         cli_unsupported = json.dumps({**cli, "budget": {"maxRounds": 1}}).encode("utf-8")
         with self.assertRaises(ValueError):
             server.backend_request_from_body(cli_unsupported, server.parse_request(cli_unsupported))
