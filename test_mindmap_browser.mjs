@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { existsSync } from "node:fs";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,7 @@ import { chromium } from "playwright";
 const root = dirname(fileURLToPath(import.meta.url));
 const mime = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
 const boards = new Map();
+const boardCases = new Map([["main", boards]]);
 const errors = [];
 const unexpected = [];
 const requests = [];
@@ -50,11 +51,14 @@ async function relay(req, res) {
   if (url.pathname === "/api/local-projects") { json(res, { projects: [] }); return; }
   if (url.pathname === "/api/workbench-activity") { json(res, { activity: null }); return; }
   if (url.pathname === "/api/board-store") {
+    const caseId = req.headers.cookie?.match(/(?:^|;\s*)mindmap-case=([^;]+)/)?.[1] || "main";
+    if (!boardCases.has(caseId)) boardCases.set(caseId, new Map());
+    const records = boardCases.get(caseId);
     const payload = await body(req);
-    const current = boards.get(payload.id);
+    const current = records.get(payload.id);
     if (payload.action === "list") {
-      json(res, { boards: [...boards.values()].filter(board => !board.deleted).map(({ storage, ...metadata }) => metadata),
-        deleted: [...boards.values()].filter(board => board.deleted).map(({ id, revision }) => ({ id, revision })) });
+      json(res, { boards: [...records.values()].filter(board => !board.deleted).map(({ storage, ...metadata }) => metadata),
+        deleted: [...records.values()].filter(board => board.deleted).map(({ id, revision }) => ({ id, revision })) });
     } else if (payload.action === "load") {
       json(res, { board: current?.deleted ? null : current || null, deleted: Boolean(current?.deleted), revision: current?.revision || 0 });
     } else if (payload.expectedRevision !== (current?.revision || 0) || current?.deleted) {
@@ -62,7 +66,7 @@ async function relay(req, res) {
     } else if (payload.action === "save") {
       const board = { ...payload.metadata, id: payload.id, revision: payload.expectedRevision + 1,
         updatedAt: new Date().toISOString(), storage: payload.storage };
-      boards.set(payload.id, board);
+      records.set(payload.id, board);
       json(res, { board });
     } else json(res, { text: "本测试不执行删除或历史恢复。" }, 418);
     return;
@@ -166,6 +170,275 @@ function descendantIds(items, rootId) {
 function near(actual, expected, message) {
   assert.ok(Math.abs(actual - expected) < 0.02, `${message}: ${actual} != ${expected}`);
 }
+async function cameraAt(id) {
+  // A transform, fit, or page-scroll change can all move the click target. Read
+  // rendered screen coordinates rather than comparing only stored node poses.
+  await page.evaluate(() => new Promise(resolveFrame => requestAnimationFrame(() => requestAnimationFrame(resolveFrame))));
+  return page.evaluate(cardId => {
+    const node = document.querySelector(`#board [data-element-id="${cardId}"]`);
+    const box = node.getBoundingClientRect();
+    const button = node.querySelector(".branch-toggle").getBoundingClientRect();
+    const matrix = new DOMMatrix(getComputedStyle(document.querySelector("#board")).transform);
+    const frame = document.querySelector("#viewport").getBoundingClientRect();
+    return { node: { x: box.x + box.width / 2, y: box.y + box.height / 2 },
+      button: { x: button.x + button.width / 2, y: button.y + button.height / 2 },
+      scale: matrix.a, offsetX: matrix.e, offsetY: matrix.f,
+      scrollX, scrollY, viewport: { x: frame.x, y: frame.y, width: frame.width, height: frame.height },
+      selected: [...document.querySelectorAll('#board [data-element-id][aria-pressed="true"]')].map(element => element.dataset.elementId) };
+  }, id);
+}
+async function branchCameraStability() {
+  const previous = page;
+  const observations = [];
+  const failures = [];
+  for (const dimensions of [{ width: 1900, height: 1200 }, { width: 900, height: 950 }]) {
+    for (const presentation of ["mindmap", "cards"]) {
+      const isolated = await browser.newContext({ viewport: dimensions, serviceWorkers: "block" });
+      isolated.setDefaultTimeout(12000);
+      await isolated.addCookies([{ name: "mindmap-case", value: `camera-${dimensions.width}-${presentation}`, url: origin }]);
+      await isolated.route("**/*", route => {
+        const url = new URL(route.request().url());
+        if (url.origin === origin) return route.continue();
+        unexpected.push(`camera external ${url.origin}`);
+        return route.abort();
+      });
+      try {
+        page = await isolated.newPage();
+        page.on("pageerror", error => errors.push(error.message));
+        page.on("dialog", dialog => dialog.type() === "beforeunload" ? dialog.accept() : dialog.dismiss());
+        await page.goto(`${origin}/?board=repo-manual&view=canvas`, { waitUntil: "networkidle" });
+        await ready();
+        await page.locator("#presentation-mindmap").click();
+        await page.locator("#mindmap-expand-all").click();
+        if (presentation === "cards") await page.locator("#presentation-cards").click();
+        for (const id of presentation === "mindmap" ? ["E27", "E04", "E07"] : ["E07"]) {
+          for (const selected of [false, true]) {
+            if (selected) await selectCard(id);
+            else await clearSelection();
+            await page.locator("#fit").click();
+            const toggle = page.locator(`#board [data-element-id="${id}"] .branch-toggle`);
+            for (const phase of ["collapse", "expand"]) {
+              const before = await cameraAt(id);
+              await toggle.click();
+              const after = await cameraAt(id);
+              const nodeDelta = Math.hypot(after.node.x - before.node.x, after.node.y - before.node.y);
+              const buttonDelta = Math.hypot(after.button.x - before.button.x, after.button.y - before.button.y);
+              const scaleDelta = Math.abs(after.scale - before.scale);
+              const label = `${dimensions.width}px ${presentation} ${id} ${selected ? "selected" : "unselected"} ${phase}`;
+              observations.push({ label, nodeDelta: +nodeDelta.toFixed(3), buttonDelta: +buttonDelta.toFixed(3),
+                scaleBefore: +before.scale.toFixed(5), scaleAfter: +after.scale.toFixed(5),
+                scrollBefore: before.scrollY, scrollAfter: after.scrollY });
+              try {
+                assert.ok(scaleDelta < 1e-8, `${label}: branch toggle changed zoom (${before.scale} -> ${after.scale})`);
+                assert.ok(nodeDelta < 2, `${label}: clicked node moved ${nodeDelta.toFixed(2)} screen pixels`);
+                if (presentation === "mindmap") assert.ok(buttonDelta < 2,
+                  `${label}: clicked +/- target moved ${buttonDelta.toFixed(2)} screen pixels`);
+                assert.equal(after.scrollY, before.scrollY, `${label}: branch toggle scrolled the document`);
+                assert.deepEqual(after.selected, before.selected, `${label}: branch toggle replaced current selection`);
+              } catch (error) { failures.push(error.message); }
+            }
+          }
+        }
+        await flush();
+      } finally { await isolated.close(); }
+    }
+  }
+  page = previous;
+  await writeFile(join(artifacts, "branch-camera-observations.json"), JSON.stringify({ observations, failures }, null, 2));
+  if (process.env.MINDMAP_OBSERVE_JUMPS === "1") {
+    console.log(`BRANCH_CAMERA_OBSERVATIONS ${JSON.stringify(observations)}`);
+    console.log(`BRANCH_CAMERA_FAILURES ${JSON.stringify(failures)}`);
+  } else {
+    assert.deepEqual(failures, [], "Branch toggles must preserve camera and clicked screen anchor");
+    pass("Desktop and narrow-screen branch toggles keep zoom, clicked node, +/- target and selection stable across 32 clicks");
+  }
+}
+async function readHiddenManualDescendants(items, baseline) {
+  await selectCard("E07");
+  await page.locator('#board [data-element-id="E07"] .branch-toggle').click();
+  assert.equal((await cards()).some(rect => rect.id === "E27"), false, "The child should really be hidden on the canvas");
+  const inspector = page.locator("#mindmap-inspector");
+  const chapter = inspector.locator(':scope > .mindmap-child-details > details[data-card-id="E27"]');
+  await chapter.waitFor({ state: "visible" });
+  if (!await chapter.evaluate(element => element.open)) await chapter.locator(":scope > summary").click();
+  const expected = items.find(item => item.id === "E27");
+  assert.ok((await chapter.locator(":scope > .mindmap-child-content").innerText()).includes(expected.summary),
+    "A collapsed canvas child should expose its complete existing content in the inspector");
+  const nested = chapter.locator(':scope > .mindmap-child-content > .mindmap-nested-details > details[data-card-id="E28"]');
+  if (!await nested.evaluate(element => element.open)) await nested.locator(":scope > summary").click();
+  assert.ok((await nested.locator(":scope > .mindmap-child-content").innerText()).includes(items.find(item => item.id === "E28").summary),
+    "The inspector should let the reader go two real levels down without unfolding the canvas");
+  await nested.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: join(artifacts, "mindmap-reader-descendants.png"), fullPage: true });
+  const beforeReading = await state();
+  await page.locator("#mindmap-ask").click();
+  const scroll = await page.locator(".context-body").evaluate(element => {
+    element.scrollTop = Math.min(140, element.scrollHeight - element.clientHeight);
+    window.__mindmapReaderTest = document.querySelector('#mindmap-inspector details[data-card-id="E27"]');
+    return element.scrollTop;
+  });
+  assert.ok(scroll > 0, "The expanded reader should have a real scroll position to preserve");
+  await page.locator("#question").fill("仅编辑提问草稿，不应重置右侧阅读位置。");
+  assert.equal(await page.locator(".context-body").evaluate(element => element.scrollTop), scroll,
+    "Routine question-input rendering should preserve reader scroll position");
+  assert.equal(await chapter.evaluate(element => element === window.__mindmapReaderTest), true,
+    "Unchanged reader content should retain its actual DOM, not rebuild disclosures");
+  assert.equal(await nested.evaluate(element => element.open), true);
+  assert.deepEqual((await state()).organization, beforeReading.organization, "Reading children must not modify tree content, ownership or folds");
+  assert.deepEqual((await state()).memory, beforeReading.memory, "Reading children must not modify discussion records");
+  await page.locator("#question").fill("");
+  await page.locator("#ask-close").click();
+  await nested.locator('.mindmap-child-navigate[data-navigate-id="E28"]').click();
+  await page.waitForFunction(() => document.querySelector('[data-element-id="E28"]')?.getAttribute("aria-pressed") === "true");
+  assert.equal((await cards()).some(rect => rect.id === "E28"), true, "View-node should reveal the originally hidden real child");
+  assert.equal(await inspector.locator(":scope > .mindmap-detail-title").innerText(), items.find(item => item.id === "E28").title);
+  await sourceUnchanged(baseline);
+  await page.locator("#mindmap-expand-all").click();
+  await selectCard("E27");
+  pass("The inspector reads hidden E07 → E27 → E28 descendants, preserves reader scroll/disclosures during typing, and locates the actual hidden child without changing content or ownership");
+}
+async function readerDataFixture() {
+  const previous = page;
+  const isolated = await browser.newContext({ viewport: { width: 1600, height: 1000 }, serviceWorkers: "block" });
+  isolated.setDefaultTimeout(12000);
+  const previousAnswer = "历史原始回答，和当前说明明确区分。".repeat(120) + "历史回答末尾。";
+  const savedAnswer = "当前已保存的完整回答。".repeat(100) + "当前完整回答末尾。";
+  const method = "先校验输入，再按顺序解码事件，并把不完整分片留到下一轮。";
+  const condition = "给定多字节 UTF-8 横跨两个分片，解码结果应与完整输入相同。";
+  try {
+    await isolated.route("**/*", route => {
+      const url = new URL(route.request().url());
+      if (url.pathname === "/reader-fixture.html") return route.fulfill({ contentType: "text/html", body:
+        '<!doctype html><html><head><meta charset="utf-8"></head><body><button id="presentation-cards">卡片</button><button id="presentation-mindmap">导图</button>' +
+        '<main id="board"><article data-element-id="A10"><div class="organized-face"><div class="organized-body">' +
+        '<p>当前整理后的简短说明。</p><p>需求：保持事件顺序。</p></div></div></article>' +
+        '<article data-element-id="E58" hidden><div class="organized-face"><div class="organized-body"><p>子卡记录真实跨片解码策略。</p></div></div></article>' +
+        '<article data-element-id="E59" hidden><div class="organized-face"><div class="organized-body"><p>孙卡记录半个汉字的分片验收。</p></div></div></article></main>' +
+        '<aside class="context-body" style="height:400px;overflow:auto"><section id="mindmap-inspector"></section></aside>' +
+        '<script src="/mindmap.js"></script></body></html>' });
+      if (url.origin === origin) return route.continue();
+      unexpected.push(`reader external ${url.origin}`);
+      return route.abort();
+    });
+    page = await isolated.newPage();
+    page.on("pageerror", error => errors.push(error.message));
+    await page.goto(`${origin}/reader-fixture.html`, { waitUntil: "networkidle" });
+    await page.evaluate(values => {
+      const items = [{ id: "A10", parentId: null, title: "整理后的说明", summary: "当前整理后的简短说明。", nativeFace: false,
+        taskDetails: { task: "为短摘要补齐真实任务细节。", dependencies: ["已登记的解码任务依赖。"], acceptance: ["应展示已登记的任务验收条件。"] } },
+        { id: "E58", parentId: "A10", title: "跨分片解码", summary: "子卡记录真实跨片解码策略。",
+          taskDetails: { task: "把解码器接入顺序事件处理。", dependencies: ["先完成二进制分片读取。"],
+            acceptance: ["断开连接后保留已确认的事件。"] } },
+        { id: "E59", parentId: "E58", title: "分片验收", summary: "孙卡记录半个汉字的分片验收。" }];
+      window.__readerFixture = { busy: false, version: 0, items,
+        elements: new Map([...document.querySelectorAll("[data-element-id]")].map(element => [element.dataset.elementId, element])),
+        getDetails: id => id === "A10" ? { answer: values.savedAnswer, originalAnswer: values.previousAnswer,
+          requirement: { need: "需求：保持事件顺序。", method: "按事件累积结果。", methodDetails: [{ title: "跨片处理", description: values.method }],
+            validation: [{ id: "TC-READER-01", title: "跨片汉字", condition: values.condition }] },
+          sources: ["server.py"], attachments: [{ id: "reader_fixture_doc", name: "解码验收说明.md" }],
+          codePreview: { path: "server.py", text: "decoder.decode(chunk, { stream: true })" } } : {} };
+      const fixture = window.__readerFixture;
+      window.BoardMindmap.init({ isBusy: () => fixture.busy, canAsk: () => true, canSplit: () => true,
+        getDetails: id => fixture.getDetails(id), onNavigate: () => {} });
+      window.BoardMindmap.setActive(true);
+      window.BoardMindmap.inspect(["A10"], fixture.items, fixture.elements);
+    }, { previousAnswer, savedAnswer, method, condition });
+    const inspector = page.locator("#mindmap-inspector");
+    const text = await inspector.innerText();
+    assert.match(text, /当前整理后的简短说明/);
+    assert.ok(text.includes("已登记的解码任务依赖。") && text.includes("应展示已登记的任务验收条件。"),
+      "An existing short body and summary must not hide real task dependencies and acceptance");
+    assert.ok(text.includes(method), "Existing method details supplied by the real callback shape should be visible");
+    assert.ok(text.includes(condition), "Existing acceptance conditions should be visible");
+    assert.equal(text.split("需求：保持事件顺序。").length - 1, 1, "The original need should not be duplicated from callback data");
+    assert.equal(await inspector.locator('a[href="/api/attachments/reader_fixture_doc"]').innerText(), "解码验收说明.md");
+    assert.match(text, /decoder\.decode\(chunk/);
+    assert.ok(text.includes(savedAnswer), "A short organized summary must not hide the actual long saved answer");
+    const historical = inspector.locator(".mindmap-original-answer");
+    await historical.locator(":scope > summary").click();
+    assert.ok((await historical.innerText()).includes(previousAnswer), "Historical raw answer should be complete and separately labelled");
+    const firstChild = inspector.locator('.mindmap-child-details > details[data-card-id="E58"]');
+    if (!await firstChild.evaluate(element => element.open)) await firstChild.locator(":scope > summary").click();
+    await firstChild.locator(":scope > .mindmap-child-content").waitFor({ state: "visible" });
+    const task = await firstChild.locator(":scope > .mindmap-child-content").innerText();
+    assert.match(task, /把解码器接入顺序事件处理/);
+    assert.match(task, /先完成二进制分片读取/);
+    assert.match(task, /断开连接后保留已确认的事件/);
+    const grandchild = firstChild.locator('details[data-card-id="E59"]');
+    await grandchild.locator(":scope > summary").click();
+    await grandchild.locator(":scope > .mindmap-child-content").waitFor({ state: "visible" });
+    assert.match(await grandchild.locator(":scope > .mindmap-child-content").innerText(), /孙卡记录半个汉字的分片验收/);
+    const preserved = await page.evaluate(() => {
+      const fixture = window.__readerFixture;
+      const scroll = document.querySelector(".context-body");
+      scroll.scrollTop = 160;
+      const disclosure = document.querySelector('#mindmap-inspector details[data-card-id="E59"]');
+      fixture.busy = true;
+      window.BoardMindmap.inspect(["A10"], fixture.items, fixture.elements);
+      return { same: disclosure === document.querySelector('#mindmap-inspector details[data-card-id="E59"]'),
+        open: disclosure.open, scroll: scroll.scrollTop, askDisabled: document.querySelector("#mindmap-ask").disabled,
+        splitDisabled: document.querySelector("#mindmap-split").disabled };
+    });
+    assert.deepEqual(preserved, { same: true, open: true, scroll: 160, askDisabled: true, splitDisabled: true },
+      "Busy updates should only change action availability, preserving actual reader DOM and scroll");
+    pass("Reader details preserve current summaries, full saved and historical answers, real methods, acceptance, code and attachments; nested hidden content and reader state survive routine updates");
+  } finally {
+    await isolated.close();
+    page = previous;
+  }
+}
+async function workbenchDisplayEntry() {
+  const previous = page;
+  for (const viewport of [{ width: 1900, height: 1200 }, { width: 900, height: 950 }]) {
+    const isolated = await browser.newContext({ viewport, serviceWorkers: "block" });
+    isolated.setDefaultTimeout(12000);
+    await isolated.addCookies([{ name: "mindmap-case", value: `workbench-${viewport.width}`, url: origin }]);
+    await isolated.route("**/*", route => {
+      if (new URL(route.request().url()).origin === origin) return route.continue();
+      unexpected.push(`workbench external ${route.request().url()}`);
+      return route.abort();
+    });
+    try {
+      page = await isolated.newPage();
+      page.on("pageerror", error => errors.push(error.message));
+      page.on("dialog", dialog => dialog.type() === "beforeunload" ? dialog.accept() : dialog.dismiss());
+      await page.goto(`${origin}/?board=project-workbench&view=canvas`, { waitUntil: "networkidle" });
+      await ready("E04");
+      assert.equal(await page.evaluate(() => window.BoardMemory.activeBoard), "project-workbench");
+      const source = await state();
+      const display = page.locator(".canvas-display-bar");
+      assert.equal(await display.isVisible(), true, "The requested workbench URL must expose display mode directly");
+      assert.match(await display.innerText(), /显示方式/);
+      const mode = page.locator("#presentation-mindmap");
+      const box = await mode.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= viewport.width && box.y >= 0 && box.y < viewport.height,
+        `${viewport.width}px display switch must be within the initial visible screen`);
+      await mode.click();
+      assert.equal(await mode.getAttribute("aria-pressed"), "true");
+      await sourceUnchanged(source);
+      await selectCard("E07");
+      assert.equal(await page.locator("#mindmap-inspector").isVisible(), true);
+      const modePaint = await mode.evaluate(button => {
+        const rect = button.getBoundingClientRect();
+        const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+        const panel = document.querySelector(".canvas-panel");
+        const frame = document.querySelector("#viewport");
+        return { hit: Boolean(hit && (hit === button || button.contains(hit))),
+          rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+          panelScroll: panel.scrollTop, viewportScroll: frame.scrollTop, documentScroll: scrollY,
+          covering: hit?.outerHTML.slice(0, 200) };
+      });
+      await writeFile(join(artifacts, `project-workbench-display-${viewport.width}.json`), JSON.stringify(modePaint, null, 2));
+      assert.equal(modePaint.hit, true, "Display switch must remain visibly clickable after selecting a node");
+      assert.ok(await page.locator("#mindmap-inspector .mindmap-child-details .mindmap-child-detail").count() > 0,
+        "The selected workbench chapter should expose actual existing child explanations");
+      await page.screenshot({ path: join(artifacts, `project-workbench-mindmap-${viewport.width}.png`), fullPage: true });
+      await flush();
+    } finally { await isolated.close(); }
+  }
+  page = previous;
+  pass("The exact project-workbench canvas URL exposes the labelled display switch and working original-node reader at desktop and narrow widths");
+}
 async function rootOutlineOverview() {
   const manualPage = page;
   const id = `board-${"c".repeat(32)}`;
@@ -237,6 +510,7 @@ try {
     "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
   ].find(existsSync);
   browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
+  await branchCameraStability();
   const context = await browser.newContext({ viewport: { width: 1900, height: 1200 }, serviceWorkers: "block" });
   context.setDefaultTimeout(12000);
   await context.route("**/*", route => {
@@ -298,6 +572,7 @@ try {
   await page.locator("#fit").click();
   await page.screenshot({ path: join(artifacts, "mindmap-e27-detail.png"), fullPage: true });
   pass("Expanded E27 opens its complete existing detail and retains native split actions");
+  await readHiddenManualDescendants(allItems, baseline);
 
   await selectCard(rootId);
   const toggle = page.locator(`#board [data-element-id="${rootId}"] .branch-toggle`);
@@ -448,6 +723,8 @@ try {
   await page.locator("#mindmap-overview").click();
   await page.locator("#fit").click();
   await rootOutlineOverview();
+  await readerDataFixture();
+  await workbenchDisplayEntry();
   assert.deepEqual(errors, [], "Unexpected JavaScript errors");
   assert.deepEqual(unexpected, [], "Unexpected external or provider calls");
   await page.screenshot({ path: join(artifacts, "mindmap-code-manual.png"), fullPage: true });

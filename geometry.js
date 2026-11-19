@@ -447,7 +447,7 @@
     return { slots, top, height: Math.max(nearBottom, farBottom) - top };
   }
 
-  function layoutBranches(nodes, core, compact = false, { twoSided = true, sectionColumns = false } = {}) {
+  function layoutBranches(nodes, core, compact = false, { twoSided = true, sectionColumns = false, branchSides } = {}) {
     const gapX = compact ? 52 : 88;
     const gapY = compact ? 22 : 36;
     const byId = new Map();
@@ -525,7 +525,9 @@
     const sideOf = new Map();
     const heights = [0, 0];
     for (const root of byHeight) {
-      const side = twoSided && heights[1] < heights[0] ? 1 : 0;
+      const fixedSide = branchSides?.get(root.cards[0]?.id);
+      const side = twoSided && (fixedSide === 0 || fixedSide === 1) ? fixedSide :
+        twoSided && heights[1] < heights[0] ? 1 : 0;
       sideOf.set(root, side);
       heights[side] += heightsOf.get(root) + gapY;
     }

@@ -1,4 +1,8 @@
 /* A reading presentation of the same editable board; no separate map data. */
+.canvas-display-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 8px 18px; border-bottom: 1px solid var(--panel-border); }
+.canvas-display-label { color: var(--muted); font-size: 12px; }
+.canvas-display-hint { margin-left: auto; color: var(--muted); font-size: 12px; }
+.canvas-display-bar .tool-button { min-height: 30px; padding-inline: 12px; }
 .presentation-switch { display: inline-flex; align-items: center; gap: 2px; }
 .presentation-switch .tool-button[aria-pressed="true"] { background: #315345; border-color: #739e88; color: #f1f6ef; }
 :is(#mindmap-tools, #mindmap-toolbar) { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
@@ -149,8 +153,31 @@ body.mindmap-view #mindmap-inspector {
 #mindmap-inspector .mindmap-detail-section { margin: 14px 0; }
 #mindmap-inspector .mindmap-detail-section h4 { margin: 0 0 5px; font-size: 13px; color: #486459; }
 #mindmap-inspector .mindmap-detail-section ul { margin: 0; padding-left: 19px; font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; }
+#mindmap-inspector :is(.mindmap-detail-section-heading, .mindmap-child-details > h4, .mindmap-nested-details > h4) { margin: 17px 0 9px; color: #486459; font-size: 13px; font-weight: 650; }
+#mindmap-inspector .mindmap-child-details { margin-top: 23px; padding-top: 4px; border-top: 1px solid #dbe5d6; }
+#mindmap-inspector .mindmap-child-detail { margin: 8px 0; border: 1px solid #d8e2d3; border-radius: 8px; background: #fbfcf8; }
+#mindmap-inspector .mindmap-child-detail > summary { display: flex; align-items: baseline; gap: 8px; padding: 11px 12px; color: #294c3f; font-size: 13px; font-weight: 650; cursor: pointer; list-style: none; }
+#mindmap-inspector .mindmap-child-detail > summary::-webkit-details-marker { display: none; }
+#mindmap-inspector .mindmap-child-detail > summary::before { content: "+"; flex: 0 0 10px; color: #678776; }
+#mindmap-inspector .mindmap-child-detail[open] > summary::before { content: "−"; }
+#mindmap-inspector .mindmap-child-title { flex: 1; overflow-wrap: anywhere; }
+#mindmap-inspector .mindmap-child-id { color: #6d8578; font: 10px var(--mono); }
+#mindmap-inspector .mindmap-child-content { display: grid; gap: 12px; padding: 0 13px 14px; }
+#mindmap-inspector .mindmap-child-navigate { justify-self: start; padding-block: 4px; }
+#mindmap-inspector .mindmap-method-steps { display: grid; gap: 10px; padding-left: 20px; font-size: 13px; line-height: 1.7; }
+#mindmap-inspector :is(.mindmap-original-answer, .mindmap-saved-answer) { margin: 14px 0; padding-top: 12px; border-top: 1px solid #dbe5d6; }
+#mindmap-inspector :is(.mindmap-original-answer, .mindmap-saved-answer) > summary { color: #486459; font-size: 13px; cursor: pointer; }
+#mindmap-inspector :is(.mindmap-original-answer, .mindmap-saved-answer) > p { margin-top: 10px; }
 #mindmap-inspector .mindmap-detail-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 17px; padding-top: 14px; border-top: 1px solid #dbe5d6; }
 #mindmap-inspector .tool-button { padding: 7px 10px; border: 1px solid #c1d2c1; border-radius: 6px; background: #fbfcf8; color: #29443d; font-size: 12px; }
 #mindmap-inspector .tool-button:hover:not(:disabled) { background: #e5eee0; }
 #mindmap-inspector a { color: #286757; text-underline-offset: 3px; }
 #mindmap-inspector :is(img, video) { max-width: 100%; height: auto; }
+@media (min-width: 1100px) {
+  body.mindmap-view #board-workspace { grid-template-columns: minmax(0, 1fr) minmax(340px, 400px); }
+}
+body.mindmap-view #mindmap-inspector .mindmap-detail-actions { position: sticky; top: -14px; z-index: 1; margin: 12px -1px 16px; padding: 10px 0; border-top: 0; border-bottom: 1px solid #dbe5d6; background: #f7f9f4; }
+@media (max-width: 700px) {
+  .canvas-display-hint { display: none; }
+  .canvas-display-bar { padding-inline: 12px; gap: 7px; }
+}

@@ -352,7 +352,7 @@
     return positions;
   }
 
-  function directionalLayout(items, sizes, guide, mode) {
+  function directionalLayout(items, sizes, guide, mode, { branchSides } = {}) {
     const positions = new Map();
     const byId = new Map(items.map((item) => [item.id, item]));
     const children = new Map();
@@ -386,7 +386,7 @@
       const branches = [];
       collectBranches(root, branches);
       const core = { x: 0, y: 0, ...sizeOf(root) };
-      const component = window.BoardGeometry.layoutBranches(branches, core, true, { twoSided: balanced, sectionColumns: true });
+      const component = window.BoardGeometry.layoutBranches(branches, core, true, { twoSided: balanced, sectionColumns: true, branchSides });
       component.set(root, core);
       const rects = [...component.values()];
       const left = Math.min(...rects.map((rect) => rect.x));

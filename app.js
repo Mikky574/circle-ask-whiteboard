@@ -85,6 +85,7 @@
   const mindmap = window.BoardMindmap;
   let mindmapPositions = mindmap?.positions || {};
   let mindmapUndo = null;
+  const mindmapBranchSides = new Map();
   const adaptiveLayout = window.BoardGeometry.layoutAdaptive;
   let repositoryPath = memory.activeBoardInfo?.repositoryPath || "";
   let onRepositoryChange = () => {};
@@ -2115,6 +2116,7 @@
   }
 
   function renderInspector() {
+    $("context-title").textContent = mindmap?.active ? "节点详情" : "白板操作";
     if ($("allow-source-edit").checked && sourceEditAuthorization !== sourceEditContext()) clearSourceEditAuthorization();
     renderConnection();
     renderRepoChapter();
@@ -3102,6 +3104,9 @@
   function toggleBranch(id) {
     const outline = replies.get(id)?.saved;
     if (gesture) return;
+    // A local fold is a reading action. Keep the current zoom and clicked node
+    // still; fitting the entire graph is an explicit toolbar action.
+    autoFit = false;
     if (searchOpenBranches.delete(id) && savedCollapsedBranches().includes(id)) {
       const before = visibleRect(id);
       refreshViewLayout(false);
@@ -3116,14 +3121,13 @@
       outline.outlineCollapsed = !outline.outlineCollapsed;
       const placed = !outline.outlineCollapsed && placeOpenedBranch(id, beforeRects);
       refreshViewLayout(false, beforeRects);
-      retainBranchAnchor(before, visibleRect(id), !outline.outlineCollapsed);
+      retainBranchAnchor(before, visibleRect(id));
       renderBoardCount();
       const stored = persist();
       const placementStored = !placed || saveLayoutChange(revision);
       if (!stored || !placementStored) status("浏览器存储不可用，部分展开状态仅在本页保留。");
       return;
     }
-    const readingBranch = sourceManual && guideRects.has(id);
     const current = organization.current;
     const collapsed = new Set(current?.collapsedBranches ?? organization.rawCollapsedBranches);
     const opened = collapsed.delete(id);
@@ -3131,8 +3135,8 @@
     if (current) current.collapsedBranches = [...collapsed];
     else organization.rawCollapsedBranches = [...collapsed];
     if (opened) placeOpenedBranch(id, beforeRects);
-    refreshViewLayout(!readingBranch && autoFit, beforeRects);
-    if (readingBranch || !autoFit) retainBranchAnchor(before, visibleRect(id), readingBranch && opened);
+    refreshViewLayout(false, beforeRects);
+    retainBranchAnchor(before, visibleRect(id));
     renderBoardCount();
     if (!saveLayoutChange(revision)) status("浏览器存储不可用，展开状态仅在本页保留。");
   }
@@ -3236,9 +3240,25 @@
     mindmap.decorate(items, elements);
     const visible = items.filter((item) => !elements.get(item.id).hidden);
     const sizes = mindmap.measure(visible, elements);
+    const itemIds = new Set(items.map((item) => item.id));
+    const roots = new Set(items.filter((item) => !itemIds.has(item.parentId)).map((item) => item.id));
+    for (const rootId of roots) {
+      const children = items.filter((item) => item.parentId === rootId && item.category !== "archive");
+      const loads = [0, 0];
+      for (const child of children) {
+        const side = mindmapBranchSides.get(child.id);
+        if (side === 0 || side === 1) loads[side]++;
+      }
+      for (const child of children) {
+        if (mindmapBranchSides.has(child.id)) continue;
+        const side = loads[1] < loads[0] ? 1 : 0;
+        mindmapBranchSides.set(child.id, side);
+        loads[side]++;
+      }
+    }
     // Reading geometry is derived from the same tree; saved card coordinates are untouched.
     const placements = organizationEngine.directionalLayout(visible.map((item) => ({ ...item, sectionOf: undefined })),
-      sizes, organization.current?.projectGuide, "balanced");
+      sizes, organization.current?.projectGuide, "balanced", { branchSides: mindmapBranchSides });
     const positions = gesture?.drag?.positions || mindmapPositions;
     const byId = new Map(visible.map((item) => [item.id, item]));
     const automatic = new Map([...placements].map(([id, rect]) => [id, { ...rect }]));
@@ -7750,7 +7770,7 @@
   });
   new ResizeObserver(() => {
     if (gesture?.drag) layoutReplies(true);
-    else if (preparingQuestion()) refreshViewLayout(false);
+    else if (mindmap?.active || preparingQuestion()) refreshViewLayout(false);
     else layoutReplies();
     if (autoFit) fit();
   }).observe(viewport);
@@ -7758,6 +7778,19 @@
     isBusy: () => Boolean(gesture || connectionDrag || preparingQuestion() || deletionPreparing),
     canAsk: () => Boolean(selected.length) && !preparingQuestion() && mode !== "connect",
     canSplit: () => Boolean(selectedModuleId()) && !expandCardOpen.disabled,
+    getDetails: (id) => {
+      const item = (organization.current?.items || organization.rawCards || []).find((entry) => entry.id === id);
+      const reply = replies.get(id);
+      return {
+        requirement: cardRequirements.get(id),
+        answer: reply?.saved?.answer || reply?.answer.textContent || "",
+        originalAnswer: reply?.saved?.originalAnswer || "",
+        question: reply?.payload.question || "",
+        attachments: inheritedAttachments([id]),
+        sources: [...new Set([...(item?.sources || []), ...(item?.repositoryFiles || [])])],
+        ...(item?.codePreview ? { codePreview: item.codePreview } : {}),
+      };
+    },
     onChange: () => {
       const selection = selected;
       const draft = question.value;
@@ -7779,6 +7812,7 @@
     onExpandAll: () => changeMindmapDepth(true),
     onAsk: () => askOpen.click(),
     onSplit: () => openCardExpansion(),
+    onNavigate: (id) => locateCard(id, true),
     onShowCard: () => {
       const id = selectedModuleId();
       mindmap.setActive(false);
