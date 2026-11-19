@@ -75,6 +75,10 @@ async function relay(req, res) {
       if (heldPlan) await heldPlan;
       event = { type: "answer", text: '{"action":"ask"}' };
     }
+    else if (payload.scope === "expandCard") event = { type: "children", children: [
+      { title: "阅读选区的输入边界", summary: "保留用户输入的延伸方向，新增卡片归属 E27。" },
+      { title: "阅读选区的验收反馈", summary: "选中原文、完整上下文和新下级应能对应起来。" },
+    ] };
     else if (payload.scope === "explain") event = { type: "explanation", explanation: {
       summary: "合成解释：附件与连接状态沿 E27 对应的数据通路处理。",
       sections: [
@@ -166,6 +170,238 @@ function descendantIds(items, rootId) {
 function near(actual, expected, message) {
   assert.ok(Math.abs(actual - expected) < 0.02, `${message}: ${actual} != ${expected}`);
 }
+
+async function dragSelectDetail(quote, detail = page.locator("#mindmap-inspector .mindmap-detail-body")) {
+  await detail.evaluate(element => {
+    element.scrollIntoView({ block: "start", inline: "nearest" });
+    const scroller = element.closest(".context-body");
+    const actions = document.querySelector("#mindmap-inspector .mindmap-detail-actions");
+    if (scroller && actions) scroller.scrollTop -= actions.getBoundingClientRect().height + 24;
+  });
+  const endpoints = await detail.evaluate((element, text) => {
+    const start = element.textContent.indexOf(text);
+    if (start < 0) return null;
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let offset = 0;
+    let first;
+    let last;
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (!first && start < offset + node.length) first = { node, offset: start - offset };
+      const end = start + text.length - 1;
+      if (end >= offset && end < offset + node.length) last = { node, offset: end - offset };
+      offset += node.length;
+    }
+    if (!first || !last) return null;
+    const glyph = ({ node, offset: index }) => {
+      const range = document.createRange();
+      range.setStart(node, index);
+      range.setEnd(node, index + 1);
+      const rect = range.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, y: rect.top + rect.height / 2 };
+    };
+    return { first: glyph(first), last: glyph(last) };
+  }, quote);
+  assert.ok(endpoints, "The selected sentence must exist in the actual rendered detail");
+  // DOM ranges only measure glyphs. Native mouse events perform the selection.
+  await page.mouse.move(endpoints.first.left + 0.5, endpoints.first.y);
+  await page.mouse.down();
+  await page.mouse.move(endpoints.last.right - 0.5, endpoints.last.y, { steps: 12 });
+  await page.mouse.up();
+  try { await page.waitForFunction(text => window.getSelection()?.toString() === text, quote); }
+  catch (error) {
+    error.message += `\nExpected native selection ${JSON.stringify(quote)}, got ${JSON.stringify(await page.evaluate(() => window.getSelection()?.toString()))}.`;
+    throw error;
+  }
+  await page.locator("#mindmap-ask-selection").waitFor({ state: "visible" });
+  assert.equal(await page.locator("#mindmap-ask-selection").isEnabled(), true);
+  assert.equal(await page.locator(".mindmap-selection-quote").textContent(), quote);
+}
+
+async function sendDetailQuestion(text) {
+  const before = requests.length;
+  await page.locator("#question").fill(text);
+  await page.locator("#submit-question").click();
+  await page.waitForFunction(({ question, answer }) => window.BoardMemory.load().notes.some(note =>
+    note.payload?.question === question && note.answer === answer), { question: text, answer: fullAnswer });
+  await page.locator("#stop-ai").waitFor({ state: "hidden" });
+  const sent = requests.slice(before);
+  const request = sent.find(entry => entry.scope !== "plan");
+  assert.ok(request, "The native handler must execute the question after planning");
+  const note = (await state()).memory.notes.find(entry => entry.payload?.question === text);
+  return { sent, request, note };
+}
+
+async function inspectorTextQuestions(allItems) {
+  await page.locator("#mindmap-expand-all").click();
+  await selectCard("E27");
+  const owner = allItems.find(item => item.id === "E27");
+  const quote = owner.summary.slice(0, owner.summary.indexOf("。") + 1);
+  assert.ok(quote.length > 10 && quote.length < owner.summary.length);
+  await page.locator("#mindmap-ask").click();
+  const draft = "这是尚未发送的提问草稿，重新选择原文时应继续保留。";
+  await page.locator("#question").fill(draft);
+  await page.locator("#ask-close").click();
+  await dragSelectDetail(quote);
+  await dragSelectDetail(quote);
+  await page.locator("#mindmap-ask-selection").click();
+  assert.equal(await page.locator("#question").inputValue(), draft,
+    "Reselecting text while its quote panel is visible must preserve the existing question draft");
+  const first = await sendDetailQuestion("只解释导图详情中选中的这句话，并结合其所在模块。");
+  assert.equal(first.sent.length, 2, "A detail question should use native planning and execution");
+  const byId = new Map(allItems.map(item => [item.id, item]));
+  const path = [];
+  for (let item = owner; item; item = byId.get(item.parentId)) path.unshift(item.id);
+  for (const request of first.sent) {
+    assert.equal(request.boardId, "repo-manual");
+    assert.deepEqual(request.anchor.elementIds, ["E27"]);
+    assert.equal(request.anchor.quote, quote, "The submitted quote must exactly match the native text selection");
+    assert.equal(request.anchor.wholeCardIds, undefined, "A partial quote must retain partial-selection semantics");
+    const context = request.project.selectedCards.find(item => item.id === "E27");
+    assert.equal(context.summary, owner.summary, "Both plan and answer need the complete owner, not only the selected sentence");
+    assert.deepEqual(context.path.map(item => item.id), path);
+    assert.equal(context.parent.id, owner.parentId);
+    assert.deepEqual(new Set(context.sources), new Set(owner.sources));
+    assert.ok(request.anchor.sourceFiles.includes("attachments.py"));
+  }
+  assert.deepEqual(first.note.payload.anchor.elementIds, ["E27"]);
+  assert.equal(first.note.payload.anchor.quote, quote);
+  assert.ok(first.note.sourceCardIds.includes("E27"));
+  assert.equal(await page.locator(`#threads [data-element-id="${first.note.id}"]`).getAttribute("data-anchor"), "E27");
+  pass("Dragging a sentence in the reading detail sends the exact quote plus its full owner, ancestors and files, and saves the answer under that owner");
+
+  await selectCard(first.note.id);
+  const answerQuote = fullAnswer.slice(0, fullAnswer.indexOf("。") + 1);
+  await dragSelectDetail(answerQuote);
+  await page.locator("#mindmap-ask-selection").click();
+  const follow = await sendDetailQuestion("继续解释这条导图回答里选中的一句话。");
+  assert.deepEqual(follow.request.anchor.elementIds, [first.note.id]);
+  assert.equal(follow.request.anchor.quote, answerQuote);
+  assert.equal(follow.request.anchor.wholeCardIds, undefined);
+  assert.ok(follow.request.anchor.noteContexts.some(context => context.elementId === first.note.id &&
+    context.originalQuestion === first.note.payload.question && context.sourceCardIds.includes("E27")));
+  assert.ok(follow.request.branch.recent.some(entry => entry.question === first.note.payload.question));
+  assert.deepEqual(follow.note.payload.anchor.elementIds, [first.note.id]);
+  pass("A sentence in a generated answer remains selectable and its follow-up preserves the answer identity, original question and E27 discussion history");
+
+  await selectCard("E27");
+  await dragSelectDetail(quote);
+  await selectCard("E07");
+  const staleAction = page.locator("#mindmap-ask-selection");
+  assert.ok(await staleAction.isHidden() || await staleAction.isDisabled(), "Changing nodes must invalidate the previous quote action");
+  const preview = page.locator(".mindmap-selection-quote");
+  assert.ok(await preview.isHidden() || !(await preview.textContent()).includes(quote), "Changing nodes must clear the previous quote preview");
+  await selectCard("E27");
+  await dragSelectDetail(quote);
+  await page.locator("#mindmap-ask").click();
+  const whole = await sendDetailQuestion("请解释 E27 整张模块卡的完整职责。");
+  assert.deepEqual(whole.request.anchor.elementIds, ["E27"]);
+  assert.deepEqual(whole.request.anchor.wholeCardIds, ["E27"], "The whole-card action must explicitly replace any active partial quote");
+  assert.ok(whole.request.anchor.quote.includes(owner.summary));
+  assert.notEqual(whole.request.anchor.quote, quote);
+  pass("Changing the selected node clears its old quote, and the whole-card question action restores full-card semantics even after text selection");
+
+  await selectCard("E27");
+  const beforeExtend = requests.length;
+  await page.locator("#mindmap-extend").click();
+  await page.locator("#expand-card-form").waitFor({ state: "visible" });
+  assert.equal(requests.length, beforeExtend, "Opening the extension input must not start a model request");
+  const direction = "沿选区和事件流的验收方向继续往下延伸。";
+  await page.locator("#expand-card-focus").fill(direction);
+  await page.locator("#expand-card-submit").click();
+  await page.waitForFunction(() => window.BoardOrganization.load().current.items.some(item => item.title === "阅读选区的输入边界"));
+  await page.locator("#stop-ai").waitFor({ state: "hidden" });
+  const expansion = requests.slice(beforeExtend).find(request => request.scope === "expandCard");
+  assert.ok(expansion, "The reading extension action should reuse native child expansion");
+  assert.deepEqual(expansion.anchor.elementIds, ["E27"]);
+  assert.equal(expansion.question, direction);
+  const additions = (await state()).organization.current.items.filter(item =>
+    ["阅读选区的输入边界", "阅读选区的验收反馈"].includes(item.title));
+  assert.equal(additions.length, 2);
+  assert.ok(additions.every(item => item.parentId === "E27"));
+  await flush();
+  await page.reload({ waitUntil: "networkidle" });
+  await ready();
+  const restored = await state();
+  assert.ok(restored.memory.notes.some(note => note.id === first.note.id && note.payload.anchor.quote === quote));
+  assert.ok(restored.memory.notes.some(note => note.id === follow.note.id && note.payload.anchor.elementIds[0] === first.note.id));
+  assert.ok(additions.every(child => restored.organization.current.items.some(item => item.id === child.id && item.parentId === "E27")));
+  pass("The downward-extension entry waits for a direction, creates real children through the native handler, and keeps selected-text discussions and child ownership after reload");
+
+  const editedText = "手动修订后的阅读说明采用当前保存的模块内容。历史模型回答保留作追溯依据。";
+  await flush();
+  // Existing reorganized replies can have current local content alongside the
+  // older saved answer. Load that supported document shape through the relay.
+  const reorganized = structuredClone(restored.organization);
+  const editedItem = reorganized.current.items.find(item => item.id === first.note.id);
+  assert.ok(editedItem, "The saved reply must be a real organized item before replacing its current wording");
+  Object.assign(editedItem, { title: "手动修订的阅读说明", summary: editedText, localContent: true });
+  const remote = boards.get("repo-manual");
+  boards.set("repo-manual", { ...remote, revision: remote.revision + 1, updatedAt: new Date().toISOString(),
+    storage: { ...remote.storage, organization: JSON.stringify(reorganized) } });
+  await page.reload({ waitUntil: "networkidle" });
+  await ready();
+  await selectCard(first.note.id);
+  const edited = await state();
+  assert.equal(edited.organization.current.items.find(item => item.id === first.note.id).localContent, true);
+  assert.equal(edited.memory.notes.find(note => note.id === first.note.id).answer, fullAnswer);
+  const editedQuote = editedText.slice(0, editedText.indexOf("。") + 1);
+  await dragSelectDetail(editedQuote);
+  await page.locator("#mindmap-ask-selection").click();
+  const editedQuestion = await sendDetailQuestion("解释我手动修订后的阅读说明这一句。");
+  for (const request of editedQuestion.sent) {
+    assert.deepEqual(request.anchor.elementIds, [first.note.id]);
+    assert.equal(request.anchor.quote, editedQuote);
+    assert.equal(request.project.selectedCards.find(item => item.id === first.note.id).summary, editedText,
+      "Manual localContent must take precedence over the older saved model answer in both planning and answering");
+  }
+  pass("Quoted questions on a manually edited answer send its current localContent while preserving the original saved answer for traceability");
+}
+
+async function hiddenChildTextQuestion(allItems) {
+  await page.locator("#mindmap-expand-all").click();
+  await selectCard("E07");
+  await page.locator('#board [data-element-id="E07"] .branch-toggle').click();
+  assert.equal((await cards()).some(rect => rect.id === "E27"), false);
+  const inspector = page.locator("#mindmap-inspector");
+  const chapter = inspector.locator(':scope > .mindmap-child-details > details[data-card-id="E27"]');
+  await chapter.waitFor({ state: "visible" });
+  if (!await chapter.evaluate(element => element.open)) await chapter.locator(":scope > summary").click();
+  const child = chapter.locator(':scope > .mindmap-child-content > .mindmap-nested-details > details[data-card-id="E28"]');
+  if (!await child.evaluate(element => element.open)) await child.locator(":scope > summary").click();
+  const owner = allItems.find(item => item.id === "E28");
+  assert.ok((await child.locator(":scope > .mindmap-child-content").innerText()).includes(owner.summary));
+  const beforeReading = await state();
+  await page.locator("#mindmap-ask").click();
+  const scroll = await page.locator(".context-body").evaluate(element => {
+    element.scrollTop = Math.min(140, element.scrollHeight - element.clientHeight);
+    window.__mindmapSelectedChild = document.querySelector('#mindmap-inspector details[data-card-id="E28"]');
+    return element.scrollTop;
+  });
+  assert.ok(scroll > 0, "The expanded reader should have a real scroll position to preserve");
+  await page.locator("#question").fill("编辑提问草稿时保留当前阅读进度。");
+  assert.equal(await page.locator(".context-body").evaluate(element => element.scrollTop), scroll);
+  assert.equal(await child.evaluate(element => element === window.__mindmapSelectedChild && element.open), true);
+  assert.deepEqual(await state(), beforeReading, "Reading hidden descendants and typing a draft must not change the saved tree or discussions");
+  await page.locator("#question").fill("");
+  await page.locator("#ask-close").click();
+  const quote = owner.summary.slice(0, owner.summary.indexOf("。") + 1);
+  await dragSelectDetail(quote, child.locator(":scope > .mindmap-child-content"));
+  await page.locator("#mindmap-ask-selection").click();
+  await page.waitForFunction(() => document.querySelector('[data-element-id="E28"]')?.getAttribute("aria-pressed") === "true");
+  assert.equal((await cards()).some(rect => rect.id === "E28"), true);
+  assert.equal(await inspector.locator(":scope > .mindmap-detail-title").innerText(), owner.title);
+  const result = await sendDetailQuestion("解释在 E07 阅读器内直接选中的 E28 这句话。");
+  assert.deepEqual(result.request.anchor.elementIds, ["E28"], "A hidden child's discussion must attach to the child, never to the reader's old E07 root");
+  assert.equal(result.request.anchor.quote, quote);
+  assert.equal(result.request.anchor.wholeCardIds, undefined);
+  const context = result.request.project.selectedCards.find(item => item.id === "E28");
+  assert.equal(context.summary, owner.summary);
+  assert.equal(context.parent.id, "E27");
+  assert.ok(context.path.some(item => item.id === "E07"));
+  assert.deepEqual(result.note.payload.anchor.elementIds, ["E28"]);
+  pass("The reader preserves hidden descendants and reading state; directly quoting nested E28 text reveals and targets its true owner without first using View node");
+}
+
 async function rootOutlineOverview() {
   const manualPage = page;
   const id = `board-${"c".repeat(32)}`;
@@ -447,6 +683,8 @@ try {
   pass("Inspector split uses the native explanation request and saves both descendant levels under the original E27");
   await page.locator("#mindmap-overview").click();
   await page.locator("#fit").click();
+  await inspectorTextQuestions(allItems);
+  await hiddenChildTextQuestion(allItems);
   await rootOutlineOverview();
   assert.deepEqual(errors, [], "Unexpected JavaScript errors");
   assert.deepEqual(unexpected, [], "Unexpected external or provider calls");
