@@ -2,7 +2,7 @@
   const storageKey = window.BoardMemory?.storageKeys?.organization ?? "whiteboard.codex.organization.v1";
   const categories = new Set(["main", "done", "optimize", "reference", "archive"]);
   const sourceFiles = new Set([
-    "mindmap.js", "mindmap.css",
+    "mindmap.js", "mindmap.css", "experiment_data.js", "research_board.js", "research_board.css",
     "index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "run_gate.js", "project_finder.js",
     "server.py", "zcode_backend.py", "zcode_workspace.py", "attachments.py", "backends.py", "api_backend.py", "board_tools.py",
     "local_projects.py", "board_transfer.js", "board_store.py", "board_sync.js", "board_versions.js",
@@ -119,6 +119,7 @@
       const taskDetails = cleanTaskDetails(item.taskDetails);
       const spec = cleanSpec(item.spec);
       const codePreview = cleanCodePreview(item.codePreview);
+      const experiment = window.ExperimentData?.clean(item.experiment);
       byId.set(id, {
         id,
         category: categories.has(item.category) ? item.category : "reference",
@@ -131,6 +132,7 @@
         ...(taskDetails ? { taskDetails } : {}),
         ...(spec ? { spec } : {}),
         ...(codePreview ? { codePreview } : {}),
+        ...(experiment ? { experiment } : {}),
         ...(item.draft === true ? { draft: true } : {}),
         ...(item.explicitParent === true ? { explicitParent: true } : {}),
         ...(item.nativeFace === true ? { nativeFace: true } : {}),

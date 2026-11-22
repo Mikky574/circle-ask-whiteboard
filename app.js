@@ -83,6 +83,7 @@
   const memory = window.BoardMemory;
   const organizationEngine = window.BoardOrganization;
   const mindmap = window.BoardMindmap;
+  const research = window.BoardResearch;
   let mindmapPositions = mindmap?.positions || {};
   let mindmapUndo = null;
   const mindmapBranchSides = new Map();
@@ -2194,6 +2195,7 @@
       : repositoryPath ? "读取绑定目录，生成可逐级展开的工程手册。" : "未绑定目录，将读取白板项目的源码。";
     const selectedIds = selected.map(({ id }) => id);
     mindmap?.inspect(selectedIds, hierarchyItems(nodes), new Map(boardElements().map((element) => [element.dataset.elementId, element])));
+    research?.refresh();
     const drafts = draftMembership(nodes);
     const draftRoot = selectedDraftRoot(selectedIds, drafts);
     renderDraftBadges(drafts);
@@ -3542,6 +3544,12 @@
       const labelId = item.spec?.kind === "constraint" ? item.id : item.spec?.id || item.id;
       appendText(heading, "span", "organized-meta", `${category} · ${labelId}`);
       appendText(face, "h3", "organized-title", item.title).dataset.selectPart = "text";
+      const enterBoard = appendText(face, "button", "tool-button research-enter-node", "进入子白板 ↗");
+      enterBoard.type = "button";
+      enterBoard.addEventListener("click", (event) => {
+        event.stopPropagation();
+        research?.enter(item.id);
+      });
       if (item.spec?.kind === "case") {
         const verification = { "mock-pass": "浏览器模拟通过", "offline-pass": "离线测试通过", pending: "待验证" };
         appendText(face, "p", "organized-evidence", verification[item.spec.status]);
@@ -5650,6 +5658,7 @@
         if (old?.spec) item.spec = specAfterContentChange(old, item);
         if (old?.codePreview) item.codePreview = old.codePreview;
         if (old?.repositoryFiles) item.repositoryFiles = old.repositoryFiles;
+        if (old?.experiment) item.experiment = old.experiment;
         if (old?.draft) item.draft = true;
         if (old?.explicitParent || (!previous.current && Object.hasOwn(previous.rawLinks || {}, item.id))) item.explicitParent = true;
         if (old?.category === item.category && typeof old.folded === "boolean") item.folded = old.folded;
@@ -8043,6 +8052,7 @@
       fold?.click();
       if (visibleRect(id)) focusCard(visibleRect(id));
     },
+    onEnter: (id) => research?.enter(id),
   });
   function changeMindmapDepth(expanded) {
     if (gesture || deletionPreparing) return;
@@ -8091,6 +8101,21 @@
   appendPublishedGuide();
   locateLinkedCard();
   window.addEventListener("hashchange", locateLinkedCard);
+  research?.init({
+    title: memory.activeBoardInfo.title,
+    defaultActive: projectCanvas,
+    getItems: () => hierarchyItems(boardForOrganization()).filter((item) => !deletedIds.has(item.id)),
+    getAttachments: (id) => replies.get(id)?.saved?.payload?.attachments || [],
+    getText: (id) => {
+      const item = (organization.current?.items || organization.rawCards || []).find((entry) => entry.id === id);
+      return item?.localContent ? item.summary : replies.get(id)?.saved?.answer || item?.summary || "";
+    },
+    canNavigate: () => !gesture && !connectionDrag && !deletionPreparing,
+    onChange: (active) => { if (!active) layoutReplies(true); },
+    onShowCard: (id) => locateCard(id, true),
+  });
+  const nativePresentation = pageParams.get("presentation");
+  if (["cards", "mindmap"].includes(nativePresentation)) mindmap?.setActive(nativePresentation === "mindmap");
   if (rebuiltProject) $("organization-status").textContent = rebuiltProject;
   if (projectBoardMessage) $("organization-status").textContent = projectBoardMessage;
   if (recoveredReset) status(`已恢复重置前的 ${saved.notes.length} 条批注和白板排布。`);

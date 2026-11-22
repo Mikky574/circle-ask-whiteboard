@@ -594,6 +594,7 @@
         action("mindmap-split", "拆成子节点", callbacks.onSplit,
           isBusy() || !callbacks.onSplit || Boolean(callbacks.canSplit && !callbacks.canSplit()));
         action("mindmap-show-card", "查看卡片", callbacks.onShowCard, isBusy() || !callbacks.onShowCard);
+        if (callbacks.onEnter) action("mindmap-enter-board", "进入子白板 ↗", callbacks.onEnter, isBusy());
         selectionPanel(actions);
       }
     }

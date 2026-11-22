@@ -40,3 +40,34 @@ python scripts/whiteboard_service.py --url http://127.0.0.1:8797 apply --board B
 `taskDetails` 包含 `task`、`dependencies`、`acceptance`，后两者最多 5 项且每项 180 字，至少一项验收标准。`spec.kind` 可为 `requirement`、`constraint` 或 `case`；用例状态仅 `pending`、`mock-pass`、`offline-pass`。尚未运行的验证保持 `pending`。
 
 完成以服务端保存回执和读回为准：返回白板链接、根卡、更新卡号、新增引用到编号的映射及版本号。只预览时明确尚未写入；请求结果不明时先读取服务核对，避免重复追加。服务版本历史保留整板旧版本，不能把它描述成只撤销本模块的操作。
+
+## 实验对照
+
+可在卡片的更新或新增提案中设置 `experiment`。它与正文、卡号一起保存和导出，实验板据此直接显示指标。以下是格式示例，数值须换为核对过的实验结果。
+
+```json
+{
+  "version": 1,
+  "kind": "固定留出对照",
+  "question": "候选是否改善同一留出上的误差？",
+  "metricSummary": "误差从 0.50 到 0.40",
+  "comparison": {
+    "title": "同预算固定留出",
+    "cohort": "填写评估样本、划分和训练预算",
+    "source": "reports/comparison.json",
+    "baseline": "base",
+    "primary": "candidate",
+    "metrics": [{"label": "RMSE", "direction": "lower"}],
+    "arms": [
+      {"id": "base", "label": "基线", "values": [0.50]},
+      {"id": "candidate", "label": "候选", "values": [0.40]}
+    ],
+    "finding": "填写结果与不确定性",
+    "caveat": "填写未解决的问题和适用条件"
+  }
+}
+```
+
+`kind`、`question`、`metricSummary`、`finding`、`caveat` 各最多 800 字。`comparison` 可选，含 1–6 个指标和 2–12 个对照臂。`direction` 使用 `higher` 或 `lower`，各臂的 `values` 顺序须对应指标。缺失值填 `null`，填写来源、评估范围和预选主臂，分别记录不同划分的比较。
+
+图片继续使用原卡的 `attachments` 本机引用。实验板直接展示已关联的图片，点击可看原图；代码仓库不保存实验数据或图片。

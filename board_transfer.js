@@ -14,6 +14,7 @@
   const modes = new Set(["compact", "horizontal", "balanced", "adaptive"]);
   const categories = new Set(["main", "done", "optimize", "reference", "archive"]);
   const sourceFiles = new Set(["index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "run_gate.js",
+    "experiment_data.js", "research_board.js", "research_board.css",
     "project_finder.js", "server.py", "zcode_backend.py", "zcode_workspace.py", "attachments.py", "backends.py", "api_backend.py",
     "board_tools.py", "local_projects.py", "board_transfer.js", "board_store.py", "board_sync.js", "board_versions.js"]);
   const owns = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
@@ -125,6 +126,12 @@
       if (new Set(result.repositoryFiles).size !== result.repositoryFiles.length) fail("仓库文件包含重复路径。");
     }
     if (owns(value, "attachments")) result.attachments = attachments(value.attachments);
+    if (owns(value, "experiment")) {
+      const schema = typeof module === "object" && module.exports
+        ? require("./experiment_data.js") : window.ExperimentData;
+      if (!schema) fail("缺少实验资料校验器。");
+      result.experiment = schema.validate(value.experiment);
+    }
     for (const key of ["draft", "explicitParent", "nativeFace", "localContent", "folded"]) optionalBoolean(value, result, key);
     if (owns(value, "side")) {
       if (!["auto", "left", "right"].includes(value.side)) fail("卡片展开方向无效。");

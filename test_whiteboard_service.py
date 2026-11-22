@@ -108,6 +108,27 @@ class WhiteboardServiceSkillTests(unittest.TestCase):
         self.assertEqual(self.server.calls, [{"action": "list"}])
         self.assertEqual(self.server.origins, [self.origin])
 
+    def test_experiment_metadata_is_scoped_and_saved_with_the_existing_card(self):
+        experiment = {"version": 1, "question": "Does the candidate improve the same holdout?",
+                      "comparison": {
+                          "baseline": "base", "primary": "candidate",
+                          "metrics": [{"label": "RMSE", "direction": "lower"}],
+                          "arms": [{"id": "base", "label": "Baseline", "values": [None]},
+                                   {"id": "candidate", "label": "Candidate", "values": [0.2]}],
+                      }}
+        proposal = self.proposal_file({"rootId": "E05", "updates": [{"id": "E05", "experiment": experiment}]})
+        code, result = self.run_command("apply", "--board", self.identity, "--expected-revision", "1",
+                                        "--file", proposal, "--commit")
+        self.assertEqual(code, 0, result)
+        stored = board_store_request({"action": "load", "id": self.identity})["board"]
+        organization = json.loads(stored["storage"]["organization"])
+        nodes = {item["id"]: item for item in organization["current"]["items"]}
+        self.assertEqual(nodes["E05"]["experiment"], experiment)
+        self.assertEqual(nodes["E05"]["summary"], "Old explanation")
+        self.assertEqual(nodes["E05"]["parentId"], "E04")
+        self.assertEqual(organization["current"]["positions"], {"E05": {"x": 200, "y": 100}})
+        self.assertEqual(nodes["E06"]["summary"], "Keep this")
+
     def test_missing_api_or_html_never_falls_back_or_attempts_a_write(self):
         proposal = self.proposal_file({"rootId": "E05", "updates": [{"id": "E05", "summary": "New"}]})
         for mode in ("unsupported", "html", "wrong-api"):

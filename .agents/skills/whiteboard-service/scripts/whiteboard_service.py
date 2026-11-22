@@ -29,8 +29,9 @@ CATEGORIES = {"main", "done", "optimize", "reference", "archive"}
 PROPOSAL_FIELDS = {"rootId", "updates", "children", "structure"}
 PROJECT_SUMMARY_MAX_CHILDREN = 4
 CARD_ID = re.compile(r"[EA][0-9]+\Z")
-PATCH_FIELDS = {"title", "summary", "category", "sources", "repositoryFiles", "taskDetails", "spec"}
+PATCH_FIELDS = {"title", "summary", "category", "sources", "repositoryFiles", "taskDetails", "spec", "experiment"}
 SOURCE_FILES = {"index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "run_gate.js",
+                "experiment_data.js", "research_board.js", "research_board.css",
                 "project_finder.js", "server.py", "zcode_backend.py", "zcode_workspace.py", "attachments.py", "backends.py",
                 "api_backend.py", "board_tools.py", "local_projects.py", "board_transfer.js", "board_store.py",
                 "board_sync.js", "board_versions.js", "mindmap.js", "mindmap.css"}
@@ -194,6 +195,8 @@ def patch_fields(value):
             result[key] = {"task": text(item["task"], 500, "task", empty=False),
                            "dependencies": string_list(item["dependencies"], 5, 180, "dependencies"),
                            "acceptance": acceptance}
+        elif key == "experiment":
+            result[key] = experiment_record(item)
         elif key == "spec":
             if (not isinstance(item, dict) or set(item) - {"kind", "id", "status", "runner"}
                     or not isinstance(item.get("kind"), str) or item.get("kind") not in {"requirement", "constraint", "case"}
@@ -207,6 +210,48 @@ def patch_fields(value):
                 result[key]["status"] = status
                 if "runner" in item:
                     result[key]["runner"] = text(item["runner"], 220, "runner")
+    return result
+
+
+def experiment_record(value):
+    if not isinstance(value, dict) or type(value.get("version")) is not int or value["version"] != 1:
+        raise ServiceError("实验资料需要 version: 1。")
+    result = {"version": 1}
+    for field in ("kind", "question", "metricSummary", "finding", "caveat"):
+        if field in value:
+            result[field] = text(value[field], 800, field).strip()
+    comparison = value.get("comparison")
+    if comparison is None:
+        return result
+    if (not isinstance(comparison, dict) or not isinstance(comparison.get("metrics"), list)
+            or not 1 <= len(comparison["metrics"]) <= 6 or not isinstance(comparison.get("arms"), list)
+            or not 2 <= len(comparison["arms"]) <= 12):
+        raise ServiceError("实验对照需要 1–6 个指标和 2–12 个对照臂。")
+    metrics = []
+    for metric in comparison["metrics"]:
+        if not isinstance(metric, dict) or metric.get("direction") not in ("higher", "lower"):
+            raise ServiceError("实验指标方向无效。")
+        metrics.append({"label": text(metric.get("label"), 100, "指标名称", empty=False).strip(),
+                        "direction": metric["direction"]})
+    arms = []
+    for arm in comparison["arms"]:
+        if (not isinstance(arm, dict) or not isinstance(arm.get("id"), str)
+                or not re.fullmatch(r"[a-zA-Z0-9_-]{1,60}", arm["id"])
+                or not isinstance(arm.get("values"), list) or len(arm["values"]) != len(metrics)
+                or any(number is not None and (type(number) not in (int, float) or not math.isfinite(number))
+                       for number in arm["values"])):
+            raise ServiceError("实验对照数值无效，缺失值请用 null。")
+        arms.append({"id": arm["id"], "label": text(arm.get("label"), 100, "对照名称", empty=False).strip(),
+                     "values": arm["values"][:]})
+    identities = {arm["id"] for arm in arms}
+    baseline, primary = comparison.get("baseline"), comparison.get("primary")
+    if (not isinstance(baseline, str) or not isinstance(primary, str) or len(identities) != len(arms)
+            or baseline not in identities or primary not in identities or baseline == primary):
+        raise ServiceError("实验基线或主对照臂无效。")
+    result["comparison"] = {"metrics": metrics, "arms": arms, "baseline": baseline, "primary": primary}
+    for field in ("title", "cohort", "source", "finding", "caveat"):
+        if field in comparison:
+            result["comparison"][field] = text(comparison[field], 1200, field).strip()
     return result
 
 
