@@ -429,7 +429,7 @@
             <button id="mindmap-overview" type="button" class="tool-button">只看主干</button>
             <button id="mindmap-expand-all" type="button" class="tool-button">全部展开</button>
           </div>
-          <span class="canvas-display-hint">点选节点，在右侧阅读内容</span>
+          <span class="canvas-display-hint" id="canvas-display-hint">点选节点，在右侧阅读内容</span>
         </nav>
         <div class="canvas-scope-bar" id="canvas-scope-bar" hidden>
           <nav id="canvas-scope-path" aria-label="画布范围"></nav>
@@ -532,6 +532,13 @@
                 <button id="expand-card-split-tree" type="button" disabled>多级拆分</button>
                 <button id="expand-card-close" type="button" aria-label="关闭拆分节点">×</button>
               </div>
+              <label for="expand-card-strategy">展开层级</label>
+              <select id="expand-card-strategy">
+                <option value="auto">按当前卡片自动判断</option>
+                <option value="capabilities">补充项目功能</option>
+                <option value="scenarios">补充使用场景</option>
+                <option value="evidence">补充实现与验证</option>
+              </select>
               <label for="expand-card-focus">按方向展开（可选）</label>
               <div class="expand-card-row">
                 <input id="expand-card-focus" maxlength="400" autocomplete="off" placeholder="留空由 AI 选择">

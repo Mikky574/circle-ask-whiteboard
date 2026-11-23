@@ -62,6 +62,53 @@
     return hits >= 5;
   }
 
+  // Cards a lasso encloses, as ids in input order. Orientation-independent; concave and
+  // self-crossing strokes use even-odd containment through contains().
+  // Strict: center and the four slightly inset corners are inside (the existing rule).
+  // Loose (allowLoose only): the center is inside and a cell-centered sample grid shows at
+  // least LOOSE_COVERAGE of the card inside, tolerating rounded corners and a missed edge.
+  function cardLassoHits(points, cards, { allowLoose = false } = {}) {
+    const LOOSE_COVERAGE = 0.64;
+    const GRID = 6;
+    if (!Array.isArray(points) || !Array.isArray(cards) || !isLasso(points)) return [];
+
+    const region = bounds(points);
+    const hits = [];
+    for (const { id, rect } of cards) {
+      if (!rect || !(rect.width > 0) || !(rect.height > 0)) continue;
+      const { x, y, width, height } = rect;
+      const overlapX = Math.min(x + width, region.x + region.width) - Math.max(x, region.x);
+      const overlapY = Math.min(y + height, region.y + region.height) - Math.max(y, region.y);
+      if (overlapX <= 0 || overlapY <= 0) continue;
+      // A card the stroke's bounding box cannot mostly cover can never qualify loosely.
+      const boxCoverage = overlapX * overlapY / (width * height);
+      if (!allowLoose && boxCoverage < 0.5) continue;
+
+      if (!contains({ x: x + width / 2, y: y + height / 2 }, points)) continue;
+
+      const insetX = Math.min(width * 0.1, 16);
+      const insetY = Math.min(height * 0.1, 16);
+      const strict = [
+        { x: x + insetX, y: y + insetY }, { x: x + width - insetX, y: y + insetY },
+        { x: x + insetX, y: y + height - insetY }, { x: x + width - insetX, y: y + height - insetY },
+      ].every((point) => contains(point, points));
+      if (strict) {
+        hits.push(id);
+        continue;
+      }
+      if (!allowLoose || boxCoverage < LOOSE_COVERAGE) continue;
+
+      let inside = 0;
+      for (let row = 0; row < GRID; row++) {
+        for (let column = 0; column < GRID; column++) {
+          if (contains({ x: x + (column + 0.5) * width / GRID, y: y + (row + 0.5) * height / GRID }, points)) inside += 1;
+        }
+      }
+      if (inside / (GRID * GRID) >= LOOSE_COVERAGE) hits.push(id);
+    }
+    return hits;
+  }
+
   function isLasso(points) {
     const minimumSpan = 6;
     const minimumArea = 24;
@@ -796,7 +843,7 @@
     return layout;
   })();
 
-  const geometry = { scenePoint, bounds, contains, intersectsShape, isLasso, placeNote, placeNoteGroup,
+  const geometry = { scenePoint, bounds, contains, intersectsShape, isLasso, cardLassoHits, placeNote, placeNoteGroup,
     routeAcrossCards, roundedOrthogonalPath, orthogonalSegments, routeAroundCards, sharedBranchRoutes, compactCardRows, layoutBranches,
     sectionColumnThreshold, layoutAdaptive };
   if (typeof window !== 'undefined') window.BoardGeometry = geometry;

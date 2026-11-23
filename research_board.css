@@ -357,6 +357,13 @@ body.canvas-workbench:not(.research-view):not(.mindmap-view) {
   & .board-card[data-guide-level] { border-radius: 8px; }
   & .board-card.is-selected { border-color: var(--teal); outline: 2px solid var(--teal); outline-offset: 3px; box-shadow: 0 10px 24px -10px #1f7a5580; }
   & .board-card:focus-visible { outline: 2px solid #1f7a55; outline-offset: 3px; }
+  & #board [data-element-id].is-card-preview { outline: 2px dashed #288365; outline-offset: 4px; }
+  & #lasso-path { stroke: #248565; fill: #55ad8d28; }
+  & #lasso-path.is-closed { fill: #55ad8d15; }
+  & #expand-card-form { color-scheme: light; }
+  & #expand-card-form button { background: #eff4ec; color: #245d48; }
+  & #expand-card-form button:is(:hover, :focus-visible):not(:disabled) { background: #dcebdf; color: #183e2d; }
+  & #expand-card-form input { background: #fff; color: #243a31; }
   & .organized-face { gap: 6px; }
   & .organized-face :is(h2, h3, h4, .element-title, .thread-question) { font-size: 16px; }
   & .module-fold, & .branch-toggle { min-height: 24px; padding: 2px 8px; border-radius: 5px; font-size: 12px; }

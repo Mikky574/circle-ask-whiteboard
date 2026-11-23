@@ -70,6 +70,23 @@ class CapabilityIntroTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing.py"):
             server.structured_candidate(json.dumps(self.plan), context, repository_scope=True, repository=self.repository)
 
+    def test_capability_expansion_checks_scope_and_retains_the_user_outcome(self):
+        target = {"id": "E04", "parentId": None, "title": "Project", "summary": "Root", "pinned": False}
+        neighbor = {**target, "id": "E06", "title": "Export the result"}
+        expansion = {"targetId": "E04", "path": [target], "children": [], "pinned": [],
+                     "strategy": "capabilities", "related": [neighbor]}
+        server.validate_card_expansion_context(expansion, {"elementIds": ["E04"]})
+        item = {"title": "Get a reviewable prediction", "summary": "Keep a candidate or ask for review.",
+                "capability": capability()}
+        self.assertEqual(server.validate_card_expansion({"children": [item]}, expansion), [item])
+        self.assertEqual(server.validate_card_expansion({"children": []}, expansion), [])
+        with self.assertRaisesRegex(ValueError, "重复标题"):
+            server.validate_card_expansion({"children": [{**item, "title": neighbor["title"]}]}, expansion)
+        with self.assertRaises(ValueError):
+            server.validate_card_expansion({"children": [{"title": item["title"], "summary": item["summary"]}]}, expansion)
+        with self.assertRaises(ValueError):
+            server.validate_card_expansion_context({**expansion, "strategy": "rewrite_board"}, {"elementIds": ["E04"]})
+
 
 if __name__ == "__main__":
     unittest.main()

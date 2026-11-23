@@ -85,6 +85,7 @@ EXPLANATION_TEXT_LIMIT = 700
 EXPLANATION_CARD_RANGE = (2, 6)
 EXPLANATION_MAX_DEPTH = 3
 CARD_EXPANSION_RANGE = (1, 6)
+CARD_EXPANSION_STRATEGIES = ("capabilities", "scenarios", "evidence")
 CARD_EXPANSION_TITLE_LIMIT = 32
 CARD_EXPANSION_SUMMARY_TARGET = 120
 CARD_EXPANSION_SUMMARY_LIMIT = 240
@@ -312,6 +313,16 @@ def result_text_schema(limit, *, zcode=False):
     return {"type": "string", **({"minLength": 1, "maxLength": limit} if zcode else {})}
 
 
+CAPABILITY_FIELDS = ("audience", "input", "outcome", "boundary", "verification")
+
+
+def capability_schema(*, zcode=False):
+    return {"type": "object", "properties": {
+        "version": {"type": "integer", "enum": [1]},
+        **{field: result_text_schema(200, zcode=zcode) for field in CAPABILITY_FIELDS}},
+        "required": ["version", *CAPABILITY_FIELDS], "additionalProperties": False}
+
+
 def write_map_schema(board, *, repository_scope=False, zcode=False, repository_intro=False):
     ids = [node["id"] for node in board["nodes"]] + board.get("newIds", [])
     text = {"type": "string"}
@@ -330,13 +341,7 @@ def write_map_schema(board, *, repository_scope=False, zcode=False, repository_i
         "additionalProperties": False,
     }
     if repository_scope:
-        capability = {"type": "object", "properties": {
-            "version": {"type": "integer", "enum": [1]},
-            **{field: result_text_schema(200, zcode=zcode) for field in
-               ("audience", "input", "outcome", "boundary", "verification")}},
-            "required": ["version", "audience", "input", "outcome", "boundary", "verification"],
-            "additionalProperties": False}
-        item["properties"]["capability"] = {"anyOf": [capability, {"type": "null"}]}
+        item["properties"]["capability"] = {"anyOf": [capability_schema(zcode=zcode), {"type": "null"}]}
         item["properties"]["repositoryFiles"] = {"type": "array", "items": text}
         item["required"] += ["capability", "repositoryFiles"]
     if repository_intro:
@@ -423,8 +428,10 @@ def write_explanation_schema(*, zcode=False):
     }, "whiteboard-explanation-")
 
 
-def write_card_expansion_schema(*, zcode=False):
+def write_card_expansion_schema(*, zcode=False, strategy=None):
     minimum, maximum = CARD_EXPANSION_RANGE
+    if strategy:
+        minimum = 0
     children = {
         "type": "array",
         "description": f"{minimum} to {maximum} distinct, immediate child cards.",
@@ -438,6 +445,9 @@ def write_card_expansion_schema(*, zcode=False):
             "additionalProperties": False,
         },
     }
+    if strategy == "capabilities":
+        children["items"]["properties"]["capability"] = capability_schema(zcode=zcode)
+        children["items"]["required"].append("capability")
     if zcode:
         children.update(minItems=minimum, maxItems=maximum)
     return write_result_schema({
@@ -597,7 +607,7 @@ def validate_map(result, board, contextual_new=False, *, repository_scope=False)
 
 
 def capability_record(value):
-    fields = {"audience", "input", "outcome", "boundary", "verification"}
+    fields = set(CAPABILITY_FIELDS)
     if (not isinstance(value, dict) or set(value) != fields | {"version"} or
             type(value.get("version")) is not int or value["version"] != 1):
         raise ValueError("功能说明需要使用者、输入、结果、边界与核对方式。")
@@ -759,14 +769,18 @@ def parse_decomposition(value, anchor):
 
 def validate_card_expansion_context(value, anchor):
     error = "卡片范围无效，请在选中的卡片下重试。"
-    if not isinstance(value, dict) or set(value) != {"targetId", "path", "children", "pinned"}:
+    required = {"targetId", "path", "children", "pinned"}
+    if not isinstance(value, dict) or not required <= value.keys() or value.keys() - required - {"strategy", "related"}:
+        raise ValueError(error)
+    if ("strategy" in value and value["strategy"] not in CARD_EXPANSION_STRATEGIES or
+            "related" in value and "strategy" not in value):
         raise ValueError(error)
     target_id = value["targetId"]
     if (not isinstance(target_id, str) or not SOURCE_ID.fullmatch(target_id)
             or (anchor or {}).get("elementIds") != [target_id]):
         raise ValueError(error)
-    for field, minimum, maximum in (("path", 1, 12), ("children", 0, 24), ("pinned", 0, 12)):
-        nodes = value[field]
+    for field, minimum, maximum in (("path", 1, 12), ("children", 0, 24), ("pinned", 0, 12), ("related", 0, 8)):
+        nodes = value.get(field, [])
         if not isinstance(nodes, list) or not minimum <= len(nodes) <= maximum:
             raise ValueError(error)
         seen = set()
@@ -788,7 +802,8 @@ def validate_card_expansion_context(value, anchor):
     path_ids = {node["id"] for node in path}
     if (path[-1]["id"] != target_id or path[0]["parentId"] in path_ids
             or any(child["parentId"] != parent["id"] for parent, child in zip(path, path[1:]))
-            or any(node["parentId"] != target_id or node["id"] in path_ids for node in value["children"])):
+            or any(node["parentId"] != target_id or node["id"] in path_ids for node in value["children"])
+            or any(node["parentId"] != path[-1]["parentId"] or node["id"] in path_ids for node in value.get("related", []))):
         raise ValueError(error)
 
 
@@ -899,18 +914,22 @@ def checked_result_text(value, label, limit):
 
 def validate_card_expansion(value, expansion):
     minimum, maximum = CARD_EXPANSION_RANGE
+    strategy = expansion.get("strategy")
+    if strategy:
+        minimum = 0
     if not isinstance(value, dict) or set(value) != {"children"}:
         raise ValueError("卡片展开结果必须只包含 children 字段。")
     children = value["children"]
     if not isinstance(children, list) or not minimum <= len(children) <= maximum:
         raise ValueError(f"卡片展开需要 {minimum} 到 {maximum} 张直接下级卡片。")
-    existing = [expansion["path"][-1], *expansion["children"]]
+    existing = [expansion["path"][-1], *expansion["children"], *expansion.get("related", [])]
     titles = {" ".join(node["title"].split()).casefold() for node in existing}
     result = []
     for index, child in enumerate(children, start=1):
         label = f"第 {index} 张子卡"
-        if not isinstance(child, dict) or set(child) != {"title", "summary"}:
-            raise ValueError(f"{label}必须只包含 title 和 summary。")
+        expected = {"title", "summary", "capability"} if strategy == "capabilities" else {"title", "summary"}
+        if not isinstance(child, dict) or set(child) != expected:
+            raise ValueError(f"{label}需要填写{'、'.join(sorted(expected))}。")
         title = checked_result_text(child["title"], f"{label}的标题", CARD_EXPANSION_TITLE_LIMIT)
         title_key = " ".join(title.split()).casefold()
         if title_key in titles:
@@ -919,6 +938,7 @@ def validate_card_expansion(value, expansion):
         result.append({
             "title": title,
             "summary": checked_result_text(child["summary"], f"{label}的摘要", CARD_EXPANSION_SUMMARY_LIMIT),
+            **({"capability": capability_record(child["capability"])} if strategy == "capabilities" else {}),
         })
     return result
 
@@ -1414,17 +1434,41 @@ def build_prompt(mode, question, context, *, source_access=True, repository_scop
         )
     elif context.get("scope") == "expandCard":
         minimum, maximum = CARD_EXPANSION_RANGE
+        strategy = context["project"]["expansion"].get("strategy")
+        if strategy:
+            minimum = 0
+        strategy_hint = {
+            "capabilities": (
+                'Each item must also include "capability":{"version":1,"audience":"...","input":"...",'
+                '"outcome":"...","boundary":"...","verification":"..."}. Each field is nonempty and at most 200 characters. '
+                "Map reusable project capabilities and their independently observable outcomes. Identify actual "
+                "interfaces (UI, CLI, API or pipeline output) and what someone can accomplish through them. "
+                "Combine workflows that use the same entry, behavior and result. For example, switching devices "
+                "and resuming yesterday are scenarios of preserving and resuming board state. Put concrete "
+                "scenarios, implementation, special cases and optimizations below the corresponding capability. "
+            ),
+            "scenarios": ("Return concrete ways to use this capability. State trigger, user action, observable result, "
+                          "and the material boundary or failure. Keep all proposed siblings at the usage level. "),
+            "evidence": ("Connect the selected behavior to how it works or how to check it. Use a concrete route, "
+                         "decision rule, source reference or reproducible check. Distinguish verified source from assumptions. "),
+        }.get(strategy, "")
+        if strategy:
+            strategy_hint += ("Compare the proposed siblings with existing children and related neighboring cards. "
+                              "Avoid reformulating an existing outcome. Return an empty children array if there is no "
+                              "distinct, supportable addition for this layer. ")
         format_hint = (
             f"Expand the selected card project.expansion.targetId by only one level. Return {minimum} to "
             f"{maximum} immediate child cards as one JSON object: "
             '{"children":[{"title":"...","summary":"..."}]}. '
+            + strategy_hint +
             f"Use a distinct title of up to {CARD_EXPANSION_TITLE_LIMIT} characters and a nonempty summary of "
             f"around {CARD_EXPANSION_SUMMARY_TARGET} characters, with a hard limit of {CARD_EXPANSION_SUMMARY_LIMIT}. "
             "Write one specific fact, mechanism, or check per card. "
             "If the user specifies a focus, answer it directly. If the user's instruction is blank, choose the most "
             "useful unresolved detail from the selected card, its ancestor path and existing children. Prefer a "
             "specific condition, implementation step, or observable check. For a blank instruction, use the language of the selected card. "
-            "Use only as many cards as the current question requires. Prefer one to three distinct child topics. "
+            "Use only as many cards as the current question requires. Prefer one to three distinct topics for a "
+            "focused question; a project capability map can span the distinct product outcomes found in the evidence. "
             "Each child should answer a question useful on its own. Combine details that only make sense together. "
             "Keep siblings at the same level; do not pad the set with a helper, a filename, or a restatement of the parent. "
             "Match the depth to the selected "
@@ -1501,6 +1545,9 @@ def build_prompt(mode, question, context, *, source_access=True, repository_scop
             "-> distinct user outcomes -> a compact capability hierarchy. Do not mirror the directory tree or "
             "promote a variable, class, framework, database layer or helper method into a product capability. "
             "The overview explains who uses the project, what outcome it delivers, and where its responsibility ends. "
+            "At this level use capabilities with a recognizable entry and a reusable outcome, such as opening and "
+            "resuming a project, organizing a board, or comparing recorded experiments. Different occasions for the "
+            "same action are usage scenarios under one capability. Name what the project enables someone to do. "
             "Give it 1 to 6 capabilities, only as many as the evidence supports. Name each by an observable action "
             "and result, such as 'Keep uncertain predictions for human review'. Domain terms are welcome when "
             "they help the user; merely renaming a code symbol is not functional analysis. Do not put generic "
@@ -2031,7 +2078,8 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
                     schema_path = write_children_schema(zcode=backend == "zcode", limit=context["decomposition"]["limit"],
                                                         minimum_depth=context.get("minimumDepth", 1))
                 elif context.get("scope") == "expandCard":
-                    schema_path = write_card_expansion_schema(zcode=backend == "zcode")
+                    schema_path = write_card_expansion_schema(zcode=backend == "zcode",
+                        strategy=context["project"]["expansion"].get("strategy"))
                 elif context.get("scope") == "explain":
                     schema_path = write_explanation_schema(zcode=backend == "zcode")
                 elif context.get("scope") == "plan":

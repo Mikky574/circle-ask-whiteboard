@@ -802,6 +802,15 @@ button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-
   font-size: 13px;
 }
 #expand-card-form label { display: block; margin-bottom: 7px; }
+#expand-card-strategy {
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 5px 7px;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: inherit;
+}
 .expand-card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 9px; }
 #expand-card-close { margin-left: auto; min-width: 30px; }
 .expand-card-row { display: flex; gap: 6px; }

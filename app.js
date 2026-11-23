@@ -28,7 +28,7 @@
     }
   }
 
-  const { scenePoint, bounds, contains, intersectsShape, isLasso, compactCardRows, placeNote, placeNoteGroup,
+  const { scenePoint, bounds, contains, intersectsShape, isLasso, cardLassoHits, compactCardRows, placeNote, placeNoteGroup,
     routeAcrossCards, roundedOrthogonalPath, orthogonalSegments, routeAroundCards, sharedBranchRoutes,
     sectionColumnThreshold } = window.BoardGeometry;
   const runGate = window.WhiteboardRunGate;
@@ -48,6 +48,7 @@
   const expandCardSplit = $("expand-card-split");
   const expandCardSplitTree = $("expand-card-split-tree");
   const expandCardFocus = $("expand-card-focus");
+  const expandCardStrategy = $("expand-card-strategy");
   const expandCardSubmit = $("expand-card-submit");
   const expandCardStatus = $("expand-card-status");
   const canvasMenu = $("canvas-menu");
@@ -1632,6 +1633,7 @@
     expandCardOpen.setAttribute("aria-expanded", String(Boolean(id)));
     expandCardForm.hidden = !id;
     expandCardFocus.value = "";
+    expandCardStrategy.value = "auto";
     expandCardStatus.hidden = true;
     expandCardStatus.textContent = "";
     positionCardExpansion();
@@ -1712,7 +1714,8 @@
     askOpen.hidden = expanded;
     askOpen.setAttribute("aria-expanded", String(expanded));
     askComposer.hidden = !expanded;
-    const count = !isCanvasWorkbench() && !askPopover.hidden && !expanded && mode === "select" ? movableSelection().length : 0;
+    const selectedCardCount = !askPopover.hidden && !expanded && mode === "select" ? movableSelection().length : 0;
+    const count = isCanvasWorkbench() && selectedCardCount < 2 ? 0 : selectedCardCount;
     moveSelection.hidden = !count;
     if (count) {
       $("move-selection-label").textContent = count > 1 ? `拖动 ${count} 张` : "拖动卡片";
@@ -1950,24 +1953,45 @@
     return matches.length ? describe(element, matches) : null;
   }
 
-  function lassoSelection(polygon) {
+  function lassoCandidates(polygon) {
     const region = bounds(polygon);
-    const candidates = boardElements().filter((element) => !element.hidden && element.getAttribute("aria-busy") !== "true")
-      .map((element) => ({ element, rect: visibleRect(element.dataset.elementId) }))
+    return boardElements().filter((element) => !element.hidden && element.getAttribute("aria-busy") !== "true")
+      .map((element) => ({ id: element.dataset.elementId, element, rect: visibleRect(element.dataset.elementId) }))
       .filter(({ rect }) => rect && rect.x <= region.x + region.width && rect.x + rect.width >= region.x &&
         rect.y <= region.y + region.height && rect.y + rect.height >= region.y);
-    const enclosed = candidates.filter(({ rect: { x, y, width, height } }) => {
-      const insetX = Math.min(width * 0.1, 16);
-      const insetY = Math.min(height * 0.1, 16);
-      const corners = [
-        { x: x + insetX, y: y + insetY }, { x: x + width - insetX, y: y + insetY },
-        { x: x + insetX, y: y + height - insetY }, { x: x + width - insetX, y: y + height - insetY },
-      ];
-      return contains({ x: x + width / 2, y: y + height / 2 }, polygon) &&
-        corners.every((point) => contains(point, polygon));
-    });
-    if (enclosed.length) return enclosed.map(({ element }) => describe(element));
+  }
+
+  function lassoSelection(polygon, { wholeCards = false, onlyText = false } = {}) {
+    const candidates = lassoCandidates(polygon);
+    const whole = onlyText ? new Set() : new Set(cardLassoHits(polygon, candidates, { allowLoose: wholeCards }));
+    if (wholeCards || whole.size) return candidates.filter(({ id }) => whole.has(id)).map(({ element }) => describe(element));
     return candidates.map(({ element }) => hit(element, polygon)).filter(Boolean);
+  }
+
+  // A diagonal sweep uses a rectangle. A curved stroke uses its own outline.
+  function cardGesturePolygon(points) {
+    const { x, y, width, height } = bounds(points);
+    if (width * scale < 8 || height * scale < 8) return null;
+    const first = points[0];
+    const last = points.at(-1);
+    const dx = last.x - first.x;
+    const dy = last.y - first.y;
+    const span = Math.hypot(dx, dy);
+    const diagonal = Math.hypot(width, height);
+    const curve = span < diagonal * 0.5 || points.some(point =>
+      Math.abs((point.x - first.x) * dy - (point.y - first.y) * dx) > span * diagonal * 0.1);
+    if (curve && isLasso(points)) return points;
+    return [{ x, y }, { x: x + width, y }, { x: x + width, y: y + height }, { x, y: y + height }];
+  }
+
+  let preselectedCards = new Set();
+  function previewWholeCards(polygon) {
+    const candidates = polygon ? lassoCandidates(polygon) : [];
+    const ids = new Set(polygon ? cardLassoHits(polygon, candidates, { allowLoose: true }) : []);
+    const next = new Set(candidates.filter(({ id }) => ids.has(id)).map(({ element }) => element));
+    for (const element of preselectedCards) if (!next.has(element)) element.classList.remove("is-card-preview");
+    for (const element of next) if (!preselectedCards.has(element)) element.classList.add("is-card-preview");
+    preselectedCards = next;
   }
 
   function selectedChapters() {
@@ -2176,6 +2200,7 @@
     const unavailable = Boolean(activeRun || questionRuns.size || deleting || sourceChanged || storageStale || syncBlocked || !relayAvailable);
     expandCardOpen.disabled = unavailable;
     expandCardFocus.readOnly = Boolean(activeRun?.expandCard);
+    expandCardStrategy.disabled = Boolean(activeRun?.expandCard);
     expandCardSubmit.disabled = unavailable;
     moveSelection.disabled = deleting || storageStale || activeRun?.mode === "organize";
     $("ask-board").disabled = mode === "connect";
@@ -2387,8 +2412,12 @@
       event.target.closest("#move-selection") === moveSelection;
     if (!grip && event.target.closest(canvasControls)) return;
     const card = event.target.closest("[data-element-id]");
-    const headingGrip = !temporaryPan && mode === "select" && isCanvasWorkbench() && !mindmap?.active &&
+    const smartCanvas = mode === "select" && isCanvasWorkbench() && !mindmap?.active && !temporaryPan;
+    const headingGrip = smartCanvas && !event.altKey &&
       event.target.closest(".canvas-grip") && card?.getAttribute("aria-busy") !== "true";
+    const groupGrip = smartCanvas && !event.altKey && card?.getAttribute("aria-busy") !== "true" &&
+      selected.filter(item => !item.highlights.length).length > 1 &&
+      selected.some(item => item.id === card?.dataset.elementId && !item.highlights.length);
     const edge = event.target.closest(".connection-hit");
     const blank = !card && !edge && !grip;
     const gripCards = grip ? movableSelection() : [];
@@ -2399,16 +2428,17 @@
       if (event.shiftKey && (item || connectionSource)) startConnectionDrag(event);
       if (connectionDrag || !blank) return;
     }
-    const panning = temporaryPan || grip || headingGrip || mode === "pan" || (blank && !(mode === "select" && event.shiftKey));
+    const panning = temporaryPan || grip || headingGrip || groupGrip || mode === "pan" ||
+      (blank && !smartCanvas && !(mode === "select" && event.shiftKey));
     if (canvasSpace) canvasSpace.used = true;
     const id = item?.dataset.elementId;
-    const selecting = !temporaryPan && (mode === "pan" || grip || headingGrip || (blank && mode === "select"));
+    const selecting = !temporaryPan && (mode === "pan" || grip || headingGrip || groupGrip || (blank && mode === "select"));
     let drag = null;
     if (selecting && visibleRect(id) && organizationEngine && !deletionPreparing &&
         activeRun?.mode !== "organize" && !storageStale && memory.storageIsCurrent()) {
       const before = organization.current ? organizedRects : rawRects;
       const positions = mindmap?.active ? mindmapPositions : organization.current?.positions || organization.rawPositions;
-      const selectedIds = new Set(selected.map((entry) => entry.id));
+      const selectedIds = new Set(selected.filter(entry => !smartCanvas || !entry.highlights.length).map(entry => entry.id));
       const fromSelection = selectedIds.has(id);
       const elements = grip ? gripCards : fromSelection ? boardElements().filter((element) =>
         selectedIds.has(element.dataset.elementId) && before.has(element.dataset.elementId) &&
@@ -2430,6 +2460,8 @@
       temporaryPan,
       selecting,
       additive: event.shiftKey,
+      wholeCards: smartCanvas && blank && !event.altKey,
+      onlyText: smartCanvas && event.altKey,
       clientX: event.clientX,
       clientY: event.clientY,
       offsetX,
@@ -2495,7 +2527,17 @@
     const last = gesture.points.at(-1);
     if (Math.hypot(point.x - last.x, point.y - last.y) * scale >= 3) {
       gesture.points.push(point);
-      drawLasso(gesture.points);
+      if (gesture.wholeCards) {
+        const polygon = cardGesturePolygon(gesture.points);
+        drawLasso(polygon || gesture.points, Boolean(polygon));
+        if (!gesture.previewFrame) {
+          const currentGesture = gesture;
+          currentGesture.previewFrame = requestAnimationFrame(() => {
+            currentGesture.previewFrame = 0;
+            if (gesture === currentGesture) previewWholeCards(cardGesturePolygon(currentGesture.points));
+          });
+        }
+      } else drawLasso(gesture.points);
     }
   }
 
@@ -2550,6 +2592,8 @@
     if (!cancelled) moveGesture(event);
     const finished = gesture;
     gesture = null;
+    if (finished.previewFrame) cancelAnimationFrame(finished.previewFrame);
+    previewWholeCards(null);
     const tapped = !cancelled && !finished.moved && !finished.temporaryPan && !finished.grip && !finished.additive &&
       (mode === "pan" || mode === "select") ? finished.item?.dataset.elementId : null;
     doubleClickedCard = tapped && tapped === lastCardTap ? tapped : null;
@@ -2602,18 +2646,22 @@
       chooseElement(finished.item, toScene(event), finished.additive);
       return;
     }
-    if (!isLasso(finished.points)) {
+    const polygon = finished.wholeCards ? cardGesturePolygon(finished.points) : finished.points;
+    if (!polygon || !isLasso(polygon)) {
       drawLasso([]);
       applySelection([]);
-      status(finished.moved ? "圈选区域太小，试着把想问的内容圈起来。" : "点选卡片或批注，或拖动画圈选取局部。");
+      status(finished.wholeCards ? "从空白圈住卡片，按空格拖动画布。" :
+        finished.moved ? "圈选区域太小，试着把想问的内容圈起来。" : "点选卡片或批注，或拖动画圈选取局部。");
       return;
     }
-    const items = lassoSelection(finished.points);
-    drawLasso(finished.points, true);
+    const items = lassoSelection(polygon, finished);
+    drawLasso(polygon, true);
     applySelection(finished.additive ? [...selected.filter((item) => !items.some((hit) => hit.id === item.id)), ...items] : items, toScene(event));
     const cardCount = items.filter(({ highlights }) => !highlights.length).length;
-    if (cardCount) status(`已圈选 ${cardCount} 张卡片，可提问或拖动把手。`);
-    else status(items.length ? "已圈选局部内容，可直接提问。" : "圈内没有命中内容，试着把文字围在圈里。");
+    if (cardCount) status(isCanvasWorkbench() ? `已选中 ${cardCount} 张，可以拖动卡片一起移动。` :
+      `已圈选 ${cardCount} 张卡片，可提问或拖动把手。`);
+    else status(items.length ? "已圈选局部内容，可直接提问。" : finished.wholeCards
+      ? "圈内没有完整卡片，试着把卡片的大部分圈进去。" : "圈内没有命中内容，试着把文字围在圈里。");
   }
 
   function chooseElement(element, point, additive = false) {
@@ -3553,6 +3601,8 @@
 
   function applyOrganization(preserveView = false) {
     document.body.classList.toggle("canvas-workbench", isCanvasWorkbench());
+    $("canvas-display-hint").textContent = isCanvasWorkbench() && !mindmap?.active
+      ? "空白圈卡 · 直接拖动选中组 · Alt 圈文字 · 空格平移" : "点选节点，在右侧阅读内容";
     board.classList.toggle("is-organized", Boolean(organization.current));
     const plan = new Map((organization.current?.items || organization.rawCards || []).map((item) => [item.id, item]));
     const guideLevels = organizationEngine.guideLevels([...plan.values()], organization.current?.projectGuide?.rootId);
@@ -6478,7 +6528,7 @@
     return context;
   }
 
-  function cardExpansionContext(targetId, items, nodes) {
+  function cardExpansionContext(targetId, items, nodes, requestedStrategy, focus) {
     const drafts = draftMembership(nodes);
     const draftRoot = drafts.get(targetId);
     const activeItems = items.filter((item) => !deletedIds.has(item.id) && item.category !== "archive");
@@ -6499,15 +6549,31 @@
       path.unshift(describeCard(item, item.id === targetId ? 400 : 140));
     }
     const children = activeItems.filter((item) => item.parentId === targetId);
+    const target = byId.get(targetId);
+    const parent = byId.get(target?.parentId);
+    let strategy = requestedStrategy === "auto" ? null : requestedStrategy;
+    if (!strategy && isCanvasWorkbench() && target && !draftRoot) {
+      if (/项目功能|核心能力|功能地图|功能结构/u.test(focus)) strategy = "capabilities";
+      else if (/使用场景|怎么用|操作流程/u.test(focus)) strategy = "scenarios";
+      else if (/源码|怎么实现|参数|函数|验收|测试|验证/u.test(focus) || target.codePreview || target.spec?.kind === "case") strategy = "evidence";
+      else if (!parent && (repositoryPath || target.capability || children.some(item => item.capability))) strategy = "capabilities";
+      else if (parent && (target.capability || !byId.has(parent.parentId))) strategy = "scenarios";
+      else strategy = "evidence";
+    }
     const nearby = new Set([...path.map(({ id }) => id), ...children.map(({ id }) => id)]);
     const related = (item) => nearby.has(item.id) || seen.has(item.parentId);
     const pinned = activeItems.filter((item) => pinnedIds.has(item.id) &&
         (!drafts.has(item.id) || drafts.get(item.id) === draftRoot))
       .sort((left, right) => Number(related(right)) - Number(related(left)));
     const expansion = {
-      targetId, path, children: children.slice(0, 24).map((item) => describeCard(item, 64)),
+      targetId, path, children: children.slice(0, 24).map((item) => describeCard(item, strategy ? 120 : 64)),
       pinned: pinned.slice(0, 12).map((item) => describeCard(item, 150)),
     };
+    if (strategy) {
+      expansion.strategy = strategy;
+      expansion.related = parent ? activeItems.filter(item => item.parentId === parent.id && item.id !== targetId &&
+        (!drafts.has(item.id) || drafts.get(item.id) === draftRoot)).slice(0, 8).map(item => describeCard(item, 100)) : [];
+    }
     const context = projectContext([targetId]);
     const result = { expansion, goal: excerpt(context.goal, 300) };
     const encoder = new TextEncoder();
@@ -6519,11 +6585,12 @@
     return result;
   }
 
-  function chooseSplitCards(additions, title) {
+  function chooseSplitCards(additions, title, strategy) {
     const dialog = $("canvas-split-review");
     const options = $("canvas-split-options");
     const apply = $("canvas-split-apply");
-    $("canvas-split-parent").textContent = `加入到「${title}」下面`;
+    const label = { capabilities: "项目功能", scenarios: "使用场景", evidence: "实现与验证" }[strategy];
+    $("canvas-split-parent").textContent = `${label ? `${label} · ` : ""}加入到「${title}」下面`;
     options.replaceChildren();
     const choices = additions.map(item => {
       const label = appendText(options, "label", "canvas-split-option", "");
@@ -6533,6 +6600,7 @@
       const copy = appendText(label, "div", "", "");
       appendText(copy, "strong", "", item.title);
       appendText(copy, "span", "", item.summary);
+      if (item.capability && item.capability.outcome !== item.summary) appendText(copy, "span", "", item.capability.outcome);
       return input;
     });
     apply.disabled = false;
@@ -6545,7 +6613,7 @@
     });
   }
 
-  async function expandSelectedCard(targetId, focus) {
+  async function expandSelectedCard(targetId, focus, requestedStrategy = "auto") {
     if (activeRun || questionRuns.size || gesture || deletionPreparing || sourceChanged || storageStale || !relayAvailable ||
         !memory.storageIsCurrent()) return;
     const report = (message) => {
@@ -6554,7 +6622,7 @@
     };
     const nodes = boardForOrganization();
     const items = hierarchyItems(nodes);
-    const context = cardExpansionContext(targetId, items, nodes);
+    const context = cardExpansionContext(targetId, items, nodes, requestedStrategy, focus);
     if (!context.expansion.path.length) return;
     const attachments = inheritedAttachments([targetId]);
     if (attachmentCount(attachments) > attachmentLimit) {
@@ -6594,8 +6662,13 @@
       });
       if (!acceptsRunEvent(run)) return;
       if (!sameBoardRevision(run.revisionSnapshot)) throw new Error("展开期间白板已变化，请重试。");
-      if (errorText || !completed || !Array.isArray(children) || children.length < 1 || children.length > 6) {
+      const strategy = context.expansion.strategy;
+      if (errorText || !completed || !Array.isArray(children) || (!strategy && !children.length) || children.length > 6) {
         throw new Error(errorText || "服务没有返回完整的下级卡片。");
+      }
+      if (!children.length) {
+        report("当前资料未支持新的独立子卡。可以换一个方向，或补充资料后再试。");
+        return;
       }
       const titleKey = (value) => value.trim().normalize("NFKC").toLowerCase();
       const currentTitles = new Map(nodes.map(({ id, title }) => [id, title]));
@@ -6605,16 +6678,18 @@
       let additions = children.map((child, index) => {
         const title = typeof child?.title === "string" ? child.title.trim() : "";
         const summary = typeof child?.summary === "string" ? child.summary.trim() : "";
+        const capability = window.CapabilityData?.clean(child?.capability);
         if (!title || Array.from(title).length > 32 || !summary || Array.from(summary).length > maxExpansionSummaryLength ||
-            titles.has(titleKey(title))) {
+            titles.has(titleKey(title)) || (strategy === "capabilities" && !capability)) {
           throw new Error("下级卡片含重复标题或无效正文，请调整问题后重试。");
         }
         titles.add(titleKey(title));
-        return { id: ids[index], parentId: targetId, category: "reference", title, summary };
+        return { id: ids[index], parentId: targetId, category: "reference", title, summary, ...(capability ? { capability } : {}) };
       });
-      const review = isCanvasWorkbench() && !mindmap?.active;
+      const review = Boolean(strategy) || (isCanvasWorkbench() && !mindmap?.active);
+      const preservePositions = review && !mindmap?.active;
       if (review) {
-        additions = await chooseSplitCards(additions, currentTitles.get(targetId) || targetId);
+        additions = await chooseSplitCards(additions, currentTitles.get(targetId) || targetId, strategy);
         if (!acceptsRunEvent(run)) return;
         if (!additions.length) {
           report("已取消加入子卡。");
@@ -6630,19 +6705,19 @@
       };
       const before = visibleRect(targetId);
       const positions = { ...current.positions };
-      if (review) for (const [id, { x, y, width }] of organization.current ? organizedRects : rawRects) {
+      if (preservePositions) for (const [id, { x, y, width }] of organization.current ? organizedRects : rawRects) {
         positions[id] = { x, y, width };
       }
       const readingBranch = sourceManual && guideRects.has(targetId);
       const restoreSelection = selectedModuleId() === targetId;
       organization = {
         ...previous, previous: previous.current, quickUndo: null, undoAvailable: true,
-        current: { ...current, items: [...items, ...additions], ...(review ? { positions } : {}) },
+        current: { ...current, items: [...items, ...additions], ...(preservePositions ? { positions } : {}) },
       };
       const { openedOutlines } = openBranchPath(targetId, true);
       try {
         applyOrganization(true);
-        if (review && before) {
+        if (preservePositions && before) {
           const occupied = [...organizedRects].filter(([id]) => !additions.some(item => item.id === id)).map(([, rect]) => rect);
           for (const { id } of additions) {
             const rect = visibleRect(id);
@@ -6868,7 +6943,7 @@
   });
   viewport.addEventListener("keydown", (event) => {
     if (event.defaultPrevented || event.target.closest(canvasControls)) return;
-    if (event.key === "Escape" && gesture?.drag) {
+    if (event.key === "Escape" && gesture) {
       event.preventDefault();
       const pointerId = gesture.id;
       endGesture({ pointerId }, true);
@@ -7877,7 +7952,7 @@
     event.preventDefault();
     const focus = expandCardFocus.value.trim();
     const id = selectedModuleId();
-    if (id && id === expandCardTarget) void expandSelectedCard(id, focus);
+    if (id && id === expandCardTarget) void expandSelectedCard(id, focus, expandCardStrategy.value);
   });
   $("ask-close").addEventListener("click", () => {
     showAsk();

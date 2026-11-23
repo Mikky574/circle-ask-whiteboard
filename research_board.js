@@ -105,7 +105,7 @@
   /* A top-level card with capability is an overview when it is the only root, or when
      it sits under the virtual whole-board root and has capability children itself. */
   function isOverview(node, top, nodes) {
-    return Boolean(capability(node)) && (top || children(node.id, nodes).some(item => capability(item)));
+    return (top && Boolean(capability(node))) || children(node.id, nodes).some(item => capability(item));
   }
   /* Functional reading is used only where capability marks the root and first level;
      unmarked boards and branches keep the original topic / experiment presentation. */
@@ -115,7 +115,7 @@
     if (path[0].id === "board") {
       if (path[1] && isOverview(path[1], false, nodes)) start = 1;
       else if (children("board", nodes).some(item => capability(item) && !isOverview(item, false, nodes))) start = 0;
-    } else if (capability(path[0])) start = 0;
+    } else if (isOverview(path[0], true, nodes)) start = 0;
     if (start < 0) return null;
     const [home, feature, scene] = path.slice(start);
     const depth = path.length - start - 1;
