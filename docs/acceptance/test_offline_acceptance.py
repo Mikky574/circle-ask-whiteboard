@@ -409,7 +409,9 @@ class CardExpansionAcceptanceTests(unittest.TestCase):
     def test_candidate_rejects_reparenting_duplicate_and_invalid_card_lengths(self):
         context = server.parse_request(json.dumps(self.request_body()).encode())[2]
         first, second = self.candidate()["children"]
-        for children in ([first], [{**first, "parentIndex": None}, second], [{**first, "title": "备份入口"}, second],
+        self.assertEqual(server.structured_candidate(json.dumps({"children": [first]}), context),
+                         ("children", {"children": [first]}))
+        for children in ([], [{**first, "parentIndex": None}, second], [{**first, "title": "备份入口"}, second],
                          [first, {**second, "summary": "详" * 241}], [first, {**second, "title": "查" * 33}],
                          [first, {"title": second["title"]}], [first, {**second, "summary": ""}]):
             with self.subTest(children=children), self.assertRaises(ValueError):
@@ -947,14 +949,18 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
             "layout": {"flow": "horizontal", "density": "compact"},
             "items": [
                 {"id": identifier, "parentId": parent, "category": "main" if parent is None else "reference",
-                 "title": identifier, "summary": "Evidence: `src/main.py`", "sources": []}
+                 "title": identifier, "summary": "Open a project and continue reading.", "sources": [],
+                 "repositoryFiles": ["src/main.py"],
+                 "capability": {"version": 1, "audience": "Project reader", "input": "A project folder",
+                                "outcome": "A readable project overview", "boundary": "Local projects",
+                                "verification": "Open a known folder and check the displayed project"}}
                 for identifier, parent in (
                     ("E04", None), ("E05", "E04"), ("E06", "E04"), ("E07", "E04"), ("E08", "E05"),
                 )
             ],
         }
         invalid_intro = copy.deepcopy(intro)
-        invalid_intro["items"][-1]["summary"] = "Evidence: `src/missing.py`"
+        invalid_intro["items"][-1]["repositoryFiles"] = ["src/missing.py"]
         child_fields = DecompositionAcceptanceTests.request_body()
         children = DecompositionAcceptanceTests.children()
         expansion_fields = CardExpansionAcceptanceTests.request_body()
@@ -969,7 +975,7 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
             ("decompose", {key: child_fields[key] for key in ("scope", "anchor", "decomposition")}, "children",
              {"children": children}, {"children": [{**children[0], "title": "盘点键名"}]}),
             ("expandCard", {key: expansion_fields[key] for key in ("scope", "anchor", "project")}, "children",
-             expansion, {"children": expansion["children"][:1]}),
+             expansion, {"children": []}),
             ("organizeBranch", {key: node_fields[key] for key in ("scope", "board", "branchRootId")}, "branch",
              branch, invalid_branch),
             ("regenerate", {key: node_fields[key] for key in ("scope", "board", "branchRootId")} | {"branchIntent": "regenerate"},

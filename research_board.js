@@ -142,10 +142,15 @@
     document.getElementById("board-workspace").dataset.researchActive = String(active);
     document.getElementById("presentation-research").setAttribute("aria-pressed", String(active));
     if (active) {
-      options.onChange?.(true);
+      options.onChange?.(true, rootId);
       render();
-    } else options.onChange?.(false);
+    } else options.onChange?.(false, rootId);
     writeRoute(replace);
+  }
+  function showCanvas(id) {
+    rootId = id || null;
+    view = "board";
+    setActive(false);
   }
   function enter(id, replace = false) {
     if (!items().some(node => node.id === id)) return false;
@@ -618,8 +623,8 @@
     document.body.classList.toggle("research-view", active);
     document.getElementById("board-workspace").dataset.researchActive = String(active);
     document.getElementById("presentation-research").setAttribute("aria-pressed", String(active));
-    options.onChange?.(active);
     if (!active) window.BoardMindmap?.setActive(params.get("presentation") === "mindmap");
+    options.onChange?.(active, rootId);
     if (active) render();
   }
   function init(settings) {
@@ -627,7 +632,9 @@
     container = document.getElementById("research-workspace");
     if (!container) return;
     if (!initialized) {
-      document.getElementById("presentation-research").addEventListener("click", () => setActive(true));
+      document.getElementById("presentation-research").addEventListener("click", () => {
+        if (!options.canNavigate || options.canNavigate()) setActive(true);
+      });
       window.addEventListener("popstate", readRoute);
       for (const id of ["presentation-cards", "presentation-mindmap"]) {
         document.getElementById(id).addEventListener("click", () => setActive(false));
@@ -648,6 +655,6 @@
       setActive(true, true);
     }
   }
-  window.BoardResearch = { init, enter, setActive, get active() { return active; },
+  window.BoardResearch = { init, enter, showCanvas, setActive, get active() { return active; },
     refresh() { if (active && JSON.stringify(items()) !== signature) render(); } };
 })();

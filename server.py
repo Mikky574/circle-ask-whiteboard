@@ -84,7 +84,7 @@ EXPLANATION_TITLE_LIMIT = 72
 EXPLANATION_TEXT_LIMIT = 700
 EXPLANATION_CARD_RANGE = (2, 6)
 EXPLANATION_MAX_DEPTH = 3
-CARD_EXPANSION_RANGE = (2, 6)
+CARD_EXPANSION_RANGE = (1, 6)
 CARD_EXPANSION_TITLE_LIMIT = 32
 CARD_EXPANSION_SUMMARY_TARGET = 120
 CARD_EXPANSION_SUMMARY_LIMIT = 240
@@ -1424,7 +1424,10 @@ def build_prompt(mode, question, context, *, source_access=True, repository_scop
             "If the user specifies a focus, answer it directly. If the user's instruction is blank, choose the most "
             "useful unresolved detail from the selected card, its ancestor path and existing children. Prefer a "
             "specific condition, implementation step, or observable check. For a blank instruction, use the language of the selected card. "
-            "Prefer 3 or 4 distinct child topics when the material supports them. Match the depth to the selected "
+            "Use only as many cards as the current question requires. Prefer one to three distinct child topics. "
+            "Each child should answer a question useful on its own. Combine details that only make sense together. "
+            "Keep siblings at the same level; do not pad the set with a helper, a filename, or a restatement of the parent. "
+            "Match the depth to the selected "
             "card: under a project overview, explain capabilities and boundaries; under a capability, group "
             "real usage situations, visible results and meaningful failure boundaries first; under an implementation "
             "topic, give concrete evidence and checks. Unless the user asks about implementation, do not turn "

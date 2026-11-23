@@ -242,6 +242,8 @@
   let guideOverviewBounds = null;
   let focusProjectGuide = Boolean(organization.current?.projectGuide) && organization.quickMode !== "adaptive";
   const searchOpenBranches = new Set();
+  let canvasBranchRoot = null;
+  let revealCanvasRoot = false;
   let rawRects = new Map();
   let cardBoxes = [];
   let activeRun = null;
@@ -1710,7 +1712,7 @@
     askOpen.hidden = expanded;
     askOpen.setAttribute("aria-expanded", String(expanded));
     askComposer.hidden = !expanded;
-    const count = !askPopover.hidden && !expanded && mode === "select" ? movableSelection().length : 0;
+    const count = !isCanvasWorkbench() && !askPopover.hidden && !expanded && mode === "select" ? movableSelection().length : 0;
     moveSelection.hidden = !count;
     if (count) {
       $("move-selection-label").textContent = count > 1 ? `拖动 ${count} 张` : "拖动卡片";
@@ -2158,6 +2160,7 @@
     const deleteBlock = deletionBlock(deletePlan);
     const syncBlocked = window.BoardSync && !window.BoardSync.writable;
     renderWorkbenchEditor(Boolean(activeRun || deleting || storageStale || syncBlocked));
+    renderCanvasScopeBar();
     $("delete-selection").disabled = !deletePlan.removed.length || Boolean(deleteBlock) || syncBlocked;
     $("delete-selection").title = deleteBlock;
     $("delete-selection").textContent = deleting ? "删除处理中…" : deletePlan.removed.length ? "删除选中（" + deletePlan.removed.length + " 项）" : "删除选中";
@@ -2384,6 +2387,8 @@
       event.target.closest("#move-selection") === moveSelection;
     if (!grip && event.target.closest(canvasControls)) return;
     const card = event.target.closest("[data-element-id]");
+    const headingGrip = !temporaryPan && mode === "select" && isCanvasWorkbench() && !mindmap?.active &&
+      event.target.closest(".canvas-grip") && card?.getAttribute("aria-busy") !== "true";
     const edge = event.target.closest(".connection-hit");
     const blank = !card && !edge && !grip;
     const gripCards = grip ? movableSelection() : [];
@@ -2394,10 +2399,10 @@
       if (event.shiftKey && (item || connectionSource)) startConnectionDrag(event);
       if (connectionDrag || !blank) return;
     }
-    const panning = temporaryPan || grip || mode === "pan" || (blank && !(mode === "select" && event.shiftKey));
+    const panning = temporaryPan || grip || headingGrip || mode === "pan" || (blank && !(mode === "select" && event.shiftKey));
     if (canvasSpace) canvasSpace.used = true;
     const id = item?.dataset.elementId;
-    const selecting = !temporaryPan && (mode === "pan" || grip || (blank && mode === "select"));
+    const selecting = !temporaryPan && (mode === "pan" || grip || headingGrip || (blank && mode === "select"));
     let drag = null;
     if (selecting && visibleRect(id) && organizationEngine && !deletionPreparing &&
         activeRun?.mode !== "organize" && !storageStale && memory.storageIsCurrent()) {
@@ -2413,7 +2418,7 @@
       }));
       const movingIds = new Set(targets.map((target) => target.id));
       // Manual group placement keeps neighboring cards, including pinned descendants, in place.
-      const preserveWidths = grip || targets.length > 1;
+      const preserveWidths = grip || Boolean(headingGrip) || targets.length > 1;
       const fixed = preserveWidths ? [...before].filter(([cardId]) => !movingIds.has(cardId)) : [];
       drag = { before, positions: { ...positions }, targets, fromSelection, fixed, preserveWidths, autoFit, frame: 0 };
     }
@@ -3132,6 +3137,15 @@
     // A local fold is a reading action. Keep the current zoom and clicked node
     // still; fitting the entire graph is an explicit toolbar action.
     autoFit = false;
+    if (!mindmap?.active && id === canvasBranchRoot && revealCanvasRoot) {
+      revealCanvasRoot = false;
+      if (savedCollapsedBranches().includes(id)) {
+        const before = visibleRect(id);
+        refreshViewLayout(false);
+        retainBranchAnchor(before, visibleRect(id));
+        return;
+      }
+    }
     if (searchOpenBranches.delete(id) && savedCollapsedBranches().includes(id)) {
       const before = visibleRect(id);
       refreshViewLayout(false);
@@ -3219,6 +3233,34 @@
 
   function visibleCollapsedBranches() {
     return new Set(savedCollapsedBranches().filter((id) => !searchOpenBranches.has(id)));
+  }
+
+  function isCanvasWorkbench() {
+    return projectCanvas || Boolean(canvasBranchRoot) || Boolean(organization.current?.items.some(item => item.capability));
+  }
+
+  function canvasCollapsed(items) {
+    const collapsed = visibleCollapsedBranches();
+    if (!canvasBranchRoot) return collapsed;
+    const byId = new Map(items.map(item => [item.id, item]));
+    const seen = new Set([canvasBranchRoot]);
+    if (revealCanvasRoot) collapsed.delete(canvasBranchRoot);
+    for (let parent = byId.get(canvasBranchRoot)?.parentId; parent && !seen.has(parent); parent = byId.get(parent)?.parentId) {
+      seen.add(parent);
+      collapsed.delete(parent);
+    }
+    return collapsed;
+  }
+
+  // Project the finished layout onto a branch. The underlying placement and links stay shared.
+  function projectCanvasBranch(items, placements, elements) {
+    if (!canvasBranchRoot || !placements.has(canvasBranchRoot)) return items;
+    const ids = subtreeIds(items, canvasBranchRoot);
+    for (const [id, element] of elements) if (!ids.has(id)) {
+      element.hidden = true;
+      placements.delete(id);
+    }
+    return items.filter(item => ids.has(item.id));
   }
 
   function openBranchPath(id, includeSelf = false) {
@@ -3357,7 +3399,7 @@
       };
     });
     items.push(...additions);
-    const collapsed = visibleCollapsedBranches();
+    const collapsed = canvasCollapsed(items);
     const { counts, hidden } = organizationEngine.branchVisibility(items, collapsed);
     const guide = organization.current.projectGuide;
     const guideLevels = organizationEngine.guideLevels(items, guide?.rootId);
@@ -3374,7 +3416,8 @@
     const parents = new Map(visibleItems.map((item) => [item.id, organizationEngine.parentOf(item, byId)]));
     const quickMode = organization.quickMode;
     const directional = isDirectionalQuickMode(quickMode);
-    const graphLayout = directional || quickMode === "adaptive";
+    const openLayout = isCanvasWorkbench() && !guide && !quickMode;
+    const graphLayout = directional || quickMode === "adaptive" || openLayout;
     const followsAnswer = ({ id, sectionOf }) => sectionOf && sectionOf === parents.get(id);
     const local = new Set(visibleItems.filter((item) => item.category !== "archive" && item.id !== guide?.rootId &&
       replies.has(item.id) && (item.nativeFace || !planned.has(item.id)) &&
@@ -3434,8 +3477,9 @@
       const overviewRects = [...guideRects].filter(([id]) => !local.has(id) && guideLevels.get(id) <= 1).map(([, rect]) => rect);
       guideOverviewBounds = overviewRects.length ? unionRects(overviewRects) : null;
     }
-    drawOrganizedConnections(visibleItems, placements, directional ? { ...settings, flow: "horizontal" } : settings, guideLevels);
-    if (graphLayout) $("organization-labels").replaceChildren();
+    const scoped = projectCanvasBranch(visibleItems, placements, elements);
+    drawOrganizedConnections(scoped, placements, directional || openLayout ? { ...settings, flow: "horizontal" } : settings, guideLevels);
+    if (graphLayout || canvasBranchRoot) $("organization-labels").replaceChildren();
     else renderOrganizationLabels(new Map(regularItems.map(({ id }) => [id, placements.get(id)]).filter(([, rect]) => rect)),
       regularItems, settings);
     const moved = placements.size !== organizedRects.size || Array.from(placements).some(([id, rect]) => {
@@ -3448,7 +3492,7 @@
       drawLasso([]);
       applySelection([]);
     }
-    return visibleItems;
+    return scoped;
   }
 
   function taskContext({ task, dependencies, acceptance }, length = 500) {
@@ -3508,6 +3552,7 @@
   }
 
   function applyOrganization(preserveView = false) {
+    document.body.classList.toggle("canvas-workbench", isCanvasWorkbench());
     board.classList.toggle("is-organized", Boolean(organization.current));
     const plan = new Map((organization.current?.items || organization.rawCards || []).map((item) => [item.id, item]));
     const guideLevels = organizationEngine.guideLevels([...plan.values()], organization.current?.projectGuide?.rootId);
@@ -3541,16 +3586,10 @@
       const category = item.spec ? { requirement: "需求", case: "用例", constraint: "约束" }[item.spec.kind] :
         item.codePreview ? "源码" : item.taskDetails ? "任务" : guideCategory || { main: "主干", done: "已完成", optimize: "待优化",
         reference: element.dataset.generatedModule ? "模块" : "批注" }[item.category];
-      const heading = appendText(face, "div", "organized-head", "");
+      const heading = appendText(face, "div", "organized-head canvas-grip", "");
       const labelId = item.spec?.kind === "constraint" ? item.id : item.spec?.id || item.id;
       appendText(heading, "span", "organized-meta", `${category} · ${labelId}`);
       appendText(face, "h3", "organized-title", item.title).dataset.selectPart = "text";
-      const enterBoard = appendText(face, "button", "tool-button research-enter-node", "进入子白板 ↗");
-      enterBoard.type = "button";
-      enterBoard.addEventListener("click", (event) => {
-        event.stopPropagation();
-        research?.enter(item.id);
-      });
       if (item.spec?.kind === "case") {
         const verification = { "mock-pass": "浏览器模拟通过", "offline-pass": "离线测试通过", pending: "待验证" };
         appendText(face, "p", "organized-evidence", verification[item.spec.status]);
@@ -3572,12 +3611,43 @@
       const formula = element.querySelector(":scope > .element-content [data-select-part='formula']");
       if (formula) appendText(body, "div", "element-content organized-formula", "").append(formula.cloneNode(true));
       const sources = [...(item.sources || []), ...(item.repositoryFiles || [])];
-      if (sources.length) appendText(body, "p", "organized-evidence", `代码依据 · ${sources.join("、")}`).dataset.selectPart = "text";
+      if (sources.length && isCanvasWorkbench()) {
+        const evidence = appendText(body, "details", "canvas-card-evidence", "");
+        appendText(evidence, "summary", "", `实现依据 · ${sources.length} 个文件`);
+        appendText(evidence, "p", "organized-evidence", sources.join("、")).dataset.selectPart = "text";
+        evidence.addEventListener("toggle", () => refreshViewLayout(false));
+      } else if (sources.length) appendText(body, "p", "organized-evidence", `代码依据 · ${sources.join("、")}`).dataset.selectPart = "text";
       if (item.codePreview) {
         appendText(body, "code", "organized-evidence organized-code-path", item.codePreview.path).dataset.selectPart = "text";
         appendText(body, "pre", "organized-code-preview", item.codePreview.text).dataset.selectPart = "text";
       }
       renderAttachedNames(body, inheritedAttachments([item.id]));
+      const actions = appendText(face, "div", "canvas-paper-actions", "");
+      if (isCanvasWorkbench()) {
+        const edit = appendText(actions, "button", "tool-button", "编辑");
+        edit.type = "button";
+        edit.setAttribute("aria-label", `编辑 ${item.title}`);
+        edit.addEventListener("click", () => editCanvasCard(item.id));
+        const split = appendText(actions, "button", "tool-button", "拆分");
+        split.type = "button";
+        split.setAttribute("aria-label", `拆分 ${item.title}`);
+        split.addEventListener("click", () => {
+          if (!finishEditingFirst() || !visibleRect(item.id)) return;
+          if (selectedModuleId() !== item.id) {
+            const draft = question.value;
+            chooseElement(element);
+            question.value = draft;
+          }
+          if (expandCardOpen.disabled) {
+            status("拆分需要已连接的 AI 服务，请检查连接设置或等当前请求完成。");
+            return;
+          }
+          openCardExpansion();
+        });
+      }
+      const enterBoard = appendText(actions, "button", "tool-button research-enter-node", isCanvasWorkbench() ? "进入分支 ↗" : "进入子白板 ↗");
+      enterBoard.type = "button";
+      enterBoard.addEventListener("click", () => isCanvasWorkbench() ? openCanvasBranch(item.id) : research?.enter(item.id));
       if (body.children.length) {
         const fold = appendText(heading, "button", "module-fold", "");
         fold.type = "button";
@@ -3637,7 +3707,7 @@
         outline: reply?.saved?.outline, sectionOf: reply?.saved?.sectionOf,
       };
     });
-    const collapsed = visibleCollapsedBranches();
+    const collapsed = canvasCollapsed(rawItems);
     const { counts, hidden } = organizationEngine.branchVisibility(rawItems, collapsed);
     for (const { id, category } of rawItems) {
       const element = elements.get(id);
@@ -3671,7 +3741,7 @@
       const { id, ...rect } = card;
       rawRects.set(id, packed?.get(id) || rect);
     }
-    const items = rawItems.filter(({ id }) => visibleIds.has(id))
+    let items = rawItems.filter(({ id }) => visibleIds.has(id))
       .map((item) => ({ ...item, parentId: visibleIds.has(item.parentId) ? item.parentId : null }));
     const visibleReplies = new Map([...replies].filter(([id]) => visibleIds.has(id)));
     const discussions = items.filter(({ id }) => visibleReplies.has(id));
@@ -3701,6 +3771,7 @@
       const old = previous.get(id);
       changed ||= Object.keys(reply.rect).some((key) => reply.rect[key] !== old[key]);
     }
+    items = projectCanvasBranch(items, rawRects, elements);
     $("connections").replaceChildren();
     for (const reply of replies.values()) {
       if (reply.note.hidden) continue;
@@ -4734,6 +4805,13 @@
       renderCardSearch();
       return false;
     }
+    if (!mindmap?.active && canvasBranchRoot) {
+      const path = cardSearchPath(id, nodes);
+      if (!path.some(item => item.id === canvasBranchRoot)) {
+        openCanvasBranch(null);
+        if (canvasBranchRoot) return false;
+      }
+    }
     const previous = [...searchOpenBranches];
     const collapsed = new Set(savedCollapsedBranches());
     searchOpenBranches.clear();
@@ -5037,6 +5115,9 @@
   }
 
   function quickReorderRoots() {
+    if (!mindmap?.active && canvasBranchRoot && visibleRect(canvasBranchRoot) && !selected.some(({ id }) => id !== "board" && visibleRect(id))) {
+      return [canvasBranchRoot];
+    }
     if (selected.some(({ id }) => id === "board")) return [];
     return selected.filter(({ id }) => visibleRect(id)).map(({ id }) => id);
   }
@@ -6438,6 +6519,32 @@
     return result;
   }
 
+  function chooseSplitCards(additions, title) {
+    const dialog = $("canvas-split-review");
+    const options = $("canvas-split-options");
+    const apply = $("canvas-split-apply");
+    $("canvas-split-parent").textContent = `加入到「${title}」下面`;
+    options.replaceChildren();
+    const choices = additions.map(item => {
+      const label = appendText(options, "label", "canvas-split-option", "");
+      const input = appendText(label, "input", "", "");
+      input.type = "checkbox";
+      input.checked = true;
+      const copy = appendText(label, "div", "", "");
+      appendText(copy, "strong", "", item.title);
+      appendText(copy, "span", "", item.summary);
+      return input;
+    });
+    apply.disabled = false;
+    options.onchange = () => { apply.disabled = !choices.some(input => input.checked); };
+    dialog.returnValue = "cancel";
+    return new Promise(resolve => {
+      dialog.addEventListener("close", () => resolve(dialog.returnValue === "apply"
+        ? additions.filter((_, index) => choices[index].checked) : []), { once: true });
+      dialog.showModal();
+    });
+  }
+
   async function expandSelectedCard(targetId, focus) {
     if (activeRun || questionRuns.size || gesture || deletionPreparing || sourceChanged || storageStale || !relayAvailable ||
         !memory.storageIsCurrent()) return;
@@ -6487,7 +6594,7 @@
       });
       if (!acceptsRunEvent(run)) return;
       if (!sameBoardRevision(run.revisionSnapshot)) throw new Error("展开期间白板已变化，请重试。");
-      if (errorText || !completed || !Array.isArray(children) || children.length < 2 || children.length > 6) {
+      if (errorText || !completed || !Array.isArray(children) || children.length < 1 || children.length > 6) {
         throw new Error(errorText || "服务没有返回完整的下级卡片。");
       }
       const titleKey = (value) => value.trim().normalize("NFKC").toLowerCase();
@@ -6495,7 +6602,7 @@
       const titles = new Set(items.filter((item) => item.id === targetId || item.parentId === targetId)
         .map((item) => titleKey(currentTitles.get(item.id) || item.title)));
       const ids = availableModuleIds(nodes, children.length);
-      const additions = children.map((child, index) => {
+      let additions = children.map((child, index) => {
         const title = typeof child?.title === "string" ? child.title.trim() : "";
         const summary = typeof child?.summary === "string" ? child.summary.trim() : "";
         if (!title || Array.from(title).length > 32 || !summary || Array.from(summary).length > maxExpansionSummaryLength ||
@@ -6505,6 +6612,16 @@
         titles.add(titleKey(title));
         return { id: ids[index], parentId: targetId, category: "reference", title, summary };
       });
+      const review = isCanvasWorkbench() && !mindmap?.active;
+      if (review) {
+        additions = await chooseSplitCards(additions, currentTitles.get(targetId) || targetId);
+        if (!acceptsRunEvent(run)) return;
+        if (!additions.length) {
+          report("已取消加入子卡。");
+          return;
+        }
+        if (!sameBoardRevision(run.revisionSnapshot)) throw new Error("白板已更新，请重新生成拆分建议。");
+      }
       const previous = organization;
       const current = previous.current || {
         title: $("canvas-title").textContent, summary: "", positions: previous.rawPositions,
@@ -6512,15 +6629,30 @@
         collapsedBranches: previous.rawCollapsedBranches || [],
       };
       const before = visibleRect(targetId);
+      const positions = { ...current.positions };
+      if (review) for (const [id, { x, y, width }] of organization.current ? organizedRects : rawRects) {
+        positions[id] = { x, y, width };
+      }
       const readingBranch = sourceManual && guideRects.has(targetId);
       const restoreSelection = selectedModuleId() === targetId;
       organization = {
         ...previous, previous: previous.current, quickUndo: null, undoAvailable: true,
-        current: { ...current, items: [...items, ...additions] },
+        current: { ...current, items: [...items, ...additions], ...(review ? { positions } : {}) },
       };
       const { openedOutlines } = openBranchPath(targetId, true);
       try {
         applyOrganization(true);
+        if (review && before) {
+          const occupied = [...organizedRects].filter(([id]) => !additions.some(item => item.id === id)).map(([, rect]) => rect);
+          for (const { id } of additions) {
+            const rect = visibleRect(id);
+            if (!rect) continue;
+            const placed = placeNote(before, occupied, rect, null);
+            positions[id] = { x: placed.x, y: placed.y, width: rect.width };
+            occupied.push({ ...rect, ...positions[id] });
+          }
+          layoutReplies(true);
+        }
       } catch (error) {
         for (const note of openedOutlines) note.outlineCollapsed = true;
         organization = previous;
@@ -6727,6 +6859,10 @@
     const rect = card && visibleRect(card.dataset.elementId);
     if (!rect || !board.contains(card) || card.dataset.elementId !== doubleClickedCard) return;
     event.preventDefault();
+    if (isCanvasWorkbench() && !mindmap?.active && target.closest(".organized-title") && editableCard(card.dataset.elementId)) {
+      editCanvasCard(card.dataset.elementId);
+      return;
+    }
     if (selectedModuleId() !== card.dataset.elementId) chooseElement(card);
     focusCard(rect);
   });
@@ -7012,12 +7148,14 @@
     };
   }
 
-  function openCardEditor(item, position, starter = false) {
+  function openCardEditor(item, position, starter = false, parentId = null) {
+    if (!item && !mindmap?.active && canvasBranchRoot && visibleRect(canvasBranchRoot)) parentId ||= canvasBranchRoot;
     const task = item?.taskDetails;
     workbenchDraft = item
       ? { id: item.id, revision: workbenchContentRevision(item) }
-      : { creating: true, anchor: newCardAnchor(position), position, starter, inMindmap: Boolean(mindmap?.active) };
-    $("workbench-card-form-title").textContent = item ? "编辑卡片" : "新建卡片";
+      : { creating: true, anchor: visibleRect(parentId) || newCardAnchor(position), position, starter,
+        parentId, inMindmap: Boolean(mindmap?.active) };
+    $("workbench-card-form-title").textContent = item ? "编辑卡片" : parentId ? "新建子卡" : "新建卡片";
     workbenchCardTitle.value = item?.title || "";
     workbenchCardBody.value = task?.task ?? item?.summary ?? "";
     workbenchCardBody.maxLength = task ? 500 : 800;
@@ -7044,6 +7182,78 @@
 
   newCard.addEventListener("click", () => startNewCard());
   $("empty-canvas-write").addEventListener("click", () => startNewCard(true));
+  $("canvas-add-child").addEventListener("click", () => {
+    if (canvasBranchRoot && visibleRect(canvasBranchRoot) && !newCard.disabled && !gesture && memory.storageIsCurrent()) {
+      const parent = selectedModuleId();
+      openCardEditor(null, undefined, false, visibleRect(parent) ? parent : canvasBranchRoot);
+    }
+  });
+
+  function finishEditingFirst() {
+    if (!workbenchDraft) return true;
+    if (!cardEditorFields().some((value, index) => value !== workbenchDraft.originalFields[index])) return true;
+    status("请先保存或取消正在编辑的卡片。");
+    workbenchCardTitle.focus();
+    return false;
+  }
+
+  function editCanvasCard(id) {
+    if (activeRun || gesture || connectionDrag || deletionPreparing || storageStale || !finishEditingFirst()) return;
+    const item = editableCard(id);
+    const element = boardElements().find(card => card.dataset.elementId === id);
+    if (!item || !element || !visibleRect(id) || !memory.storageIsCurrent()) return;
+    const draft = question.value;
+    chooseElement(element);
+    question.value = draft;
+    openCardEditor(item);
+  }
+
+  function renderCanvasScopeBar() {
+    const bar = $("canvas-scope-bar");
+    const backPath = $("canvas-scope-path");
+    const root = !mindmap?.active && canvasBranchRoot && visibleRect(canvasBranchRoot);
+    bar.hidden = !root;
+    $("new-card").hidden = Boolean(root);
+    if (!root) return;
+    $("canvas-add-child").disabled = newCard?.disabled || Boolean(activeRun);
+    const path = cardSearchPath(canvasBranchRoot, new Map(boardForOrganization().map(item => [item.id, item])));
+    const signature = JSON.stringify(path.map(({ id, title }) => [id, title]));
+    if (backPath.dataset.path === signature) return;
+    backPath.dataset.path = signature;
+    backPath.replaceChildren();
+    const define = (label, action) => {
+      const control = appendText(backPath, "button", "tool-button", label);
+      control.type = "button";
+      control.addEventListener("click", action);
+    };
+    define("整个白板", () => openCanvasBranch(null));
+    for (const { id, title } of path) {
+      appendText(backPath, "span", "canvas-path-separator", "›").setAttribute("aria-hidden", "true");
+      if (id === canvasBranchRoot) appendText(backPath, "strong", "", title).setAttribute("aria-current", "page");
+      else define(title, () => openCanvasBranch(id));
+    }
+  }
+
+  function applyCanvasBranch(id) {
+    const root = id && boardForOrganization().some(item => item.id === id && item.category !== "archive") ? id : null;
+    if (root === canvasBranchRoot) {
+      layoutReplies(true);
+      renderCanvasScopeBar();
+      return;
+    }
+    canvasBranchRoot = root;
+    revealCanvasRoot = Boolean(root);
+    searchOpenBranches.clear();
+    const draft = question.value;
+    refreshViewLayout(true);
+    question.value = draft;
+  }
+
+  function openCanvasBranch(id) {
+    if (gesture || connectionDrag || deletionPreparing || !finishEditingFirst()) return;
+    if (mindmap?.active) mindmap.setActive(false);
+    research?.showCanvas(id);
+  }
 
   function cardEditorFields() {
     return [workbenchCardTitle, workbenchCardBody, workbenchCardDependencies, workbenchCardAcceptance, workbenchCardKind]
@@ -7230,7 +7440,13 @@
     const nodes = boardForOrganization();
     const id = old?.id || availableModuleIds(nodes, 1)[0];
     const starter = creating && workbenchDraft.starter && !nodes.length;
-    const item = { ...(old || { id, parentId: null, category: starter ? "main" : "reference", folded: false, draft: !starter }),
+    const parentId = creating ? workbenchDraft.parentId : null;
+    if (parentId && !visibleRect(parentId)) {
+      report("上级卡片已变化，请重新选择后新建。");
+      return;
+    }
+    const item = { ...(old || { id, parentId, category: starter ? "main" : "reference", folded: false,
+      ...(parentId ? { explicitParent: true } : { draft: !starter }) }),
       title, summary: body };
     if (old?.taskDetails) {
       const lines = (field) => field.value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -7254,7 +7470,7 @@
     else if (kind === "case") item.spec = { kind, id: `TC-${id}`, status: "pending" };
     else if (old?.spec?.kind === "constraint") delete item.spec;
     else if (old?.spec) item.spec = specAfterContentChange(old, item);
-    if (old && (old.title !== item.title || old.summary !== item.summary)) delete item.capability;
+    if (old && old.summary !== item.summary) delete item.capability;
     if (old && workbenchContentRevision(item) === workbenchDraft.revision) {
       workbenchDraft = null;
       report("卡片内容未更改。");
@@ -7276,9 +7492,12 @@
     const askWasOpen = !askComposer.hidden;
     organization = previous.current
       ? { ...previous, current: { ...previous.current, items, positions }, previous: previous.current, quickUndo: null, undoAvailable: true }
-      : { ...previous, rawCards: items, rawPositions: positions, quickUndo: null };
+      : { ...previous, rawCards: items, rawPositions: positions, quickUndo: null,
+        ...(parentId ? { rawLinks: { ...previous.rawLinks, [id]: [parentId] } } : {}) };
     let stored = false;
     let movedFromPoint = false;
+    const alreadyRevealed = parentId && searchOpenBranches.has(parentId);
+    if (parentId) searchOpenBranches.add(parentId);
     try {
       applyOrganization(true);
       if (creating) {
@@ -7310,11 +7529,13 @@
       deletionUndo = null;
       workbenchDraft = null;
       workbenchEditFeedback(id, (starter ? "第一张卡片已保存到主干。" :
-        creating ? (movedFromPoint ? "指定位置会盖住其他卡片，草稿已保存到附近空位。" : "草稿已保存，可继续细化，验收后再整合。")
+        creating ? parentId ? "子卡已保存，可以拖动或连到其他卡片。" :
+          (movedFromPoint ? "指定位置会盖住其他卡片，草稿已保存到附近空位。" : "草稿已保存，可继续细化，验收后再整合。")
         : item.spec?.kind === "case" && item.spec.status === "pending" && old?.spec?.status !== "pending"
         ? "卡片已保存，测试用例待验证。"
         : "卡片已保存。") + (positionStored ? "" : " 导图位置仅保留在本页。"));
     } catch (error) {
+      if (parentId && !alreadyRevealed) searchOpenBranches.delete(parentId);
       organization = previous;
       mindmapPositions = previousMindmapPositions;
       applyOrganization(true);
@@ -8055,7 +8276,7 @@
       fold?.click();
       if (visibleRect(id)) focusCard(visibleRect(id));
     },
-    onEnter: (id) => research?.enter(id),
+    onEnter: (id) => openCanvasBranch(id),
   });
   function changeMindmapDepth(expanded) {
     if (gesture || deletionPreparing) return;
@@ -8106,16 +8327,15 @@
   window.addEventListener("hashchange", locateLinkedCard);
   research?.init({
     title: memory.activeBoardInfo.title,
-    defaultActive: projectCanvas,
+    defaultActive: false,
     getItems: () => hierarchyItems(boardForOrganization()).filter((item) => !deletedIds.has(item.id)),
     getAttachments: (id) => replies.get(id)?.saved?.payload?.attachments || [],
     getText: (id) => {
       const item = (organization.current?.items || organization.rawCards || []).find((entry) => entry.id === id);
       return item?.localContent ? item.summary : replies.get(id)?.saved?.answer || item?.summary || "";
     },
-    canNavigate: () => !gesture && !connectionDrag && !deletionPreparing,
-    onChange: (active) => { if (!active) layoutReplies(true); },
-    onShowCard: (id) => locateCard(id, true),
+    canNavigate: () => !gesture && !connectionDrag && !deletionPreparing && finishEditingFirst(),
+    onChange: (active, id) => { if (!active) applyCanvasBranch(id); },
     onAsk: (id) => {
       const draft = question.value;
       research.setActive(false);
@@ -8126,6 +8346,7 @@
   });
   const nativePresentation = pageParams.get("presentation");
   if (["cards", "mindmap"].includes(nativePresentation)) mindmap?.setActive(nativePresentation === "mindmap");
+  if (nativePresentation === "cards") applyCanvasBranch(pageParams.get("root"));
   if (rebuiltProject) $("organization-status").textContent = rebuiltProject;
   if (projectBoardMessage) $("organization-status").textContent = projectBoardMessage;
   if (recoveredReset) status(`已恢复重置前的 ${saved.notes.length} 条批注和白板排布。`);

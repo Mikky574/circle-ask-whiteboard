@@ -330,7 +330,18 @@
       </div>
     </main>
     <main id="board-workspace" class="workspace">
-      <section id="research-workspace" aria-label="实验子白板" hidden></section>
+      <dialog id="canvas-split-review" class="canvas-split-review" aria-labelledby="canvas-split-title">
+        <form method="dialog">
+          <h2 id="canvas-split-title">挑选要加入的子卡</h2>
+          <p id="canvas-split-parent"></p>
+          <div id="canvas-split-options" class="canvas-split-options"></div>
+          <div class="canvas-split-actions">
+            <button class="tool-button" type="submit" value="cancel">取消</button>
+            <button class="submit-button" id="canvas-split-apply" type="submit" value="apply">加入选中卡片</button>
+          </div>
+        </form>
+      </dialog>
+      <section id="research-workspace" aria-label="资料阅读" hidden></section>
       <section class="canvas-panel" aria-label="白板实现说明">
         <header class="canvas-bar">
           <div class="canvas-name">
@@ -410,8 +421,8 @@
         <nav class="canvas-display-bar" aria-label="白板显示方式">
           <span class="canvas-display-label">显示方式</span>
           <div class="tool-group presentation-switch" role="group" aria-label="白板呈现方式">
-            <button id="presentation-research" type="button" class="tool-button" aria-pressed="false">项目阅读</button>
-            <button id="presentation-cards" type="button" class="tool-button" aria-pressed="true">卡片</button>
+            <button id="presentation-cards" type="button" class="tool-button" aria-pressed="true">画布</button>
+            <button id="presentation-research" type="button" class="tool-button" aria-pressed="false">阅读资料</button>
             <button id="presentation-mindmap" type="button" class="tool-button" aria-pressed="false" title="标题导图、双侧分支，点选节点阅读完整说明">导图阅读</button>
           </div>
           <div id="mindmap-tools" class="tool-group" role="group" aria-label="导图层级" hidden>
@@ -420,6 +431,12 @@
           </div>
           <span class="canvas-display-hint">点选节点，在右侧阅读内容</span>
         </nav>
+        <div class="canvas-scope-bar" id="canvas-scope-bar" hidden>
+          <nav id="canvas-scope-path" aria-label="画布范围"></nav>
+          <div class="canvas-scope-actions">
+            <button id="canvas-add-child" class="tool-button" type="button">＋ 新建子卡</button>
+          </div>
+        </div>
         <div id="viewport" aria-label="拖动鼠标圈选文字、公式或图形">
           <div id="empty-canvas-start" hidden>
             <div class="empty-canvas-panel">
