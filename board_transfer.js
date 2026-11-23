@@ -138,6 +138,11 @@
       if (!schema) fail("缺少功能说明校验器。");
       result.capability = schema.validate(value.capability);
     }
+    if (owns(value, "flowSteps")) {
+      const steps = array(value.flowSteps, "流程步骤", 12, 2).map(step => id(step, "流程卡片"));
+      if (steps.includes(result.id) || new Set(steps).size !== steps.length) fail("流程卡片必须互异且不能引用自身。");
+      result.flowSteps = steps;
+    }
     for (const key of ["draft", "explicitParent", "nativeFace", "localContent", "folded"]) optionalBoolean(value, result, key);
     if (owns(value, "side")) {
       if (!["auto", "left", "right"].includes(value.side)) fail("卡片展开方向无效。");

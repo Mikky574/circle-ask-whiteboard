@@ -30,7 +30,7 @@
 
   const { scenePoint, bounds, contains, intersectsShape, isLasso, cardLassoHits, compactCardRows, placeNote, placeNoteGroup,
     routeAcrossCards, roundedOrthogonalPath, orthogonalSegments, routeAroundCards, sharedBranchRoutes,
-    sectionColumnThreshold } = window.BoardGeometry;
+    sectionColumnThreshold, stabilizeFoldLayout } = window.BoardGeometry;
   const runGate = window.WhiteboardRunGate;
   const $ = (id) => document.getElementById(id);
   const viewport = $("viewport");
@@ -246,6 +246,8 @@
   let canvasBranchRoot = null;
   let revealCanvasRoot = false;
   let rawRects = new Map();
+  let foldPositions = null;
+  let foldPositionOverrides = null;
   let cardBoxes = [];
   let activeRun = null;
   const questionRuns = new Map();
@@ -2604,6 +2606,9 @@
       for (const { element } of targets) element.classList.remove("is-dragging");
       cancelAnimationFrame(frame);
       const stored = !cancelled && saveMovedCards(finished.drag);
+      if (stored && foldPositions) {
+        for (const { id } of targets) foldPositions.set(id, finished.drag.positions[id]);
+      }
       if (!stored) {
         autoFit = finished.drag.autoFit;
       } else if (!fromSelection && selected.length) {
@@ -3185,34 +3190,31 @@
     // A local fold is a reading action. Keep the current zoom and clicked node
     // still; fitting the entire graph is an explicit toolbar action.
     autoFit = false;
+    const beforeRects = organization.current ? organizedRects : rawRects;
+    const refresh = () => {
+      const before = beforeRects.get(id);
+      if (!foldPositions) foldPositionOverrides = null;
+      foldPositions = new Map(beforeRects);
+      refreshViewLayout(false, beforeRects);
+      retainBranchAnchor(before, visibleRect(id));
+    };
     if (!mindmap?.active && id === canvasBranchRoot && revealCanvasRoot) {
       revealCanvasRoot = false;
       if (savedCollapsedBranches().includes(id)) {
-        const before = visibleRect(id);
-        refreshViewLayout(false);
-        retainBranchAnchor(before, visibleRect(id));
+        refresh();
         return;
       }
     }
     if (searchOpenBranches.delete(id) && savedCollapsedBranches().includes(id)) {
-      const before = visibleRect(id);
-      refreshViewLayout(false);
-      retainBranchAnchor(before, visibleRect(id));
+      refresh();
       return;
     }
     const revision = prepareLayoutChange();
     if (!revision) return;
-    const beforeRects = organization.current ? organizedRects : rawRects;
-    const before = beforeRects.get(id);
     if (outline?.outline) {
       outline.outlineCollapsed = !outline.outlineCollapsed;
-      const placed = !outline.outlineCollapsed && placeOpenedBranch(id, beforeRects);
-      refreshViewLayout(false, beforeRects);
-      retainBranchAnchor(before, visibleRect(id));
-      renderBoardCount();
-      const stored = persist();
-      const placementStored = !placed || saveLayoutChange(revision);
-      if (!stored || !placementStored) status("浏览器存储不可用，部分展开状态仅在本页保留。");
+      refresh();
+      if (!persist()) status("浏览器存储不可用，部分展开状态仅在本页保留。");
       return;
     }
     const current = organization.current;
@@ -3221,37 +3223,30 @@
     if (!opened) collapsed.add(id);
     if (current) current.collapsedBranches = [...collapsed];
     else organization.rawCollapsedBranches = [...collapsed];
-    if (opened) placeOpenedBranch(id, beforeRects);
-    refreshViewLayout(false, beforeRects);
-    retainBranchAnchor(before, visibleRect(id));
-    renderBoardCount();
+    refresh();
     if (!saveLayoutChange(revision)) status("浏览器存储不可用，展开状态仅在本页保留。");
   }
 
-  function placeOpenedBranch(id, before) {
-    if (mindmap?.active) return false;
-    const current = organization.current;
-    const positions = current?.positions || organization.rawPositions;
-    if (!positions[id] || !before.has(id)) return false;
-
-    // Measure the newly visible cards, then use the previous positions of visible
-    // neighbors as obstacles so opening a moved branch doesn't shuffle them.
-    const items = layoutReplies(true);
-    const visible = current ? organizedRects : rawRects;
-    const rects = new Map([...visible].map(([cardId, rect]) => [cardId, before.get(cardId) || rect]));
-    const fixedIds = [...before.keys(), ...pinnedIds];
-    const preset = quickModeFor(id, new Map(items.map((item) => [item.id, item])));
-    const moves = preset
-      ? reflowQuickBranch(items, rects, id, preset, fixedIds, true)
-      : organizationEngine.reflowBranch(items, rects, id, {
-        columns: viewport.clientWidth >= 600 ? 2 : 1, fixedIds, below: false,
-      });
-    for (const [cardId, { x, y, width }] of before) {
-      const rect = visible.get(cardId);
-      if (rect && (rect.x !== x || rect.y !== y || rect.width !== width)) moves.set(cardId, { x, y, width });
+  function applyFoldPositions(placements, items, positions) {
+    if (!foldPositions) return;
+    const scoped = !mindmap?.active && canvasBranchRoot && placements.has(canvasBranchRoot)
+      ? subtreeIds(items, canvasBranchRoot) : null;
+    const visible = scoped ? new Map([...placements].filter(([id]) => scoped.has(id))) : placements;
+    const parents = new Map(items.map(({ id, parentId }) => [id, parentId]));
+    const drag = gesture?.drag;
+    const anchors = new Map(foldPositions);
+    if (foldPositionOverrides && !drag) {
+      for (const [id, point] of Object.entries(positions)) {
+        const previous = foldPositionOverrides[id];
+        if (previous?.x !== point.x || previous?.y !== point.y || previous?.width !== point.width) anchors.delete(id);
+      }
     }
-    for (const [cardId, { x, y, width }] of moves) positions[cardId] = { x, y, width };
-    return moves.size > 0;
+    for (const { id } of drag?.targets || []) anchors.set(id, drag.positions[id]);
+    stabilizeFoldLayout(visible, anchors, parents, new Set(Object.keys(positions)));
+    if (!drag) {
+      foldPositions = new Map(visible);
+      foldPositionOverrides = { ...positions };
+    }
   }
 
   function inlineDiscussion(reply) {
@@ -3386,6 +3381,9 @@
         rect.y += positions[ancestor].y - automatic.get(ancestor).y;
         break;
       }
+    }
+    applyFoldPositions(placements, visible, positions);
+    for (const [id, rect] of placements) {
       placeElement(elements.get(id), rect);
       const parent = placements.get(byId.get(id)?.parentId);
       elements.get(id).dataset.mapSide = parent && rect.x < parent.x ? "left" : "right";
@@ -3515,6 +3513,7 @@
       for (const [id, rect] of moves) Object.assign(placements.get(id), rect);
     }
     applyQuickBranchLayouts(visibleItems, placements, positions);
+    applyFoldPositions(placements, visibleItems, positions);
     for (const { id } of discussions) {
       if (guideLevels.has(id)) guideRects.set(id, placements.get(id));
     }
@@ -3600,6 +3599,7 @@
   }
 
   function applyOrganization(preserveView = false) {
+    if (!preserveView) foldPositions = null;
     document.body.classList.toggle("canvas-workbench", isCanvasWorkbench());
     $("canvas-display-hint").textContent = isCanvasWorkbench() && !mindmap?.active
       ? "空白圈卡 · 直接拖动选中组 · Alt 圈文字 · 空格平移" : "点选节点，在右侧阅读内容";
@@ -3806,9 +3806,10 @@
       placeDiscussions(discussions, rawRects, sizes, positions, compact);
     }
     const branchMoves = applyQuickBranchLayouts(items, rawRects, positions);
+    applyFoldPositions(rawRects, items, positions);
     for (const card of [...cards, ...manualCards]) {
       const id = card.dataset.elementId;
-      if (rawRects.has(id) && (card.dataset.generatedModule || graphLayout || packed || positions[id] || branchMoves.has(id))) {
+      if (rawRects.has(id) && (foldPositions || card.dataset.generatedModule || graphLayout || packed || positions[id] || branchMoves.has(id))) {
         placeElement(card, rawRects.get(id));
       }
     }
@@ -4962,6 +4963,7 @@
   function reorderQuickly(requestedMode = null) {
     if (gesture || !organizationEngine || (requestedMode === "adaptive" && !adaptiveLayout)) return;
     if (mindmap?.active) {
+      foldPositions = null;
       const visible = organization.current ? organizedRects : rawRects;
       const roots = quickReorderRoots();
       mindmapUndo = { ...mindmapPositions };
@@ -4996,6 +4998,7 @@
     }
     const revision = prepareLayoutChange();
     if (!revision) return;
+    foldPositions = null;
     const before = current ? current.positions : organization.rawPositions;
     const presets = Object.keys(organizationEngine.quickLayouts).filter((mode) => mode !== "adaptive");
     const nextPreset = (mode) => presets[(presets.indexOf(mode) + 1) % presets.length];
@@ -5792,6 +5795,7 @@
         if (old?.spec) item.spec = specAfterContentChange(old, item);
         if (old?.codePreview) item.codePreview = old.codePreview;
         if (old?.repositoryFiles && !item.repositoryFiles?.length) item.repositoryFiles = old.repositoryFiles;
+        if (old?.flowSteps) item.flowSteps = old.flowSteps;
         if (old?.experiment) item.experiment = old.experiment;
         if (!item.capability && old?.capability && old.title === item.title && old.summary === item.summary) item.capability = old.capability;
         if (old?.draft) item.draft = true;
@@ -7317,6 +7321,7 @@
       return;
     }
     canvasBranchRoot = root;
+    foldPositions = null;
     revealCanvasRoot = Boolean(root);
     searchOpenBranches.clear();
     const draft = question.value;
@@ -7755,6 +7760,7 @@
   });
   undoOrganization.addEventListener("click", () => {
     if (mindmap?.active && mindmapUndo && !gesture) {
+      foldPositions = null;
       mindmapPositions = mindmapUndo;
       mindmapUndo = null;
       mindmap.savePositions(mindmapPositions);
@@ -7767,6 +7773,7 @@
         (!quick && (activeRun || questionRuns.size || deletionPreparing || (!organization.undoAvailable && !rawLinkUndo)))) return;
     const revision = quick ? prepareLayoutChange() : {};
     if (!revision) return;
+    foldPositions = null;
     if (quick) {
       organization.quickMode = quick.quickMode;
       if (quick.branchQuickModes) organization.branchQuickModes = quick.branchQuickModes;
@@ -8299,6 +8306,7 @@
       };
     },
     onChange: () => {
+      foldPositions = null;
       const selection = selected;
       const draft = question.value;
       const composerOpen = !askComposer.hidden;
@@ -8357,6 +8365,7 @@
     if (gesture || deletionPreparing) return;
     const revision = prepareLayoutChange();
     if (!revision) return;
+    foldPositions = null;
     const items = hierarchyItems(boardForOrganization());
     const ids = expanded ? [] : items.filter((item) => item.parentId && items.some((child) => child.parentId === item.id)).map(({ id }) => id);
     const current = organization.current;
@@ -8410,6 +8419,25 @@
       return item?.localContent ? item.summary : replies.get(id)?.saved?.answer || item?.summary || "";
     },
     canNavigate: () => !gesture && !connectionDrag && !deletionPreparing && finishEditingFirst(),
+    canEditFlow: (id) => Boolean((organization.current?.items || organization.rawCards || []).some(item => item.id === id)),
+    onSaveFlow: (id, steps, previous) => {
+      if (activeRun || questionRuns.size || deletionPreparing || !memory.storageIsCurrent()) {
+        return "白板正在更新。请在更新结束后重新打开流程编辑。";
+      }
+      const item = (organization.current?.items || organization.rawCards || []).find(entry => entry.id === id);
+      if (!item || JSON.stringify(item.flowSteps || []) !== JSON.stringify(previous)) return "流程已变更，请重新打开编辑。";
+      const live = hierarchyItems(boardForOrganization());
+      const direct = new Set(live.filter(entry => entry.parentId === id && entry.category !== "archive")
+        .map(entry => entry.id));
+      if (steps.some(step => !direct.has(step))) return "下级卡片已变更，请重新打开编辑。";
+      const before = item.flowSteps;
+      if (steps.length) item.flowSteps = steps;
+      else delete item.flowSteps;
+      if (saveOrganization()) return "";
+      if (before) item.flowSteps = before;
+      else delete item.flowSteps;
+      return "流程未能保存。";
+    },
     onChange: (active, id) => { if (!active) applyCanvasBranch(id); },
     onAsk: (id) => {
       const draft = question.value;

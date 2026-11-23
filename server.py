@@ -75,7 +75,7 @@ REPOSITORY_INIT_INTENT = "repository_init"
 REPOSITORY_INIT_MIN_CARDS = 2
 REPOSITORY_INIT_CAPABILITIES = 6
 REPOSITORY_INIT_BRANCH_WIDTH = 4
-REPOSITORY_INIT_MAX_DEPTH = 3
+REPOSITORY_INIT_MAX_DEPTH = 5
 REPOSITORY_INIT_MODEL_CARDS = 1 + REPOSITORY_INIT_BRANCH_WIDTH + REPOSITORY_INIT_BRANCH_WIDTH ** 2
 LEGACY_REPOSITORY_INIT_MODEL_CARDS = 8
 REPOSITORY_INIT_CODE_CARDS = 2
@@ -653,7 +653,7 @@ def validate_repository_intro(plan, repository, board):
         item, depth = stack.pop()
         identity = item["id"]
         if depth > REPOSITORY_INIT_MAX_DEPTH:
-            raise ValueError(f"{identity} 的层级超出工程介绍的四级范围。")
+            raise ValueError(f"{identity} 超出工程介绍的 {REPOSITORY_INIT_MAX_DEPTH + 1} 级范围。")
         depths[identity] = depth
         descendants = children.get(identity, ())
         if len(descendants) > (REPOSITORY_INIT_CAPABILITIES if depth == 0 else REPOSITORY_INIT_BRANCH_WIDTH):
@@ -1570,7 +1570,10 @@ def build_prompt(mode, question, context, *, source_access=True, repository_scop
             "Do not claim that you ran a test or invent commands, files, symbols or requirements. "
             "Return only the requested map JSON. Reuse board.newIds, starting with one main overview card "
             "with null parentId. Mark every descendant reference. Non-root parents may have at most 4 direct children. "
-            "Use at most 4 reading levels including the overview. Available IDs are a budget, not a quota: a small "
+            f"Use at most {REPOSITORY_INIT_MAX_DEPTH + 1} reading levels including the overview. Where the evidence supports it, "
+            "use five levels: project overview, reusable capability, concrete workflow or scenario, observable action or "
+            "decision, and implementation or acceptance evidence. A sixth level can explain a specific evidence detail. "
+            "Available IDs are a budget, not a quota: a small "
             "project can use just an overview and one capability. Expand only when there are distinct supported "
             "situations or details. "
             "Use short titles of up to 100 characters, summaries up to 500 characters, and a board summary up to 1200 characters. "

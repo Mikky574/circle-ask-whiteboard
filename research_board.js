@@ -1,7 +1,7 @@
 /* Focused, read-only projections of the same board and card identities. */
 (() => {
   "use strict";
-  const views = ["board", "graph", "comparison", "evidence"];
+  const views = ["board", "flow", "graph", "comparison", "evidence"];
   const format = value => value == null ? "—" : value.toLocaleString("zh-CN", { maximumFractionDigits: 3, minimumFractionDigits: 3 });
   const title = node => node.id === "board" ? node.title : node.title.replace(/^【[^】]+】\s*/u, "");
   const status = node => node.id === "board" ? null : node.title.match(/^【([^】]+)】/u)?.[1] || null;
@@ -350,6 +350,121 @@
     }
   }
 
+  function flowCard(parent, item, nodes) {
+    const main = add(parent, "div", "research-flow-main");
+    labelled(button(main, "", () => enter(item.id), "research-card-title"), item);
+    const description = firstSentence(capability(item)?.outcome || item.summary);
+    if (description) add(main, "p", "research-muted", description);
+    const support = children(item.id, nodes);
+    if (!support.length) return;
+    const list = add(parent, "ul", "research-flow-support");
+    for (const detail of support) {
+      const row = add(list, "li");
+      labelled(button(row, "", () => enter(detail.id), "research-card-title"), detail);
+    }
+  }
+
+  function editFlow(parent, node, topics, trigger) {
+    trigger.hidden = true;
+    const editor = add(parent, "section", "research-flow-editor");
+    add(editor, "h3", "", "设置流程顺序");
+    add(editor, "p", "research-muted", "按实际发生顺序添加步骤。至少两步才会显示连线。清空后恢复主题分组。");
+    const choices = new Map(topics.map(topic => [topic.id, topic]));
+    const previous = node.flowSteps || [];
+    const order = previous.filter(id => choices.has(id));
+    const list = add(editor, "ol", "research-flow-order");
+    const addRow = add(editor, "div", "research-flow-add");
+    const input = add(addRow, "select");
+    input.setAttribute("aria-label", "选择下一步");
+    const append = button(addRow, "加入流程", () => {
+      if (!input.value || order.length >= 12) return;
+      order.push(input.value);
+      update();
+      if (!input.disabled) input.focus();
+      else save.focus();
+    });
+    const actions = add(editor, "div", "research-flow-add");
+    const message = add(editor, "p", "research-muted");
+    message.setAttribute("role", "status");
+    const save = button(actions, "保存顺序", () => {
+      const error = options.onSaveFlow(node.id, [...order], previous);
+      if (error) { message.textContent = error; return; }
+      render();
+      container.querySelector(".research-flow-edit")?.focus();
+    });
+    button(actions, "取消", () => { editor.remove(); trigger.hidden = false; trigger.focus(); });
+    function update() {
+      list.replaceChildren();
+      order.forEach((id, index) => {
+        const row = add(list, "li");
+        const name = title(choices.get(id));
+        add(row, "span", "", `${index + 1}. ${name}`);
+        const controls = add(row, "div", "research-flow-add");
+        function move(offset, target) {
+          order.splice(index, 1);
+          order.splice(index + offset, 0, id);
+          update();
+          const controls = list.children[index + offset].lastChild;
+          const next = controls.children[target];
+          (next.disabled ? controls.children[1 - target] : next).focus();
+        }
+        const up = button(controls, "上移", () => move(-1, 0));
+        up.disabled = index === 0;
+        up.setAttribute("aria-label", `上移 ${name}`);
+        const down = button(controls, "下移", () => move(1, 1));
+        down.disabled = index === order.length - 1;
+        down.setAttribute("aria-label", `下移 ${name}`);
+        button(controls, "移除", () => {
+          order.splice(index, 1);
+          update();
+          input.focus();
+        }).setAttribute("aria-label", `移除 ${name}`);
+      });
+      input.replaceChildren();
+      add(input, "option", "", "选择下级卡片").value = "";
+      for (const [id, topic] of choices) if (!order.includes(id)) add(input, "option", "", title(topic)).value = id;
+      input.disabled = input.options.length === 1 || order.length >= 12;
+      append.disabled = !input.value;
+      save.disabled = order.length === 1;
+      message.textContent = "";
+    }
+    input.addEventListener("change", () => { append.disabled = !input.value; });
+    update();
+    input.focus();
+  }
+
+  function renderFlow(parent, node, nodes) {
+    const direct = children(node.id, nodes);
+    const ordered = node.flowSteps || [];
+    const byId = new Map(direct.map(item => [item.id, item]));
+    // If an intermediate step moves away or is deleted, don't connect across the missing step.
+    const steps = ordered.length >= 2 && ordered.every(id => byId.has(id)) ? ordered : [];
+    const header = add(parent, "div", "research-flow-header");
+    add(header, "h3", "", steps.length ? "主流程" : "主题分组");
+    if (options.canEditFlow?.(node.id) && (direct.length >= 2 || ordered.length)) {
+      const editor = add(parent, "div");
+      const edit = button(header, "设置流程", () => editFlow(editor, node, direct, edit), "research-button research-flow-edit");
+    }
+    if (steps.length) {
+      const flow = add(parent, "ol", "research-flow");
+      flow.setAttribute("aria-label", "按发生顺序排列的流程");
+      steps.forEach((id, index) => {
+        const stage = add(flow, "li", "research-flow-stage");
+        add(stage, "span", "research-flow-index", `${index + 1}`);
+        flowCard(stage, byId.get(id), nodes);
+        if (index < steps.length - 1) add(stage, "span", "research-flow-arrow", "→").setAttribute("aria-hidden", "true");
+      });
+    } else if (ordered.length) {
+      add(parent, "p", "research-muted", "有流程步骤已移出当前分支。可重新指定顺序。");
+    }
+    const groups = direct.filter(item => !steps.includes(item.id));
+    if (groups.length) {
+      if (steps.length) add(parent, "h3", "research-section-heading", "相关主题");
+      const layout = add(parent, "div", "research-flow-groups");
+      for (const item of groups) flowCard(add(layout, "section", "research-flow-group"), item, nodes);
+    }
+  }
+
   /* ---- Functional reading: overview → feature → scene → detail / evidence ---- */
   function renderRecord(parent, node, lead) {
     const record = experiment(node);
@@ -550,8 +665,9 @@
     const hasPictures = members.some(item => images(item).length);
     const direct = children(node.id, nodes);
     const labels = { board: mode ? boardLabels[mode.kind] : feature ? "功能概览" : comparisons.length ? "实验板" : "主题概览",
-      graph: "关系导图", comparison: "对比结果", evidence: "证据图片" };
+      flow: "流程与分组", graph: "关系导图", comparison: "对比结果", evidence: "证据图片" };
     const available = views.filter(id => id === "board" || (id === "graph" && (!mode || direct.length)) ||
+      (id === "flow" && (direct.length || node.flowSteps?.length)) ||
       (id === "comparison" && comparisons.length) || (id === "evidence" && hasPictures));
     if (!available.includes(view)) view = "board";
     const tabs = available.length > 1 ? add(container, "nav", "research-tabs") : null;
@@ -600,7 +716,8 @@
         for (const child of implementation) card(grid, child, nodes);
       }
       renderDetails(content, node, lead);
-    } else if (view === "graph") renderGraph(content, node, nodes);
+    } else if (view === "flow") renderFlow(content, node, nodes);
+    else if (view === "graph") renderGraph(content, node, nodes);
     else if (view === "comparison") {
       for (const item of comparisons) {
         if (item.id !== rootId) button(content, `进入 ${title(item)} ↗`, () => enter(item.id), "research-path-button");

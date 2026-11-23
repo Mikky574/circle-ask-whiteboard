@@ -420,6 +420,10 @@ async function cameraAt(id) {
       button: { x: button.x + button.width / 2, y: button.y + button.height / 2 },
       scale: matrix.a, offsetX: matrix.e, offsetY: matrix.f,
       scrollX, scrollY, viewport: { x: frame.x, y: frame.y, width: frame.width, height: frame.height },
+      cards: Object.fromEntries([...document.querySelectorAll('#board [data-element-id]:not([hidden])')].map(element => {
+        const { x, y, width, height } = element.getBoundingClientRect();
+        return [element.dataset.elementId, { x, y, width, height }];
+      })),
       selected: [...document.querySelectorAll('#board [data-element-id][aria-pressed="true"]')].map(element => element.dataset.elementId) };
   }, id);
 }
@@ -461,13 +465,17 @@ async function branchCameraStability() {
               const nodeDelta = Math.hypot(after.node.x - before.node.x, after.node.y - before.node.y);
               const buttonDelta = Math.hypot(after.button.x - before.button.x, after.button.y - before.button.y);
               const scaleDelta = Math.abs(after.scale - before.scale);
+              const common = Object.keys(before.cards).filter(card => after.cards[card]);
+              const peerDelta = Math.max(0, ...common.map(card => Math.hypot(
+                after.cards[card].x - before.cards[card].x, after.cards[card].y - before.cards[card].y)));
               const label = `${dimensions.width}px ${presentation} ${id} ${selected ? "selected" : "unselected"} ${phase}`;
-              observations.push({ label, nodeDelta: +nodeDelta.toFixed(3), buttonDelta: +buttonDelta.toFixed(3),
+              observations.push({ label, nodeDelta: +nodeDelta.toFixed(3), buttonDelta: +buttonDelta.toFixed(3), peerDelta: +peerDelta.toFixed(3),
                 scaleBefore: +before.scale.toFixed(5), scaleAfter: +after.scale.toFixed(5),
                 scrollBefore: before.scrollY, scrollAfter: after.scrollY });
               try {
                 assert.ok(scaleDelta < 1e-8, `${label}: branch toggle changed zoom (${before.scale} -> ${after.scale})`);
                 assert.ok(nodeDelta < 2, `${label}: clicked node moved ${nodeDelta.toFixed(2)} screen pixels`);
+                assert.ok(peerDelta < 2, `${label}: an already-visible card moved ${peerDelta.toFixed(2)} screen pixels`);
                 if (presentation === "mindmap") assert.ok(buttonDelta < 2,
                   `${label}: clicked +/- target moved ${buttonDelta.toFixed(2)} screen pixels`);
                 assert.equal(after.scrollY, before.scrollY, `${label}: branch toggle scrolled the document`);

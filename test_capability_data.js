@@ -30,3 +30,19 @@ test("incomplete outcome records are rejected without banning useful domain voca
     assert.equal(schema.clean(value), null);
   }
 });
+
+test("authored flow keeps stage order through cleanup and portable round-trip", () => {
+  const window = { CapabilityData: schema };
+  vm.runInNewContext(fs.readFileSync("organization.js", "utf8"), { window });
+  const base = { category: "reference", title: "步骤", summary: "检查顺序" };
+  const current = window.BoardOrganization.clean({ items: [
+    { ...base, id: "E04", parentId: null, flowSteps: ["E06", "E04", "E06", "E05", "invalid"] },
+    { ...base, id: "E05", parentId: "E04" }, { ...base, id: "E06", parentId: "E04" },
+  ] });
+  const portable = transfer.parse(JSON.stringify(transfer.create({ title: "项目",
+    memory: { project: {}, notes: [] }, organization: { current } })));
+  assert.deepEqual(portable.organization.current.items[0].flowSteps, ["E06", "E05"]);
+  current.items[0].flowSteps = ["E05", "E05"];
+  assert.throws(() => transfer.create({ title: "项目", memory: { project: {}, notes: [] }, organization: { current } }),
+    /流程卡片必须互异/u);
+});

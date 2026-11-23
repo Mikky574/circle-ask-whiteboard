@@ -121,6 +121,8 @@
       const codePreview = cleanCodePreview(item.codePreview);
       const experiment = window.ExperimentData?.clean(item.experiment);
       const capability = window.CapabilityData?.clean(item.capability);
+      const flowSteps = Array.isArray(item.flowSteps)
+        ? [...new Set(item.flowSteps.map(sourceId).filter(step => step && step !== id))].slice(0, 12) : [];
       byId.set(id, {
         id,
         category: categories.has(item.category) ? item.category : "reference",
@@ -135,6 +137,7 @@
         ...(codePreview ? { codePreview } : {}),
         ...(experiment ? { experiment } : {}),
         ...(capability ? { capability } : {}),
+        ...(flowSteps.length >= 2 ? { flowSteps } : {}),
         ...(item.draft === true ? { draft: true } : {}),
         ...(item.explicitParent === true ? { explicitParent: true } : {}),
         ...(item.nativeFace === true ? { nativeFace: true } : {}),

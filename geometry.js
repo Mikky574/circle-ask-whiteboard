@@ -843,9 +843,56 @@
     return layout;
   })();
 
+  function stabilizeFoldLayout(placements, previous, parents, fixedIds, gap = 20) {
+    const placed = new Map();
+    for (const [id, rect] of placements) {
+      const before = previous.get(id);
+      if (before) placed.set(id, { ...rect, x: before.x, y: before.y });
+      else if (fixedIds.has(id)) placed.set(id, rect);
+    }
+
+    const visiting = new Set();
+    function place(id) {
+      const proposed = placements.get(id);
+      if (!proposed || placed.has(id) || visiting.has(id)) return;
+      visiting.add(id);
+      const parent = parents.get(id);
+      place(parent);
+      const origin = placements.get(parent);
+      const anchor = placed.get(parent);
+      const rect = { ...proposed };
+      if (origin && anchor) {
+        rect.x += anchor.x - origin.x;
+        rect.y += anchor.y - origin.y;
+      }
+
+      // Keep the proposed column. In that column each obstacle blocks one interval
+      // of top coordinates, so both ends of each interval are possible free slots.
+      const blocked = [...placed.values()]
+        .filter(other => rect.x < other.x + other.width + gap && other.x < rect.x + rect.width + gap)
+        .map(other => [other.y - rect.height - gap, other.y + other.height + gap])
+        .sort((first, second) => first[0] - second[0]);
+      const bands = [];
+      for (const [top, bottom] of blocked) {
+        const last = bands.at(-1);
+        if (last && top < last[1]) last[1] = Math.max(last[1], bottom);
+        else bands.push([top, bottom]);
+      }
+      const band = bands.find(([top, bottom]) => top < rect.y && rect.y < bottom);
+      if (band) {
+        const [top, bottom] = band;
+        rect.y = rect.y - top <= bottom - rect.y ? top : bottom;
+      }
+      placed.set(id, rect);
+      visiting.delete(id);
+    }
+    for (const id of placements.keys()) place(id);
+    for (const [id, rect] of placed) Object.assign(placements.get(id), rect);
+  }
+
   const geometry = { scenePoint, bounds, contains, intersectsShape, isLasso, cardLassoHits, placeNote, placeNoteGroup,
     routeAcrossCards, roundedOrthogonalPath, orthogonalSegments, routeAroundCards, sharedBranchRoutes, compactCardRows, layoutBranches,
-    sectionColumnThreshold, layoutAdaptive };
+    sectionColumnThreshold, layoutAdaptive, stabilizeFoldLayout };
   if (typeof window !== 'undefined') window.BoardGeometry = geometry;
   if (typeof module !== 'undefined') module.exports = geometry;
 })();

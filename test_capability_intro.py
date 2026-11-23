@@ -60,6 +60,16 @@ class CapabilityIntroTests(unittest.TestCase):
         self.board["codeIds"] = ["E30", "E31"]
         self.assertFalse(any("codePreview" in item for item in self.generate()["items"]))
 
+    def test_reading_hierarchy_can_reach_five_and_six_levels(self):
+        for number, title in enumerate(("遇到低置信结果", "交给人工复核", "核对复核输出", "定位输出的实现"), 6):
+            self.plan["items"].append({"id": f"E{number:02}", "parentId": f"E{number - 1:02}",
+                "category": "reference", "title": title, "summary": "检查这一层的行为和依据。",
+                "repositoryFiles": ["predict.py"], "capability": None, "sources": []})
+        self.assertEqual(self.generate()["items"][-1]["parentId"], "E08")
+        self.plan["items"].append({**self.plan["items"][-1], "id": "E10", "parentId": "E09"})
+        with self.assertRaisesRegex(ValueError, "超出工程介绍的 6 级范围"):
+            self.generate()
+
     def test_existing_board_reorganization_can_return_function_records_and_checks_evidence(self):
         context = {"scope": "organize", "board": {"nodes": [{"id": "E04"}, {"id": "E05"}], "newIds": []}}
         result = server.structured_candidate(json.dumps(self.plan), context, repository_scope=True,
