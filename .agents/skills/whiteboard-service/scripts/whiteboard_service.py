@@ -29,9 +29,9 @@ CATEGORIES = {"main", "done", "optimize", "reference", "archive"}
 PROPOSAL_FIELDS = {"rootId", "updates", "children", "structure"}
 PROJECT_SUMMARY_MAX_CHILDREN = 4
 CARD_ID = re.compile(r"[EA][0-9]+\Z")
-PATCH_FIELDS = {"title", "summary", "category", "sources", "repositoryFiles", "taskDetails", "spec", "experiment"}
+PATCH_FIELDS = {"title", "summary", "category", "sources", "repositoryFiles", "taskDetails", "spec", "experiment", "capability"}
 SOURCE_FILES = {"index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "run_gate.js",
-                "experiment_data.js", "research_board.js", "research_board.css",
+                "experiment_data.js", "capability_data.js", "research_board.js", "research_board.css",
                 "project_finder.js", "server.py", "zcode_backend.py", "zcode_workspace.py", "attachments.py", "backends.py",
                 "api_backend.py", "board_tools.py", "local_projects.py", "board_transfer.js", "board_store.py",
                 "board_sync.js", "board_versions.js", "mindmap.js", "mindmap.css"}
@@ -197,6 +197,12 @@ def patch_fields(value):
                            "acceptance": acceptance}
         elif key == "experiment":
             result[key] = experiment_record(item)
+        elif key == "capability":
+            fields = {"audience", "input", "outcome", "boundary", "verification"}
+            if (not isinstance(item, dict) or set(item) != fields | {"version"} or
+                    type(item.get("version")) is not int or item["version"] != 1):
+                raise ServiceError("capability 需要 version=1、audience、input、outcome、boundary、verification。")
+            result[key] = {"version": 1, **{name: text(item[name], 200, name, empty=False) for name in fields}}
         elif key == "spec":
             if (not isinstance(item, dict) or set(item) - {"kind", "id", "status", "runner"}
                     or not isinstance(item.get("kind"), str) or item.get("kind") not in {"requirement", "constraint", "case"}
@@ -308,6 +314,9 @@ def propose(board, proposal, expected_revision):
             raise ServiceError("更新至少提供一项正文属性。")
         if fields.get("category") == "archive" and identity in memory.get("pinnedIds", []):
             raise ServiceError("固定重点不能归档；请先在白板中确认并取消固定。")
+        if "capability" not in fields and any(key in fields and fields[key] != by_id[identity].get(key)
+                                              for key in ("title", "summary")):
+            by_id[identity].pop("capability", None)
         by_id[identity].update(fields)
         if identity.startswith("A") and {"title", "summary"} & fields.keys():
             if not any(isinstance(note, dict) and note.get("id") == identity for note in memory.get("notes", [])):

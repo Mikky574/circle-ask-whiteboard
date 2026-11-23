@@ -55,7 +55,7 @@
   const defaultGoal = "边体验、边改进这张白板，弄清圈选、分支记忆和 Codex 改码是怎么实现的。";
   const defaultConstraints = ["保留圈选和就地批注的交互", "项目主线只记录用户确认过的决定"];
   const sourceFiles = new Set(["index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "run_gate.js",
-    "experiment_data.js", "research_board.js", "research_board.css",
+    "experiment_data.js", "capability_data.js", "research_board.js", "research_board.css",
     "project_finder.js", "server.py", "zcode_backend.py", "zcode_workspace.py", "attachments.py", "backends.py", "api_backend.py",
     "board_tools.py", "local_projects.py", "board_transfer.js", "board_store.py", "board_sync.js", "board_versions.js"]);
   const branchLabels = {

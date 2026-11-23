@@ -15,6 +15,7 @@ from unittest.mock import patch
 import server
 import zcode_backend
 from zcode_workspace import call_tool
+from test_capability_intro import capability
 
 
 def cli_request(**fields):
@@ -182,7 +183,7 @@ class RepositoryBindingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "缺少源码依据"):
             server.structured_candidate(json.dumps(plan), context)
         plan["items"][1]["sources"] = ["app.js"]
-        with self.assertRaisesRegex(ValueError, "源码依据请写在正文"):
+        with self.assertRaisesRegex(ValueError, "源码依据请写在 repositoryFiles"):
             server.structured_candidate(json.dumps(plan), context, repository_scope=True)
 
     def repository_init_request(self, **fields):
@@ -221,7 +222,7 @@ class RepositoryBindingTests(unittest.TestCase):
             "layout": {"flow": "horizontal", "density": "compact"},
             "items": [
                 {"id": f"E{number:02}", "parentId": parent, "category": "main" if parent is None else "reference",
-                 "title": title, "summary": f"Evidence: {citation}", "sources": []}
+                 "title": title, "summary": f"Evidence: {citation}", "sources": [], "capability": capability()}
                 for number, parent, title, citation in (
                     (4, None, "Project overview", "`src/main.py`"),
                     (5, "E04", "Entry point", "`src/main.py#start`"),
@@ -239,8 +240,7 @@ class RepositoryBindingTests(unittest.TestCase):
         expected = {**plan, "items": [{**item, "repositoryFiles": ["src/main.py"]} for item in plan["items"]]}
         self.assertEqual(candidate(), ("map", {"map": expected}))
         plan["items"][-1]["parentId"] = "E04"
-        with self.assertRaisesRegex(ValueError, "细节卡"):
-            candidate()
+        self.assertEqual(len(candidate()[1]["map"]["items"]), 5, "No artificial depth is required")
         plan["items"][-1]["parentId"] = "E05"
         for invalid in ("`src/missing.py`", "`../outside.py`", "`.env`", "src/main.py"):
             plan["items"][-1]["summary"] = invalid
@@ -272,7 +272,7 @@ class RepositoryBindingTests(unittest.TestCase):
             "layout": {"flow": "horizontal", "density": "compact"},
             "items": [
                 {"id": identifier, "parentId": parent, "category": "main" if parent is None else "reference",
-                 "title": identifier, "summary": f"Evidence: `{file}`", "sources": []}
+                 "title": identifier, "summary": f"Evidence: `{file}`", "sources": [], "capability": capability()}
                 for identifier, parent, file in (
                     ("E04", None, "src/main.py"),
                     ("E05", "E04", "src/main.py#main"),
@@ -290,11 +290,12 @@ class RepositoryBindingTests(unittest.TestCase):
         generated = candidate()["items"]
         self.assertEqual([item["id"] for item in generated[:5]], [item["id"] for item in plan["items"]])
         self.assertEqual([(item["id"], item["parentId"], item["codePreview"]["path"]) for item in generated[5:]], [
-            ("E12", "E08", "src/main.py"), ("E13", "E06", "src/test_main.py"),
+            ("E12", "E08", "src/main.py"),
         ])
         self.assertIn("    return 61", generated[5]["codePreview"]["text"])
         self.assertNotIn("example-only-private-token", generated[5]["codePreview"]["text"])
-        self.assertIn("assert 61 > 60", generated[6]["codePreview"]["text"])
+        self.assertFalse(any(item.get("codePreview", {}).get("path") == "src/test_main.py" for item in generated),
+                         "Source previews must not attach directly to an outer capability")
         plan["items"][2]["summary"] = "Evidence: `README.md`"
         self.assertEqual([item["codePreview"]["path"] for item in candidate()["items"] if "codePreview" in item],
                          ["src/main.py"])
@@ -312,7 +313,8 @@ class RepositoryBindingTests(unittest.TestCase):
                    "E06", "E06", "E06", "E07", "E07", "E07"]
         plan = {"title": "能力手册", "summary": "从能力逐级到验收", "layout": {"flow": "horizontal", "density": "compact"},
                 "items": [{"id": identity, "parentId": parent, "category": "reference" if parent else "main",
-                           "title": f"Topic {identity}", "summary": "Evidence: `src/main.py`", "sources": []}
+                           "title": f"Topic {identity}", "summary": "Evidence: `src/main.py`", "sources": [],
+                           "capability": capability()}
                           for identity, parent in zip(reserved, parents)]}
 
         def candidate():
@@ -332,8 +334,7 @@ class RepositoryBindingTests(unittest.TestCase):
         plan["items"][9]["parentId"] = "E06"
         plan["items"][-1]["parentId"] = "E08"
         plan["items"][-2]["parentId"] = "E08"
-        with self.assertRaisesRegex(ValueError, "E07.*至少两个直属主题"):
-            candidate()
+        self.assertTrue(candidate()["items"], "ID budget must not force two children on every capability")
 
     def test_repository_links_do_not_escape_scope(self):
         link = self.repository / "linked.py"

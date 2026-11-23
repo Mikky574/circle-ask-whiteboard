@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 EDITABLE = ("index.html", "styles.css", "app.js", "geometry.js", "memory.js", "organization.js", "board_transfer.js", "mindmap.js", "mindmap.css",
-            "experiment_data.js", "research_board.js", "research_board.css")
+            "experiment_data.js", "capability_data.js", "research_board.js", "research_board.css")
 READABLE = (
     *EDITABLE, "run_gate.js", "project_finder.js", "server.py", "attachments.py", "zcode_backend.py", "zcode_workspace.py",
     "backends.py", "api_backend.py", "board_tools.py", "local_projects.py", "board_sync.js", "board_store.py", "board_versions.js",

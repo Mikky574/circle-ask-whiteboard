@@ -71,3 +71,9 @@ python scripts/whiteboard_service.py --url http://127.0.0.1:8797 apply --board B
 `kind`、`question`、`metricSummary`、`finding`、`caveat` 各最多 800 字。`comparison` 可选，含 1–6 个指标和 2–12 个对照臂。`direction` 使用 `higher` 或 `lower`，各臂的 `values` 顺序须对应指标。缺失值填 `null`，填写来源、评估范围和预选主臂，分别记录不同划分的比较。
 
 图片继续使用原卡的 `attachments` 本机引用。实验板直接展示已关联的图片，点击可看原图；代码仓库不保存实验数据或图片。
+
+## 功能说明
+
+可在更新或新增中写 `capability: {"version":1,"audience":"谁使用","input":"输入什么","outcome":"得到什么可见结果","boundary":"适用边界","verification":"怎样核对及验证状态"}`，五项说明均为非空文本，各最多 200 字。文件引用另放 `repositoryFiles`。项目阅读优先显示结果与输入，详情呈现其他项；不要将变量名翻译当作功能分析。
+
+改写已有卡的标题／正文时，若不同时提供更新后的 `capability`，旧功能说明会清除，让修订的正文成为显示内容。只更新文件引用或其他属性不会清除记录。原型改码、实验对比与功能记录仍有各自的验证含义，不能用一项代替另一项。

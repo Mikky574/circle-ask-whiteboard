@@ -108,6 +108,26 @@ class WhiteboardServiceSkillTests(unittest.TestCase):
         self.assertEqual(self.server.calls, [{"action": "list"}])
         self.assertEqual(self.server.origins, [self.origin])
 
+    def test_capability_record_is_saved_and_stale_content_is_cleared_on_rewrite(self):
+        record = {"version": 1, "audience": "Reviewer", "input": "Image", "outcome": "Reviewable prediction",
+                  "boundary": "Does not confirm uncertain labels", "verification": "Check known and uncertain images"}
+        proposal = self.proposal_file({"rootId": "E05", "updates": [{"id": "E05", "capability": record}]})
+        code, _ = self.run_command("apply", "--board", self.identity, "--expected-revision", "1",
+                                   "--file", str(proposal), "--commit")
+        self.assertEqual(code, 0)
+        loaded = board_store_request({"action": "load", "id": self.identity})["board"]
+        nodes = {node["id"]: node for node in json.loads(loaded["storage"]["organization"])["current"]["items"]}
+        self.assertEqual(nodes["E05"]["capability"], record)
+        proposal = self.proposal_file({"rootId": "E05", "updates": [{"id": "E05", "summary": "Corrected behavior"}]})
+        code, _ = self.run_command("apply", "--board", self.identity, "--expected-revision", "2",
+                                   "--file", str(proposal), "--commit")
+        self.assertEqual(code, 0)
+        loaded = board_store_request({"action": "load", "id": self.identity})["board"]
+        nodes = {node["id"]: node for node in json.loads(loaded["storage"]["organization"])["current"]["items"]}
+        self.assertNotIn("capability", nodes["E05"])
+        self.assertEqual(nodes["E05"]["summary"], "Corrected behavior")
+        self.assertEqual(nodes["E06"]["summary"], "Keep this")
+
     def test_experiment_metadata_is_scoped_and_saved_with_the_existing_card(self):
         experiment = {"version": 1, "question": "Does the candidate improve the same holdout?",
                       "comparison": {

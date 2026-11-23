@@ -45,6 +45,7 @@ STATIC = {
     "mindmap.css": "text/css; charset=utf-8",
     "mindmap.js": "text/javascript; charset=utf-8",
     "experiment_data.js": "text/javascript; charset=utf-8",
+    "capability_data.js": "text/javascript; charset=utf-8",
     "research_board.js": "text/javascript; charset=utf-8",
     "research_board.css": "text/css; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
@@ -71,7 +72,8 @@ BACKEND_LABELS = {"codex": "Codex", "zcode": "ZCode", "api": "API 直连"}
 MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/+\-]{0,159}")
 MAP_CATEGORIES = ("main", "done", "optimize", "reference", "archive")
 REPOSITORY_INIT_INTENT = "repository_init"
-REPOSITORY_INIT_MIN_CARDS = 5
+REPOSITORY_INIT_MIN_CARDS = 2
+REPOSITORY_INIT_CAPABILITIES = 6
 REPOSITORY_INIT_BRANCH_WIDTH = 4
 REPOSITORY_INIT_MAX_DEPTH = 3
 REPOSITORY_INIT_MODEL_CARDS = 1 + REPOSITORY_INIT_BRANCH_WIDTH + REPOSITORY_INIT_BRANCH_WIDTH ** 2
@@ -310,7 +312,7 @@ def result_text_schema(limit, *, zcode=False):
     return {"type": "string", **({"minLength": 1, "maxLength": limit} if zcode else {})}
 
 
-def write_map_schema(board, *, repository_scope=False, zcode=False):
+def write_map_schema(board, *, repository_scope=False, zcode=False, repository_intro=False):
     ids = [node["id"] for node in board["nodes"]] + board.get("newIds", [])
     text = {"type": "string"}
     item = {
@@ -327,6 +329,18 @@ def write_map_schema(board, *, repository_scope=False, zcode=False):
         "required": ["id", "category", "parentId", "side", "title", "summary", "sources"],
         "additionalProperties": False,
     }
+    if repository_scope:
+        capability = {"type": "object", "properties": {
+            "version": {"type": "integer", "enum": [1]},
+            **{field: result_text_schema(200, zcode=zcode) for field in
+               ("audience", "input", "outcome", "boundary", "verification")}},
+            "required": ["version", "audience", "input", "outcome", "boundary", "verification"],
+            "additionalProperties": False}
+        item["properties"]["capability"] = {"anyOf": [capability, {"type": "null"}]}
+        item["properties"]["repositoryFiles"] = {"type": "array", "items": text}
+        item["required"] += ["capability", "repositoryFiles"]
+    if repository_intro:
+        item["properties"]["title"] = result_text_schema(100, zcode=zcode)
     layout = {
         "type": "object",
         "properties": {
@@ -528,7 +542,7 @@ def validate_map(result, board, contextual_new=False, *, repository_scope=False)
 
     by_id = {}
     for item in items:
-        if (not isinstance(item, dict) or set(item) - {"side", "sources"}
+        if (not isinstance(item, dict) or set(item) - {"side", "sources", "capability", "repositoryFiles"}
                 != {"id", "category", "parentId", "title", "summary"}):
             raise ValueError("卡片字段不完整，需要 id、category、parentId、title 和 summary。")
         node_id, parent, category = item["id"], item["parentId"], item["category"]
@@ -546,9 +560,18 @@ def validate_map(result, board, contextual_new=False, *, repository_scope=False)
             if item["side"] not in LAYOUT_SIDES:
                 raise ValueError(f"卡片 {node_id} 的 side 必须是 auto、left 或 right。")
             by_id[node_id]["side"] = item["side"]
+        if item.get("capability") is not None:
+            by_id[node_id]["capability"] = capability_record(item["capability"])
+        if "repositoryFiles" in item:
+            paths = item["repositoryFiles"]
+            if (not isinstance(paths, list) or len(paths) > 12 or
+                    any(not isinstance(path, str) or len(path) > 300 or
+                        not safe_path(path.split("#", 1)[0].removeprefix(REPOSITORY_PREFIX)) for path in paths)):
+                raise ValueError(f"{node_id} 的仓库依据必须是有效的相对文件路径。")
+            by_id[node_id]["repositoryFiles"] = list(dict.fromkeys(paths))
         if "sources" in item:
             if repository_scope and item["sources"] != []:
-                raise ValueError(f"卡片 {node_id} 的 sources 必须为空数组，绑定仓库的源码依据请写在正文。")
+                raise ValueError(f"卡片 {node_id} 的 sources 必须为空数组，绑定仓库的源码依据请写在 repositoryFiles。")
             by_id[node_id]["sources"] = parse_sources(item["sources"])
         if node_id not in original_ids and (category == "archive" or
                                            (not contextual_new and not by_id[node_id].get("sources"))):
@@ -573,6 +596,27 @@ def validate_map(result, board, contextual_new=False, *, repository_scope=False)
     return plan
 
 
+def capability_record(value):
+    fields = {"audience", "input", "outcome", "boundary", "verification"}
+    if (not isinstance(value, dict) or set(value) != fields | {"version"} or
+            type(value.get("version")) is not int or value["version"] != 1):
+        raise ValueError("功能说明需要使用者、输入、结果、边界与核对方式。")
+    return {"version": 1, **{field: checked_result_text(value[field], f"功能说明 {field}", 200)
+                             for field in sorted(fields)}}
+
+
+def repository_evidence(item, repository, verified, *, legacy_summary=False):
+    citations = list(item.get("repositoryFiles", []))
+    if legacy_summary:
+        citations += re.findall(r"`([^`\r\n]+)`", item["summary"])
+    missing = [citation for citation in item.get("repositoryFiles", [])
+               if not repository_intro_source(repository, citation, verified)]
+    if missing:
+        raise ValueError(f"{item['id']} 的仓库依据含不可读取的文件：{', '.join(missing)}。")
+    return list(dict.fromkeys(path for citation in citations
+                             if (path := repository_intro_source(repository, citation, verified))))[:12]
+
+
 def validate_repository_intro(plan, repository, board):
     items = plan["items"]
     children = {}
@@ -580,20 +624,16 @@ def validate_repository_intro(plan, repository, board):
         children.setdefault(item["parentId"], []).append(item)
     roots = children.get(None, [])
     if len(items) < REPOSITORY_INIT_MIN_CARDS or len(roots) != 1 or roots[0]["category"] != "main":
-        raise ValueError("工程介绍需要一张项目总览和至少四张下级卡。")
+        raise ValueError("工程介绍需要一张项目总览和至少一项有依据的功能。")
     root_id = roots[0]["id"]
     chapters = children.get(root_id, [])
-    if not 3 <= len(chapters) <= REPOSITORY_INIT_BRANCH_WIDTH:
-        raise ValueError("项目总览需要 3 至 4 个直属能力章节，细节卡必须挂在适配的章节下。")
+    if not 1 <= len(chapters) <= REPOSITORY_INIT_CAPABILITIES:
+        raise ValueError("项目总览需要 1 至 6 个直属功能，细节应归入实际功能。")
+    for item in [roots[0], *chapters]:
+        if not item.get("capability"):
+            raise ValueError(f"{item['id']} 外层卡需要说明使用者、输入、结果、边界与核对方式。")
     if any(item["id"] != root_id and item["category"] != "reference" for item in items):
         raise ValueError("总览之下的能力章节、主题和细节卡都应标为 reference。")
-    if len(items) <= 1 + len(chapters):
-        raise ValueError("至少为一个能力章节提供自己的细节卡。")
-    if len(board["newIds"]) >= 13:
-        for chapter in chapters:
-            if len(children.get(chapter["id"], ())) < 2:
-                raise ValueError(f"{chapter['id']}「{chapter['title']}」需要至少两个直属主题，"
-                                 "请按功能流程、设计约束或验证来分组。")
     if not plan.get("layout"):
         raise ValueError("工程介绍缺少画布排布。")
 
@@ -606,16 +646,14 @@ def validate_repository_intro(plan, repository, board):
             raise ValueError(f"{identity} 的层级超出工程介绍的四级范围。")
         depths[identity] = depth
         descendants = children.get(identity, ())
-        if len(descendants) > REPOSITORY_INIT_BRANCH_WIDTH:
+        if len(descendants) > (REPOSITORY_INIT_CAPABILITIES if depth == 0 else REPOSITORY_INIT_BRANCH_WIDTH):
             raise ValueError(f"{identity}「{item['title']}」直属下级超过 4 张。请把细节归入各自的主题。")
         stack.extend((child, depth + 1) for child in descendants)
 
     verified = {}
     sources = {}
     for item in items:
-        citations = re.findall(r"`([^`\r\n]+)`", item["summary"])
-        paths = list(dict.fromkeys(path for citation in citations
-                                   if (path := repository_intro_source(repository, citation, verified))))
+        paths = repository_evidence(item, repository, verified, legacy_summary=True)
         if not paths:
             raise ValueError(f"{item['id']} 缺少可读取的项目文件引用。")
         item["repositoryFiles"] = paths[:12]
@@ -664,7 +702,7 @@ def add_repository_code_cards(plan, repository, code_ids, sources, children, dep
         for path in paths:
             if path in used_paths:
                 continue
-            parents = [identity for identity in sources[path] if depths[identity] < REPOSITORY_INIT_MAX_DEPTH
+            parents = [identity for identity in sources[path] if 2 <= depths[identity] < REPOSITORY_INIT_MAX_DEPTH
                        and len(children.get(identity, ())) < REPOSITORY_INIT_BRANCH_WIDTH]
             if not parents:
                 continue
@@ -1005,6 +1043,11 @@ def structured_candidate(answer, context, *, attachments=False, repository_scope
         if repository is None:
             raise ValueError("初始化项目介绍需要可读的项目目录。")
         validate_repository_intro(plan, repository, context["board"])
+    elif repository_scope and repository is not None:
+        verified = {}
+        for item in plan["items"]:
+            if "repositoryFiles" in item:
+                item["repositoryFiles"] = repository_evidence(item, repository, verified)
     return "map", {"map": plan}
 
 
@@ -1383,7 +1426,9 @@ def build_prompt(mode, question, context, *, source_access=True, repository_scop
             "specific condition, implementation step, or observable check. For a blank instruction, use the language of the selected card. "
             "Prefer 3 or 4 distinct child topics when the material supports them. Match the depth to the selected "
             "card: under a project overview, explain capabilities and boundaries; under a capability, group "
-            "workflows, design and verification; under an implementation topic, give concrete evidence and checks. "
+            "real usage situations, visible results and meaningful failure boundaries first; under an implementation "
+            "topic, give concrete evidence and checks. Unless the user asks about implementation, do not turn "
+            "a capability expansion into a list of classes, parameters or technology layers. "
             "Generate the new cards immediately. Keep them centered on that detail, excluding unrelated branches and "
             "points already covered by the existing children. "
             "Use the project goal, confirmed decisions, and pinned constraints when they apply to this path. A pin marks "
@@ -1449,29 +1494,41 @@ def build_prompt(mode, question, context, *, source_access=True, repository_scop
             "to execute. Do not assume the language or architecture. Skip generated outputs and vendored code. "
             "File listings cover readable files and may be filtered or truncated. Describe what you found in the "
             "visible scope and avoid claiming a total repository file count or project-wide absence. "
-            "Before writing cards, draft the hierarchy by capability. The overview explains who uses the project, "
-            "what outcome it delivers, and where its responsibility ends. Give it 3 or 4 capability chapters "
-            "named for what they accomplish, such as 'Find objects in a photo', rather than filenames, frameworks, "
-            "or generic headings like 'Implementation'. A chapter explains what input it accepts, what it "
-            "provides, and where its boundary lies. "
-            "Then group each chapter's findings into 3 or 4 coherent child topics when supported by the evidence. "
-            "Choose the relevant questions for that capability: how it is used, how it works, where it is changed, "
-            "what it must preserve, and how it is verified. Nest file calls, parameters, edge cases and checks "
-            "under the child topic they support. If a chapter is narrow, two supported topics are sufficient. "
-            "Do not pad a sparse branch, make wrapper cards that repeat their only child, or list every finding "
-            "as a sibling. Use filename and symbol names as evidence inside the appropriate summaries. "
+            "Synthesize in this order before writing: observed entrypoints and outputs -> concrete user journeys "
+            "-> distinct user outcomes -> a compact capability hierarchy. Do not mirror the directory tree or "
+            "promote a variable, class, framework, database layer or helper method into a product capability. "
+            "The overview explains who uses the project, what outcome it delivers, and where its responsibility ends. "
+            "Give it 1 to 6 capabilities, only as many as the evidence supports. Name each by an observable action "
+            "and result, such as 'Keep uncertain predictions for human review'. Domain terms are welcome when "
+            "they help the user; merely renaming a code symbol is not functional analysis. Do not put generic "
+            "'architecture', 'configuration', 'tests' and 'implementation' next to actual user capabilities unless "
+            "these are independently useful outcomes of this particular product. "
+            "The overview and every direct capability MUST have a capability record: version 1, audience (who "
+            "uses it), input, outcome (observable result), boundary, verification (how to check and what remains "
+            "unverified). Each field is nonempty and at most 200 characters. Deeper cards may have a record or null. "
+            "At the next reading level explain real usage situations: the trigger, the user's action, what result "
+            "appears, and meaningful failure or boundary behavior. Only deeper implementation details should "
+            "discuss files, calls and parameters. Do not mix a whole capability with its helper or one parameter "
+            "as siblings. Do not force identical depth on unrelated capabilities. "
+            "Make scenario titles and the first sentence of each scenario recognizable to the person using the "
+            "project. For each scenario, check that its result belongs to the parent capability. If it answers a "
+            "different user goal, move it to the appropriate capability, or defer it when the evidence is thin. "
+            "Review the outer level without its descendants: can a reader describe what the project lets them "
+            "do and why each capability is distinct? If not, regroup and rewrite it before returning. "
+            "Do not pad a sparse branch or make wrapper cards that repeat their only child. "
             "Distinguish verified code behavior from document claims and say when relevant evidence is absent. "
             "Do not claim that you ran a test or invent commands, files, symbols or requirements. "
             "Return only the requested map JSON. Reuse board.newIds, starting with one main overview card "
-            "with null parentId. Mark every descendant reference. A parent may have at most 4 direct children. "
-            "Use 3 to 4 reading levels including the overview; add the fourth only for substantively deeper detail. "
-            "When fewer than 13 IDs are available, keep the chapters and at least one supported detail under a chapter; "
-            "with 13 or more IDs, provide at least two topic cards directly under every chapter. "
-            "Use short titles and summaries of up to 500 characters each, and a board summary of up to 1200 characters. "
-            "Each card summary must cite at least one inspected repository-relative "
-            "filename in backticks, for example `src/main.py#start` when the symbol is known. Omit the "
-            "tool-only repository/ prefix and leave every sources array empty. Cite actual entry and test source "
-            "files in the corresponding chapter where present. Use only the IDs in board.newIds. Use compact horizontal "
+            "with null parentId. Mark every descendant reference. Non-root parents may have at most 4 direct children. "
+            "Use at most 4 reading levels including the overview. Available IDs are a budget, not a quota: a small "
+            "project can use just an overview and one capability. Expand only when there are distinct supported "
+            "situations or details. "
+            "Use short titles of up to 100 characters, summaries up to 500 characters, and a board summary up to 1200 characters. "
+            "Keep prose about behavior. Put each card's inspected relative file references in repositoryFiles, "
+            "for example src/main.py or src/main.py#start. Every card needs at least one readable evidence file. "
+            "The UI folds file evidence separately, so upper titles and summaries need not contain code identifiers. "
+            "Omit the tool-only repository/ prefix and leave every sources array empty. Cite actual entry and test source "
+            "files where relevant. Use only the IDs in board.newIds. Use compact horizontal "
             "or vertical layout and preserve the logical reading order of chapters."
         )
     elif context.get("scope") == "organize" and not source_access:
@@ -1499,7 +1556,11 @@ def build_prompt(mode, question, context, *, source_access=True, repository_scop
             "major implemented capabilities missing from the board: describe what each does before detailing files, "
             "parameters or tests. When the user requests a new hierarchy, group new topics under the closest "
             "capability, aiming for 3 or 4 related children per parent. "
-            + ("Use an empty sources array for all cards and cite bound repository paths in the item summaries. "
+            + ("Use an empty sources array for all cards and put inspected relative file paths in repositoryFiles. "
+               "A capability card can include capability={version:1,audience,input,outcome,boundary,verification}, "
+               "with each text field at most 200 characters; use null when not applicable. When asked for a "
+               "functional view, synthesize user journeys and distinct observable outcomes first. Keep outer "
+               "prose independently understandable and put code vocabulary in the evidence or deeper details. "
                if repository_scope else
                "Each new card needs nonempty sources with prototype file basenames that support its summary. "
                "Cite files in sources for existing items whose status is based on inspected code, otherwise use "
@@ -1959,7 +2020,8 @@ class WhiteboardHandler(BaseHTTPRequestHandler):
             try:
                 if context.get("scope") == "organize":
                     schema_path = write_map_schema(context["board"], repository_scope=backend_request.repository_path is not None,
-                                                   zcode=backend == "zcode")
+                                                   zcode=backend == "zcode",
+                                                   repository_intro=context.get("boardIntent") == REPOSITORY_INIT_INTENT)
                 elif context.get("scope") == "organizeBranch":
                     schema_path = write_branch_schema(context["board"], zcode=backend == "zcode")
                 elif context.get("scope") == "decompose":

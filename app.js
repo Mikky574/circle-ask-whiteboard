@@ -1438,6 +1438,7 @@
       summary: excerpt(summary, detailed ? 1200 : 320),
       ...(detailed && item?.taskDetails ? { taskDetails: item.taskDetails } : {}),
       ...(detailed && item?.spec ? { spec: item.spec } : {}),
+      ...(item?.capability ? { capability: item.capability } : {}),
       ...(node.sources?.length ? { sources: node.sources } : {}),
       ...(repositoryFiles.length ? { repositoryFiles } : {}),
     };
@@ -4420,6 +4421,7 @@
       if (organizedItem && organizedFace) {
         if (!splitting) organizedItem.title = excerpt(payload.question, 96);
         organizedItem.summary = excerpt(nextAnswer, 500);
+        delete organizedItem.capability;
         organizedItem.attachments = memory.cleanAttachments(reply.payload.attachments);
         organizedFace.querySelector("h3").textContent = organizedItem.title;
         if (organizedBody) renderAttachedNames(organizedBody, organizedItem.attachments);
@@ -5334,6 +5336,7 @@
       if (!replies.has(item.id)) delete item.nativeFace;
       if (old.taskDetails) item.taskDetails = { ...old.taskDetails, task: excerpt(update.summary, 500) };
       if (old.spec) item.spec = specAfterContentChange(old, item);
+      if (old.title !== item.title || old.summary !== item.summary) delete item.capability;
       return [item.id, item];
     }));
     const root = changed.get(rootId);
@@ -5550,7 +5553,7 @@
       board: { nodes: memory.repairNodes(nodes), newIds, layout: organizationEngine.settings(organization.current?.layout) },
       project: projectContext(submission?.payload.anchor.elementIds || ["board"]),
       question: (initialize
-        ? "阅读当前项目源码，为这张空白板生成可逐级展开的中文工程介绍，帮助新人理解项目、定位改动点并找到验证入口。"
+        ? "从使用者与应用场景分析当前代码仓：项目解决什么问题、有哪些可观察的功能、各功能输入什么与得到什么、哪些边界尚未核实。先提炼功能，再按真实使用场景展开；源码与参数仅作为下层依据。生成可逐级阅读的中文功能地图。"
         : repair
         ? "这是删除后的局部关系修复。只判断所给直接相关节点应保留、重新挂接还是归档，并在 summary 说明理由。不递归处理后续节点，不整理整板，不修改内容、顺序、尺寸、位置或 layout。保持所有给定ID，仅 archiveAllowed 允许归档；parentId 仅可选择给定节点或 null，不确定则保留原关系。返回现有 map 格式。"
         : main
@@ -5588,7 +5591,7 @@
       const candidateIds = new Set(candidate?.items.map((item) => item.id));
       const existingIds = new Set(nodes.map((node) => node.id));
       const additions = candidate?.items.filter((item) => !existingIds.has(item.id)) || [];
-      if (errorText || !completed || !candidate || (initialize && candidate.items.length < 5) ||
+      if (errorText || !completed || !candidate || (initialize && candidate.items.length < 2) ||
           nodes.some((item) => !candidateIds.has(item.id)) ||
           additions.some((item) => !newIds.includes(item.id) || item.category === "archive" ||
             (!initialize && target.backend !== "api" && !target.repositoryPath && !main && !attachments.length && !item.sources?.length))) {
@@ -5657,8 +5660,9 @@
         if (old?.taskDetails) item.taskDetails = old.taskDetails;
         if (old?.spec) item.spec = specAfterContentChange(old, item);
         if (old?.codePreview) item.codePreview = old.codePreview;
-        if (old?.repositoryFiles) item.repositoryFiles = old.repositoryFiles;
+        if (old?.repositoryFiles && !item.repositoryFiles?.length) item.repositoryFiles = old.repositoryFiles;
         if (old?.experiment) item.experiment = old.experiment;
+        if (!item.capability && old?.capability && old.title === item.title && old.summary === item.summary) item.capability = old.capability;
         if (old?.draft) item.draft = true;
         if (old?.explicitParent || (!previous.current && Object.hasOwn(previous.rawLinks || {}, item.id))) item.explicitParent = true;
         if (old?.category === item.category && typeof old.folded === "boolean") item.folded = old.folded;
@@ -5723,9 +5727,7 @@
         const old = previousItems.get(item.id);
         return item.title !== old?.title || item.summary !== old?.summary || item.category !== old?.category;
       }).length;
-      const sourceCount = initialize ? additions.filter((item) => item.codePreview).length : 0;
-      result.textContent = (initialize ? (sourceCount ? `工程介绍已生成，包含 ${sourceCount} 张源码卡。` :
-        "工程介绍已生成，未找到可预览的源码。") : moved ? "已重排白板。" : "整理完成，卡片位置与上次相同。") +
+      result.textContent = (initialize ? "功能地图已生成，可从项目阅读查看功能、输入输出与边界。" : moved ? "已重排白板。" : "整理完成，卡片位置与上次相同。") +
         `${organizationEngine.quickLayouts[quickMode] || describeLayout(candidate.layout)}。` +
         (additions.length ? `新增 ${additions.length} 个模块。` : "") +
         (updated ? `更新 ${updated} 项内容。` : "") +
@@ -7252,6 +7254,7 @@
     else if (kind === "case") item.spec = { kind, id: `TC-${id}`, status: "pending" };
     else if (old?.spec?.kind === "constraint") delete item.spec;
     else if (old?.spec) item.spec = specAfterContentChange(old, item);
+    if (old && (old.title !== item.title || old.summary !== item.summary)) delete item.capability;
     if (old && workbenchContentRevision(item) === workbenchDraft.revision) {
       workbenchDraft = null;
       report("卡片内容未更改。");
@@ -8113,6 +8116,13 @@
     canNavigate: () => !gesture && !connectionDrag && !deletionPreparing,
     onChange: (active) => { if (!active) layoutReplies(true); },
     onShowCard: (id) => locateCard(id, true),
+    onAsk: (id) => {
+      const draft = question.value;
+      research.setActive(false);
+      if (!locateCard(id, true)) return;
+      question.value = draft;
+      askOpen.click();
+    },
   });
   const nativePresentation = pageParams.get("presentation");
   if (["cards", "mindmap"].includes(nativePresentation)) mindmap?.setActive(nativePresentation === "mindmap");
