@@ -46,6 +46,7 @@ STATIC = {
     "mindmap.js": "text/javascript; charset=utf-8",
     "experiment_data.js": "text/javascript; charset=utf-8",
     "capability_data.js": "text/javascript; charset=utf-8",
+    "project_structure.js": "text/javascript; charset=utf-8",
     "research_board.js": "text/javascript; charset=utf-8",
     "research_board.css": "text/css; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",

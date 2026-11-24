@@ -564,9 +564,10 @@
     }
 
     function showImportPreview(document) {
-      const { cards, notes, attachments } = document.stats;
+      const { cards, notes, attachments, structureDropped } = document.stats;
       $("board-import-preview").textContent = `${document.title} · ${cards} 张模块卡、${notes} 张讨论卡` +
-        (attachments ? `；${attachments} 个附件引用（不包含文件）` : "");
+        (attachments ? `；${attachments} 个附件引用（不包含文件）` : "") +
+        (structureDropped ? `；项目结构中有 ${structureDropped} 项引用的卡片不在文件内，已隐藏` : "");
       importName.value = `${document.title.slice(0, 76)} 副本`;
     }
 
@@ -5831,6 +5832,8 @@
       if (guide && candidate.items.some((item) => item.id === guide.rootId && item.category !== "archive")) {
         candidate.projectGuide = guide;
       }
+      // An AI reorganization rebuilds the plan from cards; the author's structure record is not its to rewrite.
+      if (previous.current?.projectStructure) candidate.projectStructure = previous.current.projectStructure;
       if (drafts.size) {
         const draftItems = hierarchyItems(allNodes).filter((item) => drafts.has(item.id));
         candidate.items.push(...draftItems);
@@ -8414,6 +8417,7 @@
     defaultActive: false,
     getItems: () => hierarchyItems(boardForOrganization()).filter((item) => !deletedIds.has(item.id)),
     getAttachments: (id) => replies.get(id)?.saved?.payload?.attachments || [],
+    getStructure: () => organization.current?.projectStructure || null,
     getText: (id) => {
       const item = (organization.current?.items || organization.rawCards || []).find((entry) => entry.id === id);
       return item?.localContent ? item.summary : replies.get(id)?.saved?.answer || item?.summary || "";

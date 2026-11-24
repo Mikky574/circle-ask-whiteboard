@@ -194,6 +194,12 @@
       result.projectGuide = { rootId: id(guide.rootId, "项目根节点"), x: guide.x, y: guide.y };
     }
     if (owns(value, "branchLayouts")) result.branchLayouts = ids(value.branchLayouts, "分支排布");
+    if (owns(value, "projectStructure")) {
+      const schema = typeof module === "object" && module.exports
+        ? require("./project_structure.js") : window.ProjectStructure;
+      if (!schema) fail("缺少项目结构校验器。");
+      result.projectStructure = schema.validate(value.projectStructure);
+    }
     return result;
   }
   function payload(value) {
@@ -365,13 +371,31 @@
     for (const reference of organization.current?.branchLayouts || []) {
       if (!primary.some(entry => entry.id === reference)) fail(`分支排布引用了不存在的卡片 ${reference}。`);
     }
+    // A structure may outlive a deleted card in storage. Hide stale references here so the
+    // exported file never points at cards it does not contain; the count is reported.
+    let structureDropped = 0;
+    if (organization.current?.projectStructure) {
+      const schema = typeof module === "object" && module.exports
+        ? require("./project_structure.js") : window.ProjectStructure;
+      const resolved = schema.resolve(organization.current.projectStructure, new Set([...present, "board"]));
+      if (!resolved) {
+        structureDropped = schema.cardIds(organization.current.projectStructure).length;
+        delete organization.current.projectStructure;
+      } else {
+        const { dropped, ...kept } = resolved;
+        if (kept.rootId && !present.has(kept.rootId) && kept.rootId !== "board") delete kept.rootId;
+        organization.current.projectStructure = kept;
+        structureDropped = dropped;
+      }
+    }
     const references = new Map();
     for (const item of [...primary, ...(organization.current ? organization.rawCards || [] : []),
       ...memory.notes.flatMap(entry => [entry.payload, entry.retryPayload].filter(Boolean))]) {
       for (const reference of item.attachments || []) references.set(reference.id, reference);
     }
     return { cards: [...present].filter(entry => !noteIds.has(entry)).length,
-      notes: memory.notes.length, attachments: references.size };
+      notes: memory.notes.length, attachments: references.size,
+      ...(structureDropped ? { structureDropped } : {}) };
   }
   function normalize(value) {
     object(value, "白板文件");

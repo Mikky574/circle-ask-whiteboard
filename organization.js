@@ -158,6 +158,8 @@
       ? { rootId: guideRoot.id, x: guide.x, y: guide.y } : null;
     const branchLayouts = Array.isArray(value.branchLayouts)
       ? [...new Set(value.branchLayouts.filter((id) => byId.has(id)))] : [];
+    // Optional and read-only for the engine: cards are referenced by id, never copied.
+    const projectStructure = window.ProjectStructure?.clean(value.projectStructure);
     return {
       title: text(value.title, 120) || "白板整理",
       summary: text(value.summary, 1600),
@@ -167,6 +169,7 @@
       collapsedBranches: Array.isArray(value.collapsedBranches)
         ? [...new Set(value.collapsedBranches.filter(sourceId))] : [],
       ...(projectGuide ? { projectGuide } : {}),
+      ...(projectStructure ? { projectStructure } : {}),
       ...(branchLayouts.length ? { branchLayouts } : {}),
     };
   }

@@ -1,7 +1,7 @@
 /* Focused, read-only projections of the same board and card identities. */
 (() => {
   "use strict";
-  const views = ["board", "flow", "graph", "comparison", "evidence"];
+  const views = ["structure", "board", "flow", "graph", "comparison", "evidence"];
   const format = value => value == null ? "—" : value.toLocaleString("zh-CN", { maximumFractionDigits: 3, minimumFractionDigits: 3 });
   const title = node => node.id === "board" ? node.title : node.title.replace(/^【[^】]+】\s*/u, "");
   const status = node => node.id === "board" ? null : node.title.match(/^【([^】]+)】/u)?.[1] || null;
@@ -144,7 +144,10 @@
     if (active) {
       options.onChange?.(true, rootId);
       render();
-    } else options.onChange?.(false, rootId);
+    } else {
+      structureObserver?.disconnect();
+      options.onChange?.(false, rootId);
+    }
     writeRoute(replace);
   }
   function showCanvas(id) {
@@ -607,8 +610,378 @@
     }
     renderEvidence(parent, node, code);
   }
+  /* ---- Project structure: author-confirmed zones, nodes and directed links ---- */
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const roleNames = { entry: "入口", capability: "能力", external: "外部资料", store: "存储", feedback: "反馈" };
+  const kindNames = { main: "主路径", side: "旁路", back: "回写" };
+  const narrowQuery = window.matchMedia?.("(max-width: 760px)");
+  const autoOpened = new Set();
+  let structureSelection = null;
+  let structureObserver = null;
+  function svgNode(parent, tag, attributes = {}, content) {
+    const element = document.createElementNS(SVG_NS, tag);
+    for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
+    if (content != null) element.textContent = content;
+    parent.append(element);
+    return element;
+  }
+  /* Stored record + live cards. Stale card references are hidden here, never rewritten. */
+  function structureFor(nodes) {
+    const record = options.getStructure?.();
+    const resolved = record && window.ProjectStructure?.resolve(record, new Set(nodes.map(node => node.id)));
+    if (!resolved) return null;
+    const known = new Set(nodes.map(node => node.id));
+    const top = nodes.find(node => !known.has(node.parentId))?.id;
+    return { ...resolved, rootId: resolved.rootId && known.has(resolved.rootId) ? resolved.rootId : top };
+  }
+  function structureModel(structure, nodes) {
+    const byId = new Map(nodes.map(node => [node.id, node]));
+    const zones = structure.zones.map((zone, index) => ({ ...zone, lane: zone.lane ?? Math.min(index, 5) }));
+    const lanes = [...new Set(zones.map(zone => zone.lane))].sort((a, b) => a - b);
+    const info = new Map();
+    for (const zone of zones) for (const node of zone.nodes) {
+      const card = byId.get(node.cardId);
+      info.set(node.id, { node, zone, card, lane: lanes.indexOf(zone.lane), name: node.label || title(card) });
+    }
+    return { zones, lanes, info, links: structure.links || [], dropped: structure.dropped };
+  }
+  function labelLines(value) {
+    const chars = Array.from(value);
+    const lines = [];
+    for (let index = 0; index < chars.length; index += 7) lines.push(chars.slice(index, index + 7).join(""));
+    return lines;
+  }
+  const textWidth = value => Array.from(value).reduce((sum, char) => sum + (/[\u0000-ÿ]/.test(char) ? 6.4 : 12), 0);
+  function roundedPath(points, radius = 8) {
+    const clean = points.filter((point, index) => !index || point.x !== points[index - 1].x || point.y !== points[index - 1].y);
+    if (clean.length < 2) return "";
+    const toward = (from, to, distance) => {
+      const length = Math.hypot(to.x - from.x, to.y - from.y) || 1;
+      return { x: from.x + (to.x - from.x) / length * distance, y: from.y + (to.y - from.y) / length * distance };
+    };
+    let path = `M${clean[0].x} ${clean[0].y}`;
+    for (let index = 1; index < clean.length - 1; index++) {
+      const [before, corner, after] = [clean[index - 1], clean[index], clean[index + 1]];
+      const size = Math.min(radius, Math.hypot(corner.x - before.x, corner.y - before.y) / 2,
+        Math.hypot(corner.x - after.x, corner.y - after.y) / 2);
+      const from = toward(corner, before, size);
+      const to = toward(corner, after, size);
+      path += ` L${from.x} ${from.y} Q${corner.x} ${corner.y} ${to.x} ${to.y}`;
+    }
+    const last = clean.at(-1);
+    return `${path} L${last.x} ${last.y}`;
+  }
+  /* Draws every stored link as routed SVG: forward links through the gutter, links that skip a
+     lane over the top, links that return to an earlier lane or stay in one lane around the side. */
+  function drawStructure(stage, layer, model, buttons) {
+    const base = stage.getBoundingClientRect();
+    const rect = element => {
+      const box = element.getBoundingClientRect();
+      return { l: box.left - base.left, r: box.right - base.left, t: box.top - base.top, b: box.bottom - base.top,
+        y: (box.top + box.bottom) / 2 - base.top };
+    };
+    layer.replaceChildren();
+    const width = stage.offsetWidth;
+    const height = stage.offsetHeight;
+    layer.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    layer.setAttribute("width", width);
+    layer.setAttribute("height", height);
+    const defs = svgNode(layer, "defs");
+    for (const kind of Object.keys(kindNames)) {
+      const marker = svgNode(defs, "marker", { id: `research-arrow-${kind}`, viewBox: "0 0 10 10", refX: 9, refY: 5,
+        markerWidth: 7, markerHeight: 7, orient: "auto" });
+      svgNode(marker, "path", { d: "M1 1L9 5L1 9z", class: `research-arrow research-arrow-${kind}` });
+    }
+    const laneRects = model.laneEls.map(rect);
+    const count = laneRects.length;
+    const gutter = index => index < count - 1 ? (laneRects[index].r + laneRects[index + 1].l) / 2 : laneRects[count - 1].r + 53;
+    const edges = model.links.map(link => {
+      const from = model.info.get(link.from);
+      const to = model.info.get(link.to);
+      const nodes = from.zone.nodes;
+      const internal = from.zone === to.zone &&
+        Math.abs(nodes.indexOf(from.node) - nodes.indexOf(to.node)) === 1;
+      return { link, from, to, a: rect(buttons.get(link.from)), b: rect(buttons.get(link.to)), delta: to.lane - from.lane, internal };
+    });
+    // Spread ports along a node side and vertical runs inside a gutter so parallel links stay apart.
+    const sides = new Map();
+    const runs = new Map();
+    const side = (edge, end) => end === "from" ? (edge.delta >= 0 ? "r" : "l") : (edge.delta >= 1 ? "l" : "r");
+    const gutters = edge => edge.delta >= 2 ? [edge.from.lane, edge.to.lane - 1] : edge.delta >= 0 ? [edge.from.lane]
+      : [edge.from.lane - 1, edge.to.lane];
+    for (const edge of edges) {
+      if (edge.internal) continue;
+      for (const end of ["from", "to"]) {
+        const key = `${edge.link[end]}:${side(edge, end)}`;
+        sides.set(key, [...(sides.get(key) || []), { edge, end }]);
+      }
+      gutters(edge).forEach((index, order) => runs.set(index, [...(runs.get(index) || []), { edge, order }]));
+    }
+    for (const list of sides.values()) {
+      list.sort((x, y) => (x.end === "from" ? x.edge.b.y : x.edge.a.y) - (y.end === "from" ? y.edge.b.y : y.edge.a.y));
+      list.forEach(({ edge, end }, index) => {
+        const box = end === "from" ? edge.a : edge.b;
+        const limit = Math.max(0, (box.b - box.t) / 2 - 8);
+        edge[`${end}Y`] = box.y + Math.max(-limit, Math.min(limit, (index - (list.length - 1) / 2) * 7));
+      });
+    }
+    for (const list of runs.values()) list.forEach(({ edge, order }, index) => {
+      (edge.offsets ||= [])[order] = (index - (list.length - 1) / 2) * 10;
+    });
+    const top = edges.filter(edge => edge.delta >= 2);
+    const bottom = edges.filter(edge => edge.delta < 0);
+    const labels = [];
+    const lines = svgNode(layer, "g", { class: "research-edge-lines" });
+    for (const edge of edges) {
+      const { a, b, delta } = edge;
+      let points;
+      if (edge.internal) {
+        const down = a.y < b.y;
+        const x = (a.l + a.r) / 2;
+        points = [{ x, y: down ? a.b : a.t }, { x, y: down ? b.t : b.b }];
+      } else {
+        const [first, second] = gutters(edge).map((index, order) => gutter(index) + edge.offsets[order]);
+        if (delta >= 2) {
+          const channel = 14 + top.indexOf(edge) * 14;
+          points = [{ x: a.r, y: edge.fromY }, { x: first, y: edge.fromY }, { x: first, y: channel }, { x: second, y: channel },
+            { x: second, y: edge.toY }, { x: b.l, y: edge.toY }];
+        } else if (delta >= 0) {
+          points = [{ x: a.r, y: edge.fromY }, { x: first, y: edge.fromY }, { x: first, y: edge.toY },
+            { x: delta ? b.l : b.r, y: edge.toY }];
+        } else {
+          const channel = height - 14 - bottom.indexOf(edge) * 14;
+          points = [{ x: a.l, y: edge.fromY }, { x: first, y: edge.fromY }, { x: first, y: channel }, { x: second, y: channel },
+            { x: second, y: edge.toY }, { x: b.r, y: edge.toY }];
+        }
+      }
+      const attributes = { "data-from": edge.link.from, "data-to": edge.link.to, "data-kind": edge.link.kind };
+      svgNode(lines, "path", { ...attributes, class: `research-edge research-edge-${edge.link.kind}`,
+        d: roundedPath(points), "marker-end": `url(#research-arrow-${edge.link.kind})` });
+      let longest = [points[0], points[1]];
+      points.slice(1).forEach((point, index) => {
+        const length = Math.hypot(point.x - points[index].x, point.y - points[index].y);
+        if (length > Math.hypot(longest[1].x - longest[0].x, longest[1].y - longest[0].y)) longest = [points[index], point];
+      });
+      labels.push({ edge, attributes, longest });
+    }
+    const placed = [];
+    const labelLayer = svgNode(layer, "g", { class: "research-edge-labels" });
+    for (const { edge, attributes, longest } of labels) {
+      const rows = edge.internal ? [edge.link.label] : labelLines(edge.link.label);
+      const boxWidth = Math.max(...rows.map(textWidth)) + 12;
+      const boxHeight = rows.length * 14 + 6;
+      const vertical = longest[0].x === longest[1].x;
+      let x = (longest[0].x + longest[1].x) / 2;
+      let y = (longest[0].y + longest[1].y) / 2;
+      if (edge.internal) {
+        const right = Math.min(edge.a.r, edge.b.r);
+        x = Math.min(x + boxWidth / 2 + 8, right - boxWidth / 2);
+      }
+      const hits = () => placed.some(other => Math.abs(other.x - x) < (other.w + boxWidth) / 2 &&
+        Math.abs(other.y - y) < (other.h + boxHeight) / 2);
+      for (let step = 1; step < 8 && hits(); step++) {
+        if (vertical) y += (step % 2 ? 1 : -1) * step * (boxHeight + 4);
+        else x += (step % 2 ? 1 : -1) * step * (boxWidth + 4);
+      }
+      placed.push({ x, y, w: boxWidth, h: boxHeight });
+      const group = svgNode(labelLayer, "g", { ...attributes, class: `research-edge-label research-edge-label-${edge.link.kind}` });
+      group.dataset.hasEvidence = String(Boolean(edge.link.evidence));
+      svgNode(group, "rect", { x: x - boxWidth / 2, y: y - boxHeight / 2, width: boxWidth, height: boxHeight, rx: 5 });
+      const text = svgNode(group, "text", { x, "text-anchor": "middle" });
+      rows.forEach((row, index) => svgNode(text, "tspan", { x, y: y - boxHeight / 2 + 14 + index * 14 - 2 }, row));
+      group.addEventListener("click", () => model.select({ kind: "link", from: edge.link.from, to: edge.link.to }));
+    }
+  }
+  function cardReading(parent, card, nodes) {
+    const feature = capability(card);
+    const lead = feature?.outcome || experiment(card).question || "";
+    const text = fullText(card);
+    if (lead) add(parent, "p", "research-lead", lead);
+    if (text && !same(text, lead)) add(parent, "p", "research-description", text);
+    if (feature) factRows(add(parent, "section", "research-facts"), feature, factKeys);
+    renderRecord(parent, card, lead);
+    renderEvidence(parent, card, children(card.id, nodes).filter(item => item.codePreview));
+  }
+  function renderStructureDetail(panel, model, nodes) {
+    panel.replaceChildren();
+    const selection = structureSelection;
+    const select = value => model.select(value);
+    if (selection?.kind === "link") {
+      const link = model.links.find(entry => entry.from === selection.from && entry.to === selection.to);
+      const [from, to] = [model.info.get(link.from), model.info.get(link.to)];
+      add(panel, "span", "research-kicker", `${kindNames[link.kind]} · 连线`);
+      const heading = add(panel, "h3");
+      button(heading, from.name, () => select({ kind: "node", id: link.from }), "research-card-title");
+      heading.append(document.createTextNode(` → ${link.label} → `));
+      button(heading, to.name, () => select({ kind: "node", id: link.to }), "research-card-title");
+      const evidence = link.evidence && nodes.find(item => item.id === link.evidence);
+      if (!evidence) {
+        add(panel, "p", "research-muted", "这条连线没有关联证据卡片。");
+        return;
+      }
+      add(panel, "p", "research-proof-label", "证据卡片");
+      labelled(button(add(panel, "h3"), "", () => enter(evidence.id), "research-card-title"), evidence);
+      cardReading(panel, evidence, nodes);
+      return;
+    }
+    const info = model.info.get(selection?.id);
+    if (!info) return;
+    add(panel, "span", "research-kicker", `${info.zone.title} · ${roleNames[info.zone.role]}`);
+    labelled(add(panel, "h3"), info.card);
+    if (info.node.note) add(panel, "p", "research-muted", info.node.note);
+    const relations = [
+      ...model.links.filter(link => link.to === info.node.id).map(link => ({ link, other: link.from, text: "来自" })),
+      ...model.links.filter(link => link.from === info.node.id).map(link => ({ link, other: link.to, text: "去向" })),
+    ];
+    if (relations.length) {
+      const list = add(panel, "ul", "research-structure-near");
+      for (const { link, other, text } of relations) {
+        const row = add(list, "li");
+        add(row, "span", "research-muted", `${text} · ${link.label} · `);
+        button(row, model.info.get(other).name, () => select({ kind: "node", id: other }), "research-card-title");
+      }
+    }
+    if (info.card.id !== "board") cardReading(panel, info.card, nodes);
+    if (info.card.id !== rootId) button(panel, "进入这张卡 ↗", () => enter(info.card.id), "research-button research-structure-enter");
+  }
+  function renderStructure(parent, nodes, structure) {
+    structureObserver?.disconnect();
+    const model = structureModel(structure, nodes);
+    const section = add(parent, "section", "research-structure");
+    section.setAttribute("aria-label", structure.title || "项目结构");
+    const header = add(section, "div", "research-structure-header");
+    const intro = add(header, "div");
+    add(intro, "h3", "", structure.title || "项目结构");
+    add(intro, "p", "research-muted research-small",
+      narrowQuery?.matches ? "点节点读原卡，在「全部关系」里查看去向和证据。" : "点节点读原卡，点连线文字看证据。");
+    const legend = add(header, "ul", "research-structure-legend");
+    legend.setAttribute("aria-label", "连线类型");
+    for (const kind of Object.keys(kindNames)) {
+      if (!model.links.some(link => link.kind === kind)) continue;
+      const entry = add(legend, "li");
+      entry.dataset.kind = kind;
+      add(entry, "i").setAttribute("aria-hidden", "true");
+      entry.append(document.createTextNode(kindNames[kind]));
+    }
+    if (model.dropped) add(section, "p", "research-caveat",
+      `结构中有 ${model.dropped} 项引用的卡片已不存在，已暂时隐藏；卡片恢复后会再次出现。`);
+    const scroller = add(section, "div", "research-structure-scroll");
+    if (!narrowQuery?.matches) scroller.tabIndex = 0;
+    scroller.setAttribute("aria-label", narrowQuery?.matches ? "项目职责分区" : "项目结构图，可横向滚动");
+    scroller.setAttribute("role", "group");
+    const stage = add(scroller, "div", "research-structure-stage");
+    const layer = svgNode(stage, "svg", { class: "research-structure-lines", "aria-hidden": "true", focusable: "false" });
+    const topCount = model.links.filter(link => model.info.get(link.to).lane - model.info.get(link.from).lane >= 2).length;
+    const bottomCount = model.links.filter(link => model.info.get(link.to).lane < model.info.get(link.from).lane).length;
+    stage.style.setProperty("--structure-top", `${28 + topCount * 14}px`);
+    stage.style.setProperty("--structure-bottom", `${28 + bottomCount * 14}px`);
+    stage.style.setProperty("--structure-lanes", model.lanes.length);
+    const grid = add(stage, "div", "research-structure-grid");
+    const weight = { small: 1, medium: 1.3, large: 1.7 };
+    grid.style.gridTemplateColumns = model.lanes.map(lane => `minmax(0, ${Math.max(
+      ...model.zones.filter(zone => zone.lane === lane).map(zone => weight[zone.size])
+    )}fr)`).join(" ");
+    const buttons = new Map();
+    model.laneEls = model.lanes.map(lane => {
+      const column = add(grid, "div", "research-structure-lane");
+      for (const zone of model.zones.filter(entry => entry.lane === lane)) {
+        const area = add(column, "section", "research-zone");
+        area.dataset.role = zone.role;
+        area.dataset.size = zone.size;
+        area.setAttribute("aria-label", `${zone.title}（${roleNames[zone.role]}）`);
+        const head = add(area, "header");
+        add(head, "span", "research-zone-role", roleNames[zone.role]);
+        add(head, "h4", "", zone.title);
+        if (zone.note) add(head, "p", "research-muted research-small", zone.note);
+        const list = add(area, "div", "research-zone-nodes");
+        for (const entry of zone.nodes) {
+          const info = model.info.get(entry.id);
+          const control = button(list, "", () => model.select({ kind: "node", id: entry.id }), "research-snode");
+          add(control, "strong", "", info.name);
+          if (entry.note) add(control, "span", "", entry.note);
+          const out = model.links.filter(link => link.from === entry.id).length;
+          const incoming = model.links.filter(link => link.to === entry.id).length;
+          control.setAttribute("aria-label", `${info.name}，${zone.title}，${incoming} 条入线，${out} 条出线`);
+          control.dataset.node = entry.id;
+          buttons.set(entry.id, control);
+          control.addEventListener("mouseenter", () => highlight(entry.id));
+          control.addEventListener("focus", () => highlight(entry.id));
+          control.addEventListener("mouseleave", () => highlight(null));
+          control.addEventListener("blur", () => highlight(null));
+          control.addEventListener("keydown", event => {
+            const arrows = ["ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"];
+            if (!arrows.includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+            let target;
+            if (event.key === "ArrowRight") target = model.links.find(link => link.from === entry.id)?.to;
+            else if (event.key === "ArrowLeft") target = model.links.find(link => link.to === entry.id)?.from;
+            else {
+              const siblings = [...column.querySelectorAll(".research-snode")];
+              target = siblings[siblings.indexOf(control) + (event.key === "ArrowDown" ? 1 : -1)]?.dataset.node;
+            }
+            if (!target) return;
+            event.preventDefault();
+            buttons.get(target)?.focus();
+          });
+        }
+      }
+      return column;
+    });
+    const detail = add(section, "div", "research-structure-detail");
+    detail.setAttribute("aria-live", "polite");
+    let showSelection = false;
+    /* Hover or focus lights a node's links; otherwise the current selection stays lit. */
+    function highlight(id) {
+      const selected = showSelection && structureSelection;
+      const lit = id ? element => element.dataset.from === id || element.dataset.to === id
+        : selected?.kind === "node" ? element => element.dataset.from === selected.id || element.dataset.to === selected.id
+          : selected?.kind === "link" ? element => element.dataset.from === selected.from && element.dataset.to === selected.to
+            : () => false;
+      let any = false;
+      for (const element of layer.querySelectorAll("[data-from]")) {
+        const on = lit(element);
+        any ||= on;
+        element.classList.toggle("is-lit", on);
+      }
+      section.classList.toggle("has-focus", any);
+    }
+    model.select = (value, emphasize = true) => {
+      showSelection = emphasize;
+      structureSelection = value;
+      for (const [id, control] of buttons) control.setAttribute("aria-pressed", String(value.kind === "node" && value.id === id));
+      renderStructureDetail(detail, model, nodes);
+      highlight(null);
+    };
+    const selectionExists = structureSelection && (structureSelection.kind === "node" ? model.info.has(structureSelection.id)
+      : model.links.some(link => link.from === structureSelection.from && link.to === structureSelection.to));
+    const relations = add(section, "details", "research-sources research-proof research-structure-relations");
+    add(relations, "summary", "", `全部关系 · ${model.links.length} 条`);
+    relations.open = Boolean(narrowQuery?.matches);
+    if (model.links.length) {
+      const list = add(relations, "ol", "research-structure-relation-list");
+      for (const link of model.links) {
+        const row = add(list, "li");
+        row.dataset.kind = link.kind;
+        button(row, model.info.get(link.from).name, () => model.select({ kind: "node", id: link.from }), "research-card-title");
+        row.append(document.createTextNode(` → `));
+        button(row, model.info.get(link.to).name, () => model.select({ kind: "node", id: link.to }), "research-card-title");
+        add(row, "span", "research-muted research-small", ` · ${link.label} · ${kindNames[link.kind]}`);
+        if (link.evidence) button(row, "查看证据", () => model.select({ kind: "link", from: link.from, to: link.to }), "research-path-button");
+      }
+    } else add(relations, "p", "research-muted", "这份结构还没有连线。");
+    model.select(selectionExists ? structureSelection : { kind: "node", id: model.zones[0].nodes[0].id }, false);
+    const redraw = () => { drawStructure(stage, layer, model, buttons); highlight(null); };
+    redraw();
+    if (typeof ResizeObserver === "function") {
+      structureObserver = new ResizeObserver(() => { if (stage.isConnected) redraw(); });
+      structureObserver.observe(stage);
+    }
+    document.fonts?.ready?.then(() => { if (stage.isConnected) redraw(); });
+  }
+  narrowQuery?.addEventListener?.("change", () => { if (active && view === "structure") render(); });
+
   function render() {
     if (!container || !active) return;
+    structureObserver?.disconnect();
     const nodes = items();
     let node = nodes.find(item => item.id === rootId);
     let removed = false;
@@ -664,9 +1037,16 @@
     const comparisons = members.filter(item => experiment(item).comparison);
     const hasPictures = members.some(item => images(item).length);
     const direct = children(node.id, nodes);
-    const labels = { board: mode ? boardLabels[mode.kind] : feature ? "功能概览" : comparisons.length ? "实验板" : "主题概览",
+    // The structure belongs to one card (default: the project root). Only that card offers it.
+    const structure = structureFor(nodes);
+    const hasStructure = Boolean(structure && node.id === structure.rootId);
+    if (hasStructure && !autoOpened.has(node.id)) {
+      autoOpened.add(node.id);
+      if (view === "board" && !new URLSearchParams(location.search).has("panel")) { view = "structure"; writeRoute(true); }
+    }
+    const labels = { structure: "项目结构", board: mode ? boardLabels[mode.kind] : feature ? "功能概览" : comparisons.length ? "实验板" : "主题概览",
       flow: "流程与分组", graph: "关系导图", comparison: "对比结果", evidence: "证据图片" };
-    const available = views.filter(id => id === "board" || (id === "graph" && (!mode || direct.length)) ||
+    const available = views.filter(id => id === "board" || (id === "structure" && hasStructure) || (id === "graph" && (!mode || direct.length)) ||
       (id === "flow" && (direct.length || node.flowSteps?.length)) ||
       (id === "comparison" && comparisons.length) || (id === "evidence" && hasPictures));
     if (!available.includes(view)) view = "board";
@@ -699,7 +1079,8 @@
       content.setAttribute("role", "tabpanel");
       content.setAttribute("aria-labelledby", `research-tab-${view}`);
     } else content.classList.add("research-content-plain");
-    if (view === "board" && mode) renderReading(content, node, nodes, mode, lead);
+    if (view === "structure") renderStructure(content, nodes, structure);
+    else if (view === "board" && mode) renderReading(content, node, nodes, mode, lead);
     else if (view === "board") {
       const topics = direct.filter(item => !item.codePreview);
       if (topics.length) {
@@ -729,7 +1110,7 @@
     }
     if (!mode) add(container, "footer", "research-footer", `${node.id === "board" ? "整张白板" : `卡号 ${node.id}`} · ` +
       `${members.length - 1} 张下级卡 · 与项目画布共享同一份内容`);
-    signature = JSON.stringify(nodes);
+    signature = JSON.stringify([nodes, options.getStructure?.() || null]);
   }
   function readRoute() {
     const params = new URLSearchParams(location.search);
@@ -773,5 +1154,5 @@
     }
   }
   window.BoardResearch = { init, enter, showCanvas, setActive, get active() { return active; },
-    refresh() { if (active && JSON.stringify(items()) !== signature) render(); } };
+    refresh() { if (active && JSON.stringify([items(), options.getStructure?.() || null]) !== signature) render(); } };
 })();

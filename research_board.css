@@ -274,6 +274,85 @@ body.research-view {
 .research-snippet-list .research-card-title { color: var(--research-ink); }
 .research-enter-node { margin-top: 8px; }
 .mindmap-view .research-enter-node { display: none; }
+
+/* Project structure: zones of different weight, nodes that are real cards, labelled links drawn in SVG. */
+.research-structure { display: grid; gap: 16px; --edge-main: #416b55; --edge-side: #5f7f95; --edge-back: #875327; }
+.research-structure-header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 10px 24px; }
+.research-structure-header > div { flex: 1 1 360px; min-width: 0; }
+.research-structure-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; padding: 0; list-style: none; font-size: 12px; color: var(--research-muted); }
+.research-structure-legend li { display: flex; align-items: center; gap: 7px; }
+.research-structure-legend i { width: 26px; height: 0; border-top: 2px solid var(--edge-main); }
+.research-structure-legend [data-kind="side"] i { border-top: 2px dashed var(--edge-side); }
+.research-structure-legend [data-kind="back"] i { border-top: 2px dotted var(--edge-back); }
+.research-structure-scroll { overflow-x: auto; border: 1px solid var(--research-line); border-radius: 14px; background: #fbfcf9; }
+.research-structure-scroll:focus-visible { outline: 2px solid var(--research-green); outline-offset: 2px; }
+.research-structure-stage {
+  position: relative;
+  box-sizing: border-box;
+  padding: var(--structure-top, 28px) 107px var(--structure-bottom, 28px) 24px;
+  min-width: calc(var(--structure-lanes, 3) * 185px + (var(--structure-lanes, 3) - 1) * 112px + 131px);
+}
+.research-structure-lines { position: absolute; z-index: 1; inset: 0; pointer-events: none; overflow: visible; }
+.research-structure-grid { position: relative; display: grid; column-gap: 112px; align-items: stretch; }
+.research-structure-lane { display: flex; flex-direction: column; justify-content: center; gap: 24px; min-width: 0; }
+.research-zone {
+  --zone-tint: #eef3ee; --zone-line: #c9d8cc;
+  padding: 14px; border: 1px solid var(--zone-line); border-radius: 14px; background: var(--zone-tint); min-width: 0;
+}
+.research-zone[data-role="entry"] { --zone-tint: #eef2f6; --zone-line: #c9d5e1; }
+.research-zone[data-role="external"] { --zone-tint: #f6f1e7; --zone-line: #e0d3b8; }
+.research-zone[data-role="store"] { --zone-tint: #f1eff5; --zone-line: #d4cde0; }
+.research-zone[data-role="feedback"] { --zone-tint: #f7efe9; --zone-line: #e2cdbd; }
+.research-zone[data-size="small"] { padding: 10px; border-radius: 11px; }
+.research-zone[data-size="large"] { padding: 20px 18px; border-radius: 18px; border-width: 1.5px; }
+.research-zone > header { display: grid; gap: 1px; margin-bottom: 10px; }
+.research-zone-role { color: var(--research-muted); font-size: 11px; letter-spacing: .08em; }
+.research-zone h4 { margin: 0; font-size: 15px; line-height: 1.4; color: #1f3a2d; }
+.research-zone[data-size="large"] h4 { font-size: 18px; }
+.research-zone[data-size="small"] h4 { font-size: 14px; }
+.research-zone-nodes { display: grid; gap: 26px; }
+.research-snode {
+  position: relative; z-index: 2;
+  display: grid; gap: 3px; width: 100%; padding: 9px 11px; border: 1px solid #d4ddd5; border-radius: 9px;
+  background: #fff; color: var(--research-ink); font: inherit; text-align: left; overflow-wrap: anywhere; cursor: pointer;
+  box-shadow: 0 1px 2px rgb(36 58 49 / 6%);
+}
+.research-snode strong { font-size: 13.5px; font-weight: 650; line-height: 1.45; }
+.research-snode span { color: var(--research-muted); font-size: 12px; line-height: 1.5; }
+.research-snode:hover { border-color: #8da593; }
+.research-snode:focus-visible { outline: 2px solid var(--research-green); outline-offset: 2px; }
+.research-snode[aria-pressed="true"] { border-color: var(--research-green); background: var(--research-tint); box-shadow: 0 0 0 1px var(--research-green); }
+.research-edge { fill: none; stroke: var(--edge-main); stroke-width: 1.6; transition: opacity .15s; }
+.research-edge-side { stroke: var(--edge-side); stroke-dasharray: 6 4; }
+.research-edge-back { stroke: var(--edge-back); stroke-dasharray: 2 4; stroke-linecap: round; stroke-width: 1.8; }
+.research-arrow { fill: var(--edge-main); }
+.research-arrow-side { fill: var(--edge-side); }
+.research-arrow-back { fill: var(--edge-back); }
+.research-edge-label { pointer-events: auto; cursor: pointer; transition: opacity .15s; }
+.research-edge-label rect { fill: #fff; stroke: #cbd8ce; }
+.research-edge-label text { fill: #35533f; font-size: 11px; }
+.research-edge-label-side text { fill: #3f5f75; }
+.research-edge-label-back text { fill: var(--edge-back); }
+.research-edge-label:hover rect { stroke: var(--research-green); }
+.research-structure.has-focus .research-edge:not(.is-lit), .research-structure.has-focus .research-edge-label:not(.is-lit) { opacity: .48; }
+.research-edge.is-lit { stroke-width: 2.4; }
+.research-structure-detail { display: grid; gap: 10px; padding: 18px 20px; border: 1px solid var(--research-line); border-radius: 12px; background: #fff; }
+.research-structure-detail .research-kicker { margin: 0; }
+.research-structure-detail .research-description { white-space: pre-wrap; max-width: 80ch; }
+.research-structure-near { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.research-structure-enter { justify-self: start; }
+.research-structure-relation-list { display: grid; gap: 6px; margin: 10px 0 2px; padding-left: 20px; font-size: 13px; color: var(--research-ink); }
+.research-structure-relation-list .research-card-title { color: var(--research-green); }
+@media (max-width: 760px) {
+  .research-structure-scroll { border: 0; background: transparent; overflow: visible; }
+  .research-structure-stage { min-width: 0; padding: 0; }
+  .research-structure-lines { display: none; }
+  .research-structure-grid { grid-template-columns: minmax(0, 1fr) !important; row-gap: 14px; }
+  .research-structure-lane { gap: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .research-edge, .research-edge-label { transition: none; }
+}
 @media (max-width: 740px) {
   .research-grid { grid-template-columns: 1fr; }
 }
