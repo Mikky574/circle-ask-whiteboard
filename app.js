@@ -7337,7 +7337,8 @@
     if (creatingChild ? !hierarchyItems(boardForOrganization()).some(card => card.id === id && card.category !== "archive") : !item) return;
     const opener = document.activeElement;
     const node = opener?.closest(".research-snode-wrap")?.querySelector(".research-snode");
-    const scope = $("research-workspace").querySelector("[data-diagram-root]")?.dataset.diagramRoot;
+    const scope = opener?.closest("[data-diagram-root]")?.dataset.diagramRoot ||
+      $("research-workspace").querySelector(".research-module-board.is-active [data-diagram-root]")?.dataset.diagramRoot;
     researchEditOrigin = { opener, scope, node: node?.dataset.node, focusKey: opener?.dataset.focusKey };
     $("project-surface-status").textContent = "";
     projectCardDrawer.append(workbenchEditor);
@@ -7394,8 +7395,9 @@
     renderInspector();
     const origin = researchEditOrigin;
     researchEditOrigin = null;
-    const trigger = origin?.focusKey && document.querySelector(`#research-workspace [data-focus-key="${CSS.escape(origin.focusKey)}"]`);
-    const node = origin?.node && document.querySelector(`.research-snode[data-node="${CSS.escape(origin.node)}"]`);
+    const activeDiagram = $("research-workspace").querySelector(".research-module-board.is-active");
+    const trigger = origin?.focusKey && activeDiagram?.querySelector(`[data-focus-key="${CSS.escape(origin.focusKey)}"]`);
+    const node = origin?.node && activeDiagram?.querySelector(`.research-snode[data-node="${CSS.escape(origin.node)}"]`);
     const target = origin?.opener?.isConnected && origin.opener.getClientRects().length ? origin.opener
       : trigger || node || document.querySelector("#research-workspace .research-edit-card") || $("project-surface-structure");
     target.focus({ preventScroll: true });
@@ -7700,7 +7702,7 @@
       return;
     }
     $("project-surface-status").textContent = `已应用 ${picked.size} 张卡片的修改。`;
-    const updated = $("research-workspace").querySelector('.research-snode[aria-pressed="true"]');
+    const updated = $("research-workspace").querySelector('.research-module-board.is-active .research-snode[aria-pressed="true"]');
     (updated || $("project-surface-opinion")).focus({ preventScroll: true });
   });
 
@@ -8914,7 +8916,9 @@
       return item?.localContent ? item.summary : replies.get(id)?.saved?.answer || item?.summary || "";
     },
     onEnter: workspace.enter,
-    onStructureBranch: workspace.enterStructure,
+    onStructureBranch: workspace.openStructure,
+    onStructureNavigate: workspace.jumpStructure,
+    onResize: workspace.refresh,
     onLocate: workspace.locate,
     onAddChild: id => editResearchCard(id, true),
     onOpinion: openCardOpinion,

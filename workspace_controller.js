@@ -7,9 +7,12 @@
   let adapters;
   let state;
   let applying = false;
+  let trail = [];
 
   function historyUpdate(replace) {
-    const href = navigation.write(location.href, state);
+    const href = new URL(navigation.write(location.href, state));
+    if (state.presentation === "research" && trail.length > 1) href.searchParams.set("trail", trail.join("."));
+    else href.searchParams.delete("trail");
     if (String(href) !== location.href) history[replace ? "replaceState" : "pushState"](history.state, "", href);
   }
 
@@ -53,13 +56,17 @@
     }
   }
 
-  function apply(next, { historyMode, preferStructure = false, remember = false, focusCanvas = true } = {}) {
+  function apply(next, { historyMode, preferStructure = false, remember = false, focusCanvas = true, path } = {}) {
     state = next;
     applying = true;
     try {
       setPresentation();
-      if (state.presentation === "research") state = { ...state, ...reader.show(state, preferStructure) };
-      else {
+      if (state.presentation === "research") {
+        trail = path || (trail.includes(next.readingRoot) ? trail : [next.readingRoot].filter(Boolean));
+        state = { ...state, ...reader.show(state, preferStructure, trail) };
+        trail = reader.openPath();
+      } else {
+        trail = [];
         reader.hide();
         adapters.showCanvas(state.presentation, state.canvasBranch, { remember });
         if (focusCanvas && state.card) adapters.focusCanvas(state.card);
@@ -104,15 +111,40 @@
     if (card) reader.revealDiagramCard(card);
     return true;
   }
-  function panel(id) { move({ type: "setPanel", panel: id }); }
-  function focus(id) {
+  function jumpStructure(id) {
+    if (!trail.includes(id)) return enterStructure(id);
+    if (!adapters.canNavigate()) return false;
+    const next = navigation.transition(state, { type: "enterReading", root: id, panel: "structure", card: reader.cardAt(id) },
+      { nodes: reader.items() });
+    apply(next, { historyMode: "replace", path: trail });
+    reader.focusHeading(true);
+    return true;
+  }
+  function openStructure(id, from) {
+    if (trail.includes(id)) return jumpStructure(id);
+    const parent = trail.indexOf(from || state.readingRoot);
+    const path = parent >= 0 && state.presentation === "research" ? [...trail.slice(0, parent + 1), id] : [id];
+    if (!move({ type: "enterReading", root: id, panel: "structure" }, { path })) return false;
+    reader.focusHeading(true);
+    return true;
+  }
+  function panel(id, scope) {
+    if (scope && scope !== state.readingRoot) focus(reader.cardAt(scope), scope);
+    move({ type: "setPanel", panel: id });
+  }
+  function focus(id, scope) {
+    if (scope && scope !== state.readingRoot && trail.includes(scope)) {
+      state = navigation.transition(state, { type: "enterReading", root: scope, panel: "structure", card: id },
+        { nodes: reader.items() });
+      reader.activate(scope);
+    }
     const nodes = reader.items();
     state = navigation.transition(state, { type: "focusCard", card: id }, { nodes });
     historyUpdate(true);
     renderNavigation(nodes);
   }
 
-  function restore() {
+  function restore(navigate = false) {
     const parsed = navigation.read(location.href, adapters.defaultPresentation);
     const nodes = reader.items();
     let next = navigation.transition(parsed.state, { type: "reconcile" }, { nodes });
@@ -121,8 +153,13 @@
       next = navigation.transition(next, { type: "showStructure" }, { nodes, structureRoot: structureRoot(nodes) });
       if (card) next = navigation.transition(next, { type: "focusCard", card }, { nodes });
     }
-    apply(next, { historyMode: next.presentation === "research" || next !== parsed.state ? "replace" : undefined,
+    const requested = (new URLSearchParams(location.search).get("trail") || "").split(".");
+    const known = new Set(nodes.map(node => node.id));
+    const path = requested.includes(next.readingRoot) && new Set(requested).size === requested.length &&
+      requested.every(id => known.has(id)) ? requested : [];
+    apply(next, { path, historyMode: next.presentation === "research" || next !== parsed.state ? "replace" : undefined,
       preferStructure: !new URLSearchParams(location.search).has("panel") });
+    if ((navigate || path.length > 1) && next.presentation === "research" && next.panel === "structure") reader.focusHeading();
   }
 
   function init(settings) {
@@ -131,6 +168,8 @@
     $("presentation-cards").addEventListener("click", () => move({ type: "setPresentation", presentation: "cards" }, { remember: true }));
     $("presentation-mindmap").addEventListener("click", () => move({ type: "setPresentation", presentation: "mindmap" }, { remember: true }));
     $("project-surface-structure").addEventListener("click", () => {
+      const root = structureRoot(reader.items());
+      if (state.presentation === "research" && trail.length > 1 && trail.includes(root)) { jumpStructure(root); return; }
       if (move({ type: "showStructure" })) $("project-surface-structure").focus({ preventScroll: true });
     });
     $("project-surface-edit").addEventListener("click", () => {
@@ -143,7 +182,7 @@
     });
     window.addEventListener("popstate", () => {
       if (!adapters.canNavigate()) { historyUpdate(true); return; }
-      restore();
+      restore(true);
     });
     restore();
   }
@@ -152,9 +191,13 @@
     if (!state || applying) return;
     const nodes = state.presentation === "research" || adapters.canStructure() ? reader.items() : [];
     const readerState = reader.refresh(nodes);
-    if (readerState) { state = { ...state, ...readerState }; historyUpdate(true); }
+    if (readerState) {
+      state = { ...state, ...readerState };
+      trail = reader.openPath();
+      historyUpdate(true);
+    }
     renderNavigation(nodes);
   }
 
-  window.BoardWorkspace = { init, refresh, openCanvas, locate, includeCanvasCard, enter, enterStructure, panel, focus };
+  window.BoardWorkspace = { init, refresh, openCanvas, locate, includeCanvasCard, enter, enterStructure, openStructure, jumpStructure, panel, focus };
 })();

@@ -9,7 +9,10 @@
   const kickers = { home: "项目总览", feature: "功能", scene: "使用场景", detail: "细节" };
   const boardLabels = { home: "功能目录", feature: "功能说明", scene: "场景说明", detail: "细节说明" };
   let options = {};
+  let workspace;
   let container;
+  let currentEntry;
+  const entries = new Map();
   let active = false;
   let rootId = null;
   let view = "board";
@@ -601,8 +604,6 @@
   const narrowQuery = window.matchMedia?.("(max-width: 760px)");
   const touchTools = window.matchMedia?.("(hover: none), (pointer: coarse)");
   const autoOpened = new Set();
-  let structureSelection = null;
-  let structureObserver = null;
   function svgNode(parent, tag, attributes = {}, content) {
     const element = document.createElementNS(SVG_NS, tag);
     for (const [key, value] of Object.entries(attributes)) element.setAttribute(key, value);
@@ -915,7 +916,7 @@
     renderRecord(parent, card, lead);
     renderEvidence(parent, card, children(card.id, nodes).filter(item => item.codePreview));
   }
-  function structureCardActions(parent, card) {
+  function structureCardActions(parent, card, scope) {
     if (!card || card.id === "board") return;
     const row = add(parent, "div", "research-structure-actions");
     if (options.canEditCard?.(card.id)) {
@@ -925,16 +926,12 @@
     if (!options.compactWorkspace?.() && typeof options.onAddChild === "function") {
       button(row, "手动新建子卡", () => options.onAddChild(card.id));
     }
-    if (card.id !== rootId) button(row, "打开模块图", () => options.onStructureBranch?.(card.id), "research-button research-structure-enter");
+    if (card.id !== scope) button(row, "打开模块图", () => options.onStructureBranch?.(card.id, scope), "research-button research-structure-enter");
   }
   let savedY = null;
   let restoreKey = null;
-  let pendingFocus = null;
-  let sheetScope = null;
-  let paneEffects = null;
   const diagramViews = new Map();
   const expandedDiagrams = new Map();
-  let currentCamera = null;
 
   function structureCamera(frame, world, stage, tools, scope) {
     const controls = add(tools, "div", "research-camera-tools");
@@ -980,7 +977,14 @@
     }, "research-button").title = "显示整张图";
 
     frame.addEventListener("wheel", event => {
-      if (!event.ctrlKey && !event.metaKey) return;
+      if (!event.ctrlKey && !event.metaKey) {
+        if (workspace.childElementCount > 1 && !event.shiftKey && Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+          event.preventDefault();
+          const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? window.innerHeight : 1;
+          window.scrollBy({ top: event.deltaY * unit, behavior: "instant" });
+        }
+        return;
+      }
       event.preventDefault();
       const bounds = frame.getBoundingClientRect();
       zoom(scale * (event.deltaY < 0 ? 1.15 : 1 / 1.15), event.clientX - bounds.left, event.clientY - bounds.top);
@@ -1027,7 +1031,7 @@
     trigger?.setAttribute("aria-expanded", "false");
     if (restore && opener?.isConnected) opener.focus({ preventScroll: true });
   }
-  function cardActions(card, move) {
+  function cardActions(card, move, scope) {
     if (!card || card.id === "board") return [];
     const list = [];
     if (typeof options.onEditCard === "function" && options.canEditCard?.(card.id)) {
@@ -1038,8 +1042,8 @@
     if (typeof options.onAddChild === "function") list.push(["手动新建子卡", () => options.onAddChild(card.id)]);
     if (move?.up) list.push(["在分区内上移", move.up]);
     if (move?.down) list.push(["在分区内下移", move.down]);
-    if (card.id !== rootId && typeof options.onStructureBranch === "function") {
-      list.push(["打开模块图", () => options.onStructureBranch(card.id)]);
+    if (card.id !== scope && typeof options.onStructureBranch === "function") {
+      list.push(["打开模块图", () => options.onStructureBranch(card.id, scope)]);
     }
     return list;
   }
@@ -1056,7 +1060,7 @@
     const entries = actions.map(([label, run]) => {
       const item = button(el, label, () => {
         closeMenu(true);
-        const selected = structureSelection;
+        const selected = model.selection();
         const want = spec.selection;
         if (!(selected?.kind === "node" && selected.scope === model.key && selected.id === want.id && (selected.cardId || null) === (want.cardId || null) &&
           !(want.cardId == null && selected.cardId))) model.select(want, true, false);
@@ -1118,9 +1122,8 @@
     trigger?.setAttribute("aria-expanded", "true");
     entries[0].focus({ preventScroll: true });
   }
-  function renderStructureDetail(panel, model, nodes) {
+  function renderStructureDetail(panel, model, nodes, selection, scope) {
     panel.replaceChildren();
-    const selection = structureSelection;
     const select = value => model.select(value);
     if (selection?.kind === "link") {
       const link = model.links.find(entry => entry.from === selection.from && entry.to === selection.to);
@@ -1138,8 +1141,8 @@
         return;
       }
       add(panel, "p", "research-proof-label", "证据卡片");
-      labelled(button(add(panel, "h3"), "", () => options.onStructureBranch?.(evidence.id), "research-card-title"), evidence);
-      structureCardActions(panel, evidence);
+      labelled(button(add(panel, "h3"), "", () => options.onStructureBranch?.(evidence.id, scope), "research-card-title"), evidence);
+      structureCardActions(panel, evidence, scope);
       cardReading(panel, evidence, nodes);
       return;
     }
@@ -1150,7 +1153,7 @@
     if (exact) add(panel, "span", "research-kicker", `${info.zone.title} · ${roleNames[info.zone.role]}`);
     else if (info) add(panel, "span", "research-kicker", `${info.name} › 下级卡片`);
     labelled(add(panel, "h3"), card);
-    structureCardActions(panel, card);
+    structureCardActions(panel, card, scope);
     if (!exact) { cardReading(panel, card, nodes); return; }
     const diagramNote = model.authored && !same(info.node.note, fullText(card)) ? info.node.note : "";
     if (card.id !== "board") cardReading(panel, card, nodes, diagramNote);
@@ -1219,9 +1222,10 @@
   }
 
   function renderStructure(parent, nodes, { diagram: structure, base, authored }) {
-    structureObserver?.disconnect();
-    closeMenu(false);
+    const mounted = currentEntry;
     const model = structureModel(structure, nodes);
+    let structureSelection = mounted.selection || null;
+    model.selection = () => structureSelection;
     model.authored = authored;
     const compact = options.compactWorkspace?.();
     const section = add(parent, "section", "research-structure");
@@ -1295,8 +1299,8 @@
       const full = raw ? raw.nodes.map(item => shown.has(item.id) ? ids[next++] : item.id) : ids;
       return Promise.resolve().then(() => options.onReorderZone(scope, zone.id, full)).then(result => result === true, () => false).then(ok => {
         if (ok) {
-          pendingFocus = focusId ? `h:${focusId}` : null;
-          if (active && rootId === scope) render();
+          mounted.pendingFocus = focusId ? `h:${focusId}` : null;
+          if (active) refresh(items());
         } else announce("未能保存新顺序，已恢复原位。");
         return ok;
       });
@@ -1413,6 +1417,7 @@
     function populateInline(target, path, ancestors, pending) {
       const { model: lower, grid, buttons } = target;
       lower.select = (value, emphasize, openDetails) => selectOn(target, value, emphasize, openDetails);
+      lower.selection = model.selection;
       lower.laneEls = lower.lanes.map(lane => {
         const column = add(grid, "div", "research-structure-lane");
         for (const zone of lower.zones.filter(entry => entry.lane === lane)) {
@@ -1434,14 +1439,15 @@
             card.setAttribute("aria-pressed", "false");
             buttons.set(entry.id, card);
             const spec = { key: `node:${path}/${entry.id}`, name: info.name, target: wrap,
-              selection: value, actions: () => cardActions(info.card, null) };
+              selection: value, actions: () => cardActions(info.card, null, scope) };
             if (spec.actions().length) {
               makeMore(add(wrap, "div", "research-snode-tools"), spec, lower);
               card.setAttribute("aria-keyshortcuts", "Shift+F10");
               attachMenu(wrap, card, spec, lower);
             }
             if (!ancestors.has(info.card.id) && (children(info.card.id, nodes).length || options.getStoredDiagram?.(info.card.id))) {
-              const drill = button(wrap, "打开模块图 ↗", () => options.onStructureBranch?.(info.card.id), "research-snode-drill");
+              const drill = button(wrap, "打开模块图 ↓", () => options.onStructureBranch?.(info.card.id, scope), "research-snode-drill");
+              drill.dataset.openModule = info.card.id;
               drill.setAttribute("aria-label", `打开「${info.name}」的模块图`);
               inlineToggle(target, wrap, info, `${path}/${entry.id}`, ancestors, pending);
             }
@@ -1578,14 +1584,15 @@
           }
           const spec = { key: `node:${entry.id}`, name: info.name, target: wrap, trigger: null, selection: { kind: "node", id: entry.id },
             actions: () => cardActions(info.card, canMove ? { up: order().indexOf(entry.id) > 0 ? () => place(-1) : null,
-              down: order().indexOf(entry.id) < order().length - 1 ? () => place(1) : null } : null) };
+              down: order().indexOf(entry.id) < order().length - 1 ? () => place(1) : null } : null, scope) };
           if (spec.actions().length) {
             makeMore(tools, spec);
             control.setAttribute("aria-keyshortcuts", "Shift+F10");
             attachMenu(wrap, control, spec);
           }
           if (hasModule) {
-            const open = button(wrap, "打开模块图 ↗", () => options.onStructureBranch?.(info.card.id), "research-snode-drill");
+            const open = button(wrap, "打开模块图 ↓", () => options.onStructureBranch?.(info.card.id, scope), "research-snode-drill");
+            open.dataset.openModule = info.card.id;
             open.setAttribute("aria-label", `打开「${info.name}」的模块图`);
             open.dataset.focusKey = `d:${entry.id}`;
             inlineToggle(surface, wrap, info, `/${entry.id}`, new Set([scope]));
@@ -1623,23 +1630,26 @@
       const was = aside.classList.contains("is-open");
       aside.classList.toggle("is-open", open);
       section.classList.toggle("has-sheet", open);
-      sheetScope = open ? scope : null;
+      mounted.sheetOpen = open;
       if (!open && was && restore) {
         const back = opener?.isConnected ? opener : buttons.get(structureSelection?.id);
         back?.focus({ preventScroll: true });
       }
     };
+    mounted.closeSheet = () => setSheet(false, false);
     const closeSheet = button(bar, "✕", () => setSheet(false, true), "research-structure-pane-close");
     closeSheet.setAttribute("aria-label", "关闭卡片详情");
     closeSheet.title = "关闭详情（Esc）";
     const detail = add(aside, "div", "research-structure-detail");
     detail.setAttribute("aria-live", "polite");
-    paneEffects = new AbortController();
-    const { signal } = paneEffects;
+    mounted.effects = new AbortController();
+    const { signal } = mounted.effects;
     let fitting = false;
     const fitPane = () => {
       if (narrowQuery?.matches || !layout.isConnected) return;
-      const top = Math.max(12, layout.getBoundingClientRect().top);
+      const stacked = workspace.childElementCount > 1;
+      if (stacked && aside.style.getPropertyValue("--structure-pane-height")) return;
+      const top = stacked ? 128 : Math.max(12, layout.getBoundingClientRect().top);
       aside.style.setProperty("--structure-pane-height", `${Math.max(148, Math.floor(window.innerHeight - top - 12))}px`);
     };
     const scheduleFit = () => {
@@ -1681,13 +1691,13 @@
       }
       selectedSurface = target;
       showSelection = emphasize;
-      structureSelection = { ...value, scope: model.key };
-      handoffCard = value.kind === "link" ? model.links.find(link => link.from === value.from && link.to === value.to)?.evidence || null
+      mounted.selection = structureSelection = { ...value, scope: model.key };
+      mounted.card = value.kind === "link" ? model.links.find(link => link.from === value.from && link.to === value.to)?.evidence || null
         : value.cardId || model.info.get(value.id)?.card.id || null;
       for (const [id, control] of buttons) {
         control.setAttribute("aria-pressed", String(value.kind === "node" && value.id === id));
       }
-      renderStructureDetail(detail, model, nodes);
+      renderStructureDetail(detail, model, nodes, structureSelection, scope);
       const name = detail.querySelector("h3")?.textContent.trim();
       barTitle.textContent = name ? `卡片详情 · ${name}` : "卡片详情";
       aside.setAttribute("aria-label", barTitle.textContent);
@@ -1701,12 +1711,15 @@
       aside.scrollTop = 0;
       highlight(previousSurface);
       if (target !== previousSurface) highlight(target);
-      if (emphasize) options.onFocus?.(handoffCard);
+      if (emphasize) {
+        if (mounted === currentEntry) handoffCard = mounted.card;
+        options.onFocus?.(mounted.card, scope);
+      }
     }
     model.select = (value, emphasize, openDetails) => selectOn(surface, value, emphasize, openDetails);
     const linkedSelection = structureSelection?.kind === "link" && structureSelection.scope === scope && model.links.find(link =>
-      link.from === structureSelection.from && link.to === structureSelection.to && (link.evidence || null) === handoffCard);
-    const selectedCard = nodes.find(node => node.id === (handoffCard || (compact ? scope : null)) && node.id !== "board");
+      link.from === structureSelection.from && link.to === structureSelection.to && (link.evidence || null) === mounted.card);
+    const selectedCard = nodes.find(node => node.id === (mounted.card || (compact ? scope : null)) && node.id !== "board");
     const ancestors = selectedCard ? pathFor(selectedCard.id, nodes).reverse() : [];
     const mapped = ancestors.map(ancestor => [...model.info.values()].find(info => info.card.id === ancestor.id)).find(Boolean);
     const relations = model.links.length && add(section, "details", "research-sources research-proof research-structure-relations");
@@ -1731,19 +1744,19 @@
       add(details, "summary", "", `其他资料 · ${other.length} 张`);
       const list = add(details, "ul", "research-structure-relation-list");
       for (const card of other) {
-        labelled(button(add(list, "li"), "", () => options.onStructureBranch?.(card.id), "research-card-title"), card);
+        labelled(button(add(list, "li"), "", () => options.onStructureBranch?.(card.id, scope), "research-card-title"), card);
       }
     }
     const selection = linkedSelection ? structureSelection : selectedCard
       ? { kind: "node", id: mapped?.node.id, cardId: selectedCard.id }
       : { kind: "node", id: model.zones[0].nodes[0].id };
     model.select(selection, false);
-    if (narrowQuery?.matches && sheetScope === scope) {
+    if (narrowQuery?.matches && mounted.sheetOpen) {
       setSheet(true);
       aside.scrollTop = 0;
     }
     const camera = structureCamera(scroller, world, stage, controls, scope);
-    currentCamera = camera;
+    mounted.camera = camera;
     const paint = target => {
       drawStructure(target.chart, target.layer, target.model, target.buttons, camera.scale());
       highlight(target);
@@ -1757,28 +1770,36 @@
     };
     redraw();
     for (const restore of restoreExpansions) restore();
-    if (!diagramViews.has(scope) && handoffCard && selectedCard?.opinionChild && mapped?.card.id === handoffCard) {
-      revealDiagramCard(handoffCard, false);
+    if (!diagramViews.has(scope) && mounted.card && selectedCard?.opinionChild && mapped?.card.id === mounted.card) {
+      revealDiagramCard(mounted.card, false);
     }
     if (typeof ResizeObserver === "function") {
-      structureObserver = new ResizeObserver(() => { if (stage.isConnected) redraw(); });
-      structureObserver.observe(stage);
-      structureObserver.observe(scroller);
+      mounted.observer = new ResizeObserver(() => { if (stage.isConnected) redraw(); });
+      mounted.observer.observe(stage);
+      mounted.observer.observe(scroller);
     }
     document.fonts?.ready?.then(() => { if (stage.isConnected) redraw(); });
     // Keep the page position and keyboard focus when the current module is re-rendered.
     if (savedY != null && window.scrollY !== savedY) window.scrollTo(window.scrollX, savedY);
     fitPane();
     if (restoreKey) focusByKey(section, restoreKey)?.focus({ preventScroll: true });
-    savedY = restoreKey = pendingFocus = null;
+    savedY = restoreKey = mounted.pendingFocus = null;
   }
-  narrowQuery?.addEventListener?.("change", () => { sheetScope = null; if (active && view === "structure") render(); });
+  narrowQuery?.addEventListener?.("change", () => {
+    if (!active) return;
+    for (const entry of entries.values()) {
+      entry.closeSheet?.();
+      entry.signature = null;
+    }
+    options.onResize?.();
+  });
 
   function render(preferStructure = false) {
     if (!container || !active) return;
+    const mounted = currentEntry;
     closeMenu(false);
-    structureObserver?.disconnect();
-    paneEffects?.abort();
+    mounted.observer?.disconnect();
+    mounted.effects?.abort();
     const nodes = items();
     let node = nodes.find(item => item.id === rootId);
     let removed = false;
@@ -1790,10 +1811,11 @@
     }
     const oldScroller = container.querySelector(".research-structure-scroll");
     const previousScope = oldScroller?.closest("[data-diagram-root]")?.dataset.diagramRoot;
-    if (previousScope && currentCamera) diagramViews.set(previousScope, currentCamera.read());
-    currentCamera = null;
+    if (previousScope && mounted.camera) diagramViews.set(previousScope, mounted.camera.read());
+    mounted.camera = null;
+    mounted.closeSheet = null;
     savedY = previousScope === rootId ? window.scrollY : null;
-    restoreKey = pendingFocus || (previousScope === rootId && container.contains(document.activeElement)
+    restoreKey = mounted.pendingFocus || (previousScope === rootId && container.contains(document.activeElement)
       ? document.activeElement.dataset?.focusKey || null : null);
     container.replaceChildren();
     const path = node ? pathFor(node.id, nodes) : [];
@@ -1803,14 +1825,14 @@
     container.classList.toggle("research-compact", compact);
     if (compact) view = "structure";
     /* The path starts at the real or virtual root, so a single root is never listed twice. */
-    if (path.length > 1) {
+    if (path.length > 1 && mounted.first) {
       const breadcrumb = add(container, "nav", "research-breadcrumb");
       breadcrumb.setAttribute("aria-label", "阅读路径");
       const trail = !compact ? path : path.length > 3 ? [path[0], path.at(-2)] : path.slice(0, -1);
       trail.forEach((item, index) => {
         if (index) add(breadcrumb, "span", "research-muted", "›").setAttribute("aria-hidden", "true");
         const link = button(breadcrumb, title(item), () => {
-          if (view === "structure") options.onStructureBranch?.(item.id);
+          if (mounted.panel === "structure") options.onStructureNavigate?.(item.id);
           else enter(item.id);
         }, "research-path-button");
         if (item.id === rootId) link.setAttribute("aria-current", "page");
@@ -1831,13 +1853,12 @@
     if (lead) add(intro, "p", mode ? "research-lead" : "research-muted", lead);
     if (mode && feature && !compact) add(intro, "p", "research-muted research-small", `适合：${feature.audience}`);
     const controls = add(heading, "div", "research-heading-actions");
-    placeProjectTools(compact ? controls : undefined);
     if (view !== "structure" && mode && typeof options.onAsk === "function" && (mode.kind === "feature" || mode.kind === "scene")) {
       button(controls, mode.kind === "feature" ? "问这项功能" : "问这个场景",
         () => options.onAsk(node.id), "research-button research-ask");
     }
-    if (path.length > 1 && !compact) button(controls, "返回上一级", () => {
-      if (view === "structure") options.onStructureBranch?.(path.at(-2).id);
+    if (path.length > 1 && !compact && mounted.first) button(controls, "返回上一级", () => {
+      if (mounted.panel === "structure") options.onStructureNavigate?.(path.at(-2).id);
       else enter(path.at(-2).id);
     });
     if (view !== "structure" && !options.getStructure?.()) button(controls, "编辑画布", () => options.onLocate?.(node?.id));
@@ -1868,15 +1889,16 @@
     const tabs = available.length > 1 ? add(container, "nav", "research-tabs") : null;
     tabs?.setAttribute("aria-label", "阅读视图");
     tabs?.setAttribute("role", "tablist");
+    const suffix = mounted.first ? "" : "-" + node.id;
     for (const id of tabs ? available : []) {
       const tab = button(tabs, labels[id], () => {
-        options.onPanel?.(id);
-        container.querySelector('[aria-selected="true"]')?.focus({ preventScroll: true });
+        options.onPanel?.(id, mounted.root);
+        mounted.body.querySelector('[aria-selected="true"]')?.focus({ preventScroll: true });
       }, "research-tab");
-      tab.id = `research-tab-${id}`;
+      tab.id = `research-tab-${id}${suffix}`;
       tab.setAttribute("role", "tab");
       tab.setAttribute("aria-selected", String(id === view));
-      tab.setAttribute("aria-controls", "research-content");
+      tab.setAttribute("aria-controls", `research-content${suffix}`);
       tab.tabIndex = id === view ? 0 : -1;
       tab.addEventListener("keydown", event => {
         if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -1889,10 +1911,10 @@
       });
     }
     const content = add(container, "div", "research-content");
-    content.id = "research-content";
+    content.id = `research-content${suffix}`;
     if (tabs) {
       content.setAttribute("role", "tabpanel");
-      content.setAttribute("aria-labelledby", `research-tab-${view}`);
+      content.setAttribute("aria-labelledby", `research-tab-${view}${suffix}`);
     } else content.classList.add("research-content-plain");
     if (view === "structure") renderStructure(content, nodes, structure);
     else if (view === "board" && mode) renderReading(content, node, nodes, mode, lead);
@@ -1929,8 +1951,8 @@
   }
   function init(settings) {
     options = settings;
-    container = document.getElementById("research-workspace");
-    if (!container) return;
+    workspace = document.getElementById("research-workspace");
+    if (!workspace) return;
     if (!initialized) {
       const dialog = add(document.body, "dialog", "research-image-dialog");
       dialog.id = "research-image-dialog";
@@ -1944,30 +1966,114 @@
   }
   const projection = () => ({ readingRoot: rootId, panel: view, card: handoffCard });
   const contentSignature = nodes => JSON.stringify([nodes, options.getStructure?.(), options.getModuleDiagrams?.()]);
-  function show(reader, preferStructure) {
+  function activate(id) {
+    const entry = entries.get(id);
+    if (!entry?.el.isConnected) return;
+    if (currentEntry !== entry) {
+      currentEntry?.closeSheet?.();
+      currentEntry?.el.classList.remove("is-active");
+    }
+    currentEntry = entry;
+    entry.el.classList.add("is-active");
+    container = entry.body;
+    rootId = entry.root;
+    view = entry.panel;
+    handoffCard = entry.card;
+  }
+  function moduleEntry(id) {
+    let entry = entries.get(id);
+    if (!entry) {
+      const el = document.createElement("article");
+      el.className = "research-module-board";
+      el.dataset.moduleRoot = id || "";
+      const bridge = add(el, "nav", "research-module-bridge");
+      bridge.setAttribute("aria-label", "模块路径");
+      const body = add(el, "div", "research-module-content");
+      entry = { root: id, panel: "structure", card: null, el, bridge, body };
+      entries.set(id, entry);
+    }
+    return entry;
+  }
+  function updateModuleGuides(ordered, byId) {
+    ordered.forEach((entry, index) => {
+      const { bridge, body } = entry;
+      const above = ordered[index - 1];
+      const below = ordered[index + 1];
+      const name = byId.get(entry.root);
+      if (name) entry.el.setAttribute("aria-label", `模块图 · ${title(name)}`);
+      bridge.hidden = !above;
+      bridge.replaceChildren();
+      if (above) {
+        const parent = byId.get(above.root);
+        button(bridge, `↑ ${title(parent)}`, () => options.onStructureNavigate?.(above.root), "research-path-button");
+        add(bridge, "span", "research-module-arrow", "↓").setAttribute("aria-hidden", "true");
+        button(bridge, title(name), () => options.onStructureNavigate?.(entry.root), "research-path-button research-module-destination");
+      }
+      for (const control of body.querySelectorAll("[data-open-module]")) {
+        const follows = below?.root === control.dataset.openModule;
+        control.textContent = follows ? "跳到模块图 ↓" : "打开模块图 ↓";
+        control.classList.toggle("is-followed", follows);
+      }
+    });
+  }
+  function show(reader, preferStructure, path = []) {
     active = true;
-    rootId = reader.readingRoot;
-    view = views.includes(reader.panel) ? reader.panel : "board";
-    handoffCard = reader.card;
-    render(preferStructure);
+    const nodes = items();
+    const byId = new Map(nodes.map(node => [node.id, node]));
+    const selected = byId.has(reader.readingRoot) ? reader.readingRoot
+      : [...lastPath].reverse().find(id => byId.has(id)) || structureRoot(nodes) || nodes[0]?.id || null;
+    const roots = path.includes(selected) ? path.filter(id => byId.has(id)) : [selected];
+    const ordered = roots.map(moduleEntry);
+    for (const el of [...workspace.children]) {
+      if (!ordered.some(entry => entry.el === el)) el.remove();
+    }
+    ordered.forEach((entry, index) => {
+      if (workspace.children[index] !== entry.el) workspace.insertBefore(entry.el, workspace.children[index] || null);
+    });
+    const nextSignature = contentSignature(nodes);
+    for (const entry of ordered) {
+      const isSelected = entry.root === selected;
+      const panel = isSelected && views.includes(reader.panel) ? reader.panel : "structure";
+      const card = isSelected && reader.card != null ? reader.card : entry.card;
+      const first = entry === ordered[0];
+      if (entry.signature === nextSignature && entry.panel === panel && entry.card === card && entry.first === first) continue;
+      entry.panel = panel;
+      entry.card = card;
+      entry.first = first;
+      activate(entry.root);
+      render(preferStructure);
+      entry.panel = view;
+      entry.signature = nextSignature;
+    }
+    activate(selected);
+    updateModuleGuides(ordered, byId);
+    const first = ordered[0]?.body;
+    placeProjectTools(first?.classList.contains("research-compact") ? first.querySelector(".research-heading-actions") : undefined);
+    signature = nextSignature;
     return projection();
   }
   function hide() {
     active = false;
     closeMenu(false);
-    paneEffects?.abort();
     placeProjectTools();
-    structureObserver?.disconnect();
+    for (const entry of entries.values()) {
+      if (entry.camera && entry.el.isConnected) diagramViews.set(entry.root, entry.camera.read());
+      entry.observer?.disconnect();
+      entry.effects?.abort();
+    }
+    workspace.replaceChildren();
+    entries.clear();
+    currentEntry = container = null;
   }
   function refresh(nodes) {
-    if (active && contentSignature(nodes) !== signature) {
-      render();
-      return projection();
-    }
+    if (!active || (currentEntry?.signature != null && contentSignature(nodes) === signature)) return;
+    return show(projection(), false, [...workspace.children].map(el => el.dataset.moduleRoot));
   }
-  function focusHeading() {
+  function openPath() { return [...workspace.children].map(el => el.dataset.moduleRoot).filter(Boolean); }
+  function focusHeading(smooth = false) {
     container.querySelector("h2")?.focus({ preventScroll: true });
-    container.scrollIntoView({ block: "start", behavior: "instant" });
+    currentEntry.el.scrollIntoView({ block: "start",
+      behavior: smooth && !window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "smooth" : "instant" });
   }
   function revealDiagramCard(id, focus = true) {
     const frame = container.querySelector(".research-structure-scroll");
@@ -1979,6 +2085,7 @@
     if (card.top < view.top || card.bottom > view.bottom) frame.scrollTop += (card.top + card.bottom - view.top - view.bottom) / 2;
     if (focus) button.focus({ preventScroll: true });
   }
-  window.BoardResearch = { init, show, hide, refresh, items, focusHeading, revealDiagramCard, structureRoot,
+  window.BoardResearch = { init, show, hide, refresh, items, focusHeading, revealDiagramCard, structureRoot, activate,
+    cardAt: id => entries.get(id)?.card, openPath,
     get active() { return active; } };
 })();

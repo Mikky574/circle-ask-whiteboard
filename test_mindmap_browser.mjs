@@ -916,7 +916,8 @@ async function structureWorkspaceEditing() {
       ], links,
     } };
   for (const width of [1480, 500]) {
-    const isolated = await browser.newContext({ viewport: { width, height: 1000 }, hasTouch: width < 760, serviceWorkers: "block" });
+    const isolated = await browser.newContext({ viewport: { width, height: 1000 }, hasTouch: width < 760, serviceWorkers: "block",
+      reducedMotion: "reduce" });
     isolated.setDefaultTimeout(12000);
     const caseName = `structure-workspace-${width}`;
     await isolated.addCookies([{ name: "mindmap-case", value: caseName, url: origin }]);
@@ -927,10 +928,11 @@ async function structureWorkspaceEditing() {
       page = await isolated.newPage();
       page.on("pageerror", error => errors.push(error.message));
       await page.goto(`${origin}/?board=${boardId}&view=canvas`);
-      const entry = page.locator('.research-snode[data-node="continue"]');
+      const overview = page.locator('.research-module-board[data-module-root="E04"] .research-structure');
+      const graph = page.locator(".research-module-board.is-active .research-structure");
+      const entry = overview.locator('.research-snode[data-node="continue"]');
       const branch = entry.locator("..");
-      const node = id => page.locator(`.research-snode[data-card-id="${id}"]`).first();
-      const graph = page.locator(".research-structure");
+      const node = id => graph.locator(`.research-snode[data-card-id="${id}"]`).first();
       const menu = page.getByRole("menu");
       const drawer = page.locator("#project-card-drawer");
       await entry.waitFor();
@@ -1010,12 +1012,55 @@ async function structureWorkspaceEditing() {
         await page.keyboard.press("Escape");
         await inspector.waitFor({ state: "hidden" });
       }
-      await branch.locator(".research-snode-drill").click();
+      await overview.evaluate(element => { element.dataset.retainedForTest = "original"; });
+      await camera.getByRole("button", { name: "放大画布" }).click();
+      const opening = branch.locator(".research-snode-drill");
+      await opening.scrollIntoViewIfNeeded();
+      const oldLayout = await geometry();
+      const oldDetail = await inspector.textContent();
+      await opening.click();
       await node("E42").waitFor();
+      assert.equal(await page.locator(".research-module-board").count(), 2);
+      assert.equal(await overview.getAttribute("data-retained-for-test"), "original");
+      assert.equal(await overview.locator(".research-structure-detail").textContent(), oldDetail);
+      assert.equal(await overview.getByRole("button", { name: "120%", exact: true }).count(), 1);
+      const savedCamera = await overview.locator(".research-structure-scroll").evaluate(el => ({ x: el.scrollLeft, y: el.scrollTop }));
+      assert.deepEqual(savedCamera, { x: oldLayout.left, y: oldLayout.top });
+      assert.equal(new URL(page.url()).searchParams.get("trail"), "E04.E41");
+      assert.equal(await page.evaluate(() => document.activeElement?.matches(".research-module-board.is-active h2")), true);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollHeight > innerHeight));
+      const connector = page.locator('.research-module-board[data-module-root="E41"] .research-module-bridge');
+      await connector.getByRole("button", { name: "↑ 同一个项目" }).click();
+      assert.equal(await graph.getAttribute("data-diagram-root"), "E04");
+      assert.equal(await page.locator(".research-module-board").count(), 2);
+      assert.equal(await opening.textContent(), "跳到模块图 ↓");
+      await opening.click();
+      assert.equal(await page.locator(".research-module-board").count(), 2, "Reopening reuses the mounted child");
+      await page.goBack();
+      assert.equal(await graph.getAttribute("data-diagram-root"), "E04");
+      assert.equal(await page.locator(".research-module-board").count(), 1);
+      await page.goForward();
+      assert.equal(await page.locator(".research-module-board").count(), 2);
       assert.equal(await graph.getAttribute("data-diagram-root"), "E41");
+      await camera.getByRole("button", { name: "放大画布" }).click();
+      const another = overview.locator('.research-snode[data-card-id="E40"]').locator("..").locator(".research-snode-drill");
+      await another.click();
+      assert.equal(new URL(page.url()).searchParams.get("trail"), "E04.E40");
+      assert.equal(await page.locator('.research-module-board[data-module-root="E41"]').count(), 0);
+      await opening.click();
+      assert.equal(new URL(page.url()).searchParams.get("trail"), "E04.E41");
+      assert.equal(await scale.textContent(), "120%", "A reopened alternative restores its camera");
+      await scale.click();
       assert.equal(await graph.locator(".research-subtree").count(), 0);
       assert.equal(await graph.locator(".research-edge").count(), 1, "An explicit flow supplies one relation in the module");
       assert.equal(await graph.locator(".research-structure-lines").isVisible(), true, "The graph itself is available on narrow screens");
+      if (width > 760) {
+        await frame.hover();
+        const scrollBefore = await frame.evaluate(el => ({ inner: el.scrollTop, outer: scrollY }));
+        await page.mouse.wheel(0, -160);
+        await page.waitForFunction(outer => scrollY < outer, scrollBefore.outer);
+        assert.equal(await frame.evaluate(el => el.scrollTop), scrollBefore.inner, "Vertical wheel scrolls the page in a stack");
+      }
       assert.equal(await page.locator("#viewport").isVisible(), false);
       await flush();
       assert.equal(records.get(boardId).revision, 1, "Drilling into a module does not write");
