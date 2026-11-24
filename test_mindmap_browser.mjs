@@ -883,7 +883,22 @@ async function structureWorkspaceEditing() {
     { id: "E42", parentId: "E41", title: "原分支中的证据", category: "reference" },
     { id: "E43", parentId: "E42", title: "第五级验收", category: "reference" },
     { id: "E44", parentId: "E41", title: "局部流程终点", category: "reference" },
-    { id: "E50", parentId: "E04", title: "同区另一张卡", category: "reference" },
+    { id: "E50", parentId: "E04", title: "同区另一张卡", category: "reference", experiment: {
+      version: 1, question: "同一批样本的结果如何？",
+      comparison: {
+        metrics: [
+          { label: "准确率", direction: "higher" },
+          { label: "召回率", direction: "higher" },
+          { label: "绝对误差", direction: "lower" },
+        ],
+        arms: [
+          { id: "base", label: "原方案", values: [0.6, 0.5, 0.4] },
+          { id: "main", label: "主方案", values: [0.75, 0.65, 0.3] },
+          { id: "extra", label: "次方案", values: [0.7, 0.6, 0.35] },
+        ],
+        baseline: "base", primary: "main", caveat: "只用于本批样本。",
+      },
+    } },
   ].map(item => ({ ...item, summary: item.title + "。" }));
   const positions = { E04: { x: 80, y: 90, width: 300 } };
   const links = [{ from: "start", to: "continue", label: "继续", evidence: "E42" },
@@ -928,6 +943,7 @@ async function structureWorkspaceEditing() {
       await entry.click();
       const inspector = graph.locator(".research-structure-detail");
       await inspector.getByRole("heading", { name: "原卡工作", exact: true }).waitFor();
+      assert.equal(await inspector.getByText("原卡工作。", { exact: true }).isVisible(), true);
       assert.equal(new URL(page.url()).searchParams.get("focusCard"), "E41");
       assert.deepEqual(await geometry(), beforeSelection, "Inspecting a card keeps the graph anchored");
       if (width > 760) {
@@ -937,6 +953,35 @@ async function structureWorkspaceEditing() {
         await inspector.waitFor({ state: "hidden" });
         assert.equal(await entry.evaluate(element => document.activeElement === element), true);
         assert.deepEqual(await geometry(), beforeSelection, "Closing the sheet keeps the graph anchored");
+      }
+      const experiment = node("E50");
+      await experiment.scrollIntoViewIfNeeded();
+      const beforeExperiment = await geometry();
+      await experiment.click();
+      const metrics = inspector.locator(".research-key-metric");
+      await metrics.first().waitFor();
+      assert.equal(await metrics.count(), 2, "The experiment preview shows the first two metrics");
+      const fullTable = inspector.locator(".research-table-wrap table");
+      const tableDisclosure = fullTable.locator("xpath=ancestor::details[1]").locator("summary");
+      const longText = inspector.getByText("同区另一张卡。", { exact: true });
+      const descriptionDisclosure = longText.locator("xpath=ancestor::details[1]").locator("summary");
+      assert.equal(await fullTable.isVisible(), false);
+      assert.equal(await longText.isVisible(), false);
+      await tableDisclosure.click();
+      await fullTable.waitFor();
+      await descriptionDisclosure.click();
+      await longText.waitFor();
+      const method = inspector.getByRole("combobox", { name: "对照方法" });
+      await method.focus();
+      await method.selectOption("extra");
+      assert.equal(await method.evaluate(element => element === document.activeElement), true);
+      assert.equal(await metrics.first().locator("strong").textContent(), "0.700");
+      assert.equal(await fullTable.isVisible(), true, "Changing the comparison keeps the full table open");
+      assert.equal(await longText.isVisible(), true, "Changing the comparison keeps the description open");
+      assert.deepEqual(await geometry(), beforeExperiment, "Reading experimental evidence keeps the graph anchored");
+      if (width <= 760) {
+        await page.keyboard.press("Escape");
+        await inspector.waitFor({ state: "hidden" });
       }
       await branch.locator(".research-snode-drill").click();
       await node("E42").waitFor();

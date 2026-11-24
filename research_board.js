@@ -156,23 +156,33 @@
     image(element, file);
     add(element, "figcaption", "", `${node.id} · ${title(node)} · ${file.name}`);
   }
-  function renderComparison(parent, node) {
+  function currentArm(node) {
     const data = experiment(node).comparison;
+    if (!data) return null;
+    const candidates = data.arms.filter(arm => arm.id !== data.baseline);
+    const selected = selectedArms.get(node.id);
+    return {
+      data, candidates,
+      candidate: candidates.find(arm => arm.id === selected) || candidates.find(arm => arm.id === data.primary),
+      baseline: data.arms.find(arm => arm.id === data.baseline),
+    };
+  }
+  /* `opts.bare` (structure detail): the key metrics, finding and caveat live above the
+     fold, so only the selector and the full table are drawn; `opts.onChange` refreshes them. */
+  function renderComparison(parent, node, opts = {}) {
+    const { data, candidates, candidate, baseline } = currentArm(node) || {};
     if (!data) return;
     const section = add(parent, "section", "research-comparison");
     section.setAttribute("aria-label", data.title || "实验对照");
     const heading = add(section, "div", "research-comparison-heading");
-    const intro = add(heading, "div");
-    add(intro, "h3", "", data.title || "实验对照");
-    if (data.cohort) add(intro, "p", "research-muted research-small", data.cohort);
+    if (!opts.bare || data.cohort) {
+      const intro = add(heading, "div");
+      if (!opts.bare) add(intro, "h3", "", data.title || "实验对照");
+      if (data.cohort) add(intro, "p", "research-muted research-small", data.cohort);
+    }
     const selector = add(heading, "label", "research-selector", "对照方法");
     const select = add(selector, "select");
     select.setAttribute("aria-label", "对照方法");
-    const candidates = data.arms.filter(arm => arm.id !== data.baseline);
-    const selected = selectedArms.get(node.id);
-    const candidate = candidates.find(arm => arm.id === selected) ||
-      candidates.find(arm => arm.id === data.primary);
-    const baseline = data.arms.find(arm => arm.id === data.baseline);
     for (const arm of candidates) {
       const option = new Option(`${arm.label} · ${arm.id === data.primary ? "主对照" : "次要对照"}`, arm.id);
       select.append(option);
@@ -180,25 +190,32 @@
     select.value = candidate.id;
     select.addEventListener("change", () => {
       selectedArms.set(node.id, select.value);
+      if (opts.bare) {
+        data.arms.forEach((arm, index) => { body.rows[index].dataset.current = String(arm.id === select.value); });
+        opts.onChange?.();
+        return;
+      }
       const index = [...parent.children].indexOf(section);
       section.remove();
-      renderComparison(parent, node);
+      renderComparison(parent, node, opts);
       const updated = parent.lastElementChild;
       if (index < parent.children.length - 1) parent.insertBefore(updated, parent.children[index]);
       updated.querySelector("select").focus({ preventScroll: true });
     });
-    const metrics = add(section, "div", "research-metrics");
-    metrics.setAttribute("aria-live", "polite");
-    data.metrics.forEach((metric, index) => {
-      const box = add(metrics, "div", "research-metric");
-      add(box, "span", "research-muted research-small", `${metric.label} · ${metric.direction === "higher" ? "越高越好" : "越低越好"}`);
-      add(box, "strong", "", format(candidate.values[index]));
-      add(box, "p", "research-muted research-small", `基线 ${format(baseline.values[index])} → ${format(candidate.values[index])}`);
-    });
-    if (candidate.id === data.primary && data.finding) add(section, "p", "research-finding", data.finding);
-    else if (candidate.id !== data.primary) add(section, "p", "research-finding",
-      `当前查看次要对照「${candidate.label}」，本实验的主对照为「${data.arms.find(arm => arm.id === data.primary).label}」。`);
-    if (data.caveat) add(section, "p", "research-caveat", data.caveat);
+    if (!opts.bare) {
+      const metrics = add(section, "div", "research-metrics");
+      metrics.setAttribute("aria-live", "polite");
+      data.metrics.forEach((metric, index) => {
+        const box = add(metrics, "div", "research-metric");
+        add(box, "span", "research-muted research-small", `${metric.label} · ${metric.direction === "higher" ? "越高越好" : "越低越好"}`);
+        add(box, "strong", "", format(candidate.values[index]));
+        add(box, "p", "research-muted research-small", `基线 ${format(baseline.values[index])} → ${format(candidate.values[index])}`);
+      });
+      if (candidate.id === data.primary && data.finding) add(section, "p", "research-finding", data.finding);
+      else if (candidate.id !== data.primary) add(section, "p", "research-finding",
+        `当前查看次要对照「${candidate.label}」，本实验的主对照为「${data.arms.find(arm => arm.id === data.primary).label}」。`);
+      if (data.caveat) add(section, "p", "research-caveat", data.caveat);
+    }
     const wrap = add(section, "div", "research-table-wrap");
     const table = add(wrap, "table");
     table.setAttribute("aria-label", "同一评估名单的实验对照数据");
@@ -791,10 +808,90 @@
       group.addEventListener("click", () => model.select({ kind: "link", from: edge.link.from, to: edge.link.to }));
     }
   }
-  function cardReading(parent, card, nodes) {
+  /* A card is an experiment only through its structured record, never through attachments alone. */
+  const briefLimit = 72;
+  function brief(text) {
+    if (text.length <= briefLimit) return text;
+    const sentence = firstSentence(text);
+    if (sentence.length <= briefLimit) return sentence;
+    return `${Array.from(text).slice(0, briefLimit).join("").trimEnd()}…`;
+  }
+  /* Structure-board experiment detail: key numbers and evidence thumbnails first, long text on demand. */
+  function renderExperimentFirst(parent, node, nodes, record, feature, diagramNote) {
+    const data = record.comparison;
+    const caveats = [record.caveat, data?.caveat].filter((text, index, list) => text && list.findIndex(other => same(other, text)) === index);
+    const key = data || record.metricSummary ? add(parent, "section", "research-key") : null;
+    key?.setAttribute("aria-label", data ? "关键对比" : "指标摘要");
+    key?.setAttribute("aria-live", "polite");
+    const pictures = images(node);
+    if (pictures.length) {
+      add(parent, "p", "research-proof-label", "证据图片");
+      const strip = add(parent, "div", "research-thumbs");
+      strip.setAttribute("role", "group");
+      strip.setAttribute("aria-label", `证据图片，共 ${pictures.length} 张`);
+      for (const file of pictures) image(strip, file, true);
+    }
+    const findings = data || record.finding || caveats.length ? add(parent, "div", "research-key") : null;
+    const paint = () => {
+      key?.replaceChildren();
+      findings?.replaceChildren();
+      const arm = currentArm(node);
+      let finding = record.finding;
+      if (arm) {
+        const { candidate, baseline } = arm;
+        const primary = candidate.id === data.primary;
+        add(key, "p", "research-muted research-small research-key-arm",
+          `对照：${candidate.label}${primary ? "（主对照）" : "（次要对照）"} · 基线：${baseline.label}`);
+        const grid = add(key, "div", "research-key-metrics");
+        data.metrics.slice(0, 2).forEach((metric, index) => {
+          const box = add(grid, "div", "research-key-metric");
+          add(box, "span", "research-muted research-small", `${metric.label} · ${metric.direction === "higher" ? "越高越好" : "越低越好"}`);
+          add(box, "strong", "", format(candidate.values[index]));
+          add(box, "span", "research-muted research-small", `基线 ${format(baseline.values[index])}`);
+        });
+        finding = primary ? data.finding || record.finding : "";
+      } else if (record.metricSummary) add(key, "p", "research-inline-metric", brief(record.metricSummary));
+      if (finding) add(findings, "p", "research-finding", brief(finding));
+      for (const text of caveats) add(findings, "p", "research-caveat", `限定：${brief(text)}`);
+    };
+    paint();
+    const extra = [];
+    const note = (label, text) => { if (text && !extra.some(item => same(item[1], text))) extra.push([label, text]); };
+    const text = fullText(node);
+    note("实验问题", record.question);
+    if (text && !same(text, record.question)) note("", text);
+    note("图上说明", diagramNote);
+    if (data || record.metricSummary?.length > briefLimit) note("指标摘要", record.metricSummary);
+    if (data || record.finding?.length > briefLimit) note("结论", record.finding);
+    note("主对照结论", data?.finding);
+    for (const item of caveats) if (item.length > briefLimit) note("限定全文", item);
+    note("类型", record.kind);
+    const files = attachments(node).filter(file => !pictures.some(picture => picture.id === file.id));
+    if (extra.length || files.length || feature) {
+      const details = add(parent, "details", "research-sources research-proof research-experiment-notes");
+      add(details, "summary", "", `实验说明${files.length ? ` · ${files.length} 个附件` : ""}`);
+      for (const [label, value] of extra) add(details, "p", "research-description", label ? `${label}：${value}` : value);
+      if (feature) factRows(add(details, "section", "research-facts"), feature, factKeys);
+      renderAttachments(details, node);
+    }
+    if (data) {
+      const table = add(parent, "details", "research-sources research-proof research-experiment-table");
+      add(table, "summary", "", `完整对照表 · ${data.metrics.length} 项指标 · ${data.arms.length} 种方法`);
+      const body = add(table, "div");
+      renderComparison(body, node, { bare: true, onChange: paint });
+    }
+    renderEvidence(parent, node, children(node.id, nodes).filter(item => item.codePreview));
+  }
+  function cardReading(parent, card, nodes, diagramNote) {
     const feature = capability(card);
-    const lead = feature?.outcome || experiment(card).question || "";
+    const record = experiment(card);
+    if (record.comparison || ["kind", "question", "metricSummary", "finding", "caveat"].some(key => record[key])) {
+      renderExperimentFirst(parent, card, nodes, record, feature, diagramNote);
+      return;
+    }
+    const lead = feature?.outcome || "";
     const text = fullText(card);
+    if (diagramNote) add(parent, "p", "research-muted", diagramNote);
     if (lead) add(parent, "p", "research-lead", lead);
     if (text && !same(text, lead)) add(parent, "p", "research-description", text);
     if (feature) factRows(add(parent, "section", "research-facts"), feature, factKeys);
@@ -958,8 +1055,9 @@
     labelled(add(panel, "h3"), card);
     structureCardActions(panel, card);
     if (!exact) { cardReading(panel, card, nodes); return; }
-    if (model.authored && info.node.note && !same(info.node.note, fullText(card))) add(panel, "p", "research-muted", info.node.note);
-    if (card.id !== "board") cardReading(panel, card, nodes);
+    const diagramNote = model.authored && !same(info.node.note, fullText(card)) ? info.node.note : "";
+    if (card.id !== "board") cardReading(panel, card, nodes, diagramNote);
+    else if (diagramNote) add(panel, "p", "research-muted", diagramNote);
     const relations = [
       ...model.links.filter(link => link.to === info.node.id).map(link => ({ link, other: link.from, text: "来自" })),
       ...model.links.filter(link => link.from === info.node.id).map(link => ({ link, other: link.to, text: "去向" })),
