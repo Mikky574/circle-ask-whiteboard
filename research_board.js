@@ -434,7 +434,7 @@
   }
 
   /* ---- Functional reading: overview → feature → scene → detail / evidence ---- */
-  function renderRecord(parent, node, lead, compact = false) {
+  function renderRecord(parent, node, lead) {
     const record = experiment(node);
     if (record.question && !same(record.question, lead)) add(parent, "p", "research-question", `实验问题：${record.question}`);
     if (record.metricSummary) add(parent, "p", "research-inline-metric", record.metricSummary);
@@ -443,9 +443,9 @@
     renderComparison(parent, node);
     const pictures = images(node);
     if (pictures.length) {
-      const host = compact ? add(parent, "details", "research-sources research-proof") : parent;
-      if (compact) add(host, "summary", "", `证据图片 · ${pictures.length} 张`);
-      const gallery = add(host, "div", "research-evidence");
+      const gallery = add(parent, "div", "research-evidence");
+      gallery.setAttribute("role", "group");
+      gallery.setAttribute("aria-label", "证据图片");
       for (const file of pictures) figure(gallery, node, file);
     }
     renderAttachments(parent, node);
@@ -798,7 +798,7 @@
     if (lead) add(parent, "p", "research-lead", lead);
     if (text && !same(text, lead)) add(parent, "p", "research-description", text);
     if (feature) factRows(add(parent, "section", "research-facts"), feature, factKeys);
-    renderRecord(parent, card, lead, options.compactWorkspace?.());
+    renderRecord(parent, card, lead);
     renderEvidence(parent, card, children(card.id, nodes).filter(item => item.codePreview));
   }
   function structureCardActions(parent, card) {
@@ -817,6 +817,8 @@
   let savedY = null;
   let restoreKey = null;
   let pendingFocus = null;
+  let sheetScope = null;
+  let paneEffects = null;
   const diagramScroll = new Map();
   /* One shared node menu. It is appended to <body> with fixed positioning so the scrolling
      stage cannot clip it, and it always acts on the node it was opened for, never on the
@@ -863,7 +865,7 @@
         const selected = structureSelection;
         const want = spec.selection;
         if (!(selected?.kind === "node" && selected.id === want.id && (selected.cardId || null) === (want.cardId || null) &&
-          !(want.cardId == null && selected.cardId))) model.select(want);
+          !(want.cardId == null && selected.cardId))) model.select(want, true, false);
         run();
       }, "research-context-item");
       item.setAttribute("role", "menuitem");
@@ -957,6 +959,7 @@
     structureCardActions(panel, card);
     if (!exact) { cardReading(panel, card, nodes); return; }
     if (model.authored && info.node.note && !same(info.node.note, fullText(card))) add(panel, "p", "research-muted", info.node.note);
+    if (card.id !== "board") cardReading(panel, card, nodes);
     const relations = [
       ...model.links.filter(link => link.to === info.node.id).map(link => ({ link, other: link.from, text: "来自" })),
       ...model.links.filter(link => link.from === info.node.id).map(link => ({ link, other: link.to, text: "去向" })),
@@ -969,7 +972,6 @@
         button(row, model.info.get(other).name, () => select({ kind: "node", id: other }), "research-card-title");
       }
     }
-    if (card.id !== "board") cardReading(panel, card, nodes);
   }
   function renderStructure(parent, nodes, { diagram: structure, authored }) {
     structureObserver?.disconnect();
@@ -1021,7 +1023,8 @@
     const live = add(section, "p", "research-structure-live");
     live.setAttribute("role", "status");
     const announce = text => { live.textContent = text; };
-    const scroller = add(section, "div", "research-structure-scroll");
+    const layout = add(section, "div", "research-structure-layout");
+    const scroller = add(layout, "div", "research-structure-scroll");
     if (model.lanes.length > 1) scroller.tabIndex = 0;
     scroller.setAttribute("aria-label", "模块关系图");
     scroller.setAttribute("role", "group");
@@ -1131,7 +1134,7 @@
           };
           const tools = add(wrap, "div", "research-snode-tools");
           if (isCard && typeof options.onEditCard === "function" && options.canEditCard?.(info.card.id)) {
-            const edit = button(tools, "✎", () => { model.select({ kind: "node", id: entry.id }); options.onEditCard(info.card.id); },
+            const edit = button(tools, "✎", () => { model.select({ kind: "node", id: entry.id }, true, false); options.onEditCard(info.card.id); },
               "research-snode-edit");
             edit.setAttribute("aria-label", `编辑「${info.name}」原卡`);
             edit.title = "编辑原卡";
@@ -1249,8 +1252,49 @@
       }
       return column;
     });
-    const detail = add(section, "div", "research-structure-detail");
+    /* Reading pane: a reserved right column on wide screens, a non-modal bottom sheet on narrow ones. */
+    const aside = add(layout, "aside", "research-structure-pane");
+    aside.setAttribute("role", "region");
+    const bar = add(aside, "div", "research-structure-pane-bar");
+    const barTitle = add(bar, "strong", "", "卡片详情");
+    let opener = null;
+    const setSheet = (open, restore) => {
+      const was = aside.classList.contains("is-open");
+      aside.classList.toggle("is-open", open);
+      section.classList.toggle("has-sheet", open);
+      sheetScope = open ? scope : null;
+      if (!open && was && restore) {
+        const back = opener?.isConnected ? opener : buttons.get(structureSelection?.id);
+        back?.focus({ preventScroll: true });
+      }
+    };
+    const closeSheet = button(bar, "✕", () => setSheet(false, true), "research-structure-pane-close");
+    closeSheet.setAttribute("aria-label", "关闭卡片详情");
+    closeSheet.title = "关闭详情（Esc）";
+    const detail = add(aside, "div", "research-structure-detail");
     detail.setAttribute("aria-live", "polite");
+    paneEffects = new AbortController();
+    const { signal } = paneEffects;
+    let fitting = false;
+    const fitPane = () => {
+      if (narrowQuery?.matches || !layout.isConnected) return;
+      const top = Math.max(12, layout.getBoundingClientRect().top);
+      aside.style.setProperty("--structure-pane-height", `${Math.max(148, Math.floor(window.innerHeight - top - 12))}px`);
+    };
+    const scheduleFit = () => {
+      if (fitting || narrowQuery?.matches) return;
+      fitting = true;
+      requestAnimationFrame(() => { fitting = false; fitPane(); });
+    };
+    window.addEventListener("scroll", scheduleFit, { passive: true, signal });
+    window.addEventListener("resize", scheduleFit, { signal });
+    const onSheetKey = event => {
+      if (event.key !== "Escape" || event.defaultPrevented || !aside.isConnected || !aside.classList.contains("is-open")) return;
+      if (menu || document.querySelector("dialog[open]")) return;
+      event.preventDefault();
+      setSheet(false, true);
+    };
+    document.addEventListener("keydown", onSheetKey, { signal });
     let showSelection = false;
     /* Hover or focus lights a node's links; otherwise the current selection stays lit. */
     function highlight(id) {
@@ -1267,7 +1311,7 @@
       }
       section.classList.toggle("has-focus", any);
     }
-    model.select = (value, emphasize = true) => {
+    model.select = (value, emphasize = true, openDetails = emphasize) => {
       showSelection = emphasize;
       structureSelection = value;
       handoffCard = value.kind === "link" ? model.links.find(link => link.from === value.from && link.to === value.to)?.evidence || null
@@ -1276,6 +1320,17 @@
         control.setAttribute("aria-pressed", String(value.kind === "node" && value.id === id));
       }
       renderStructureDetail(detail, model, nodes);
+      const name = detail.querySelector("h3")?.textContent.trim();
+      barTitle.textContent = name ? `卡片详情 · ${name}` : "卡片详情";
+      aside.setAttribute("aria-label", barTitle.textContent);
+      if (openDetails && narrowQuery?.matches) {
+        const active = document.activeElement;
+        if (!aside.contains(active)) {
+          opener = active && section.contains(active) ? active : buttons.get(value.id || value.from) || opener;
+        }
+        setSheet(true);
+      }
+      aside.scrollTop = 0;
       highlight(null);
       if (emphasize) options.onFocus?.(handoffCard);
     };
@@ -1313,7 +1368,11 @@
       ? { kind: "node", id: mapped?.node.id, cardId: selectedCard.id }
       : { kind: "node", id: model.zones[0].nodes[0].id };
     model.select(selection, false);
-    const redraw = () => { drawStructure(stage, layer, model, buttons); highlight(null); };
+    if (narrowQuery?.matches && sheetScope === scope) {
+      setSheet(true);
+      aside.scrollTop = 0;
+    }
+    const redraw = () => { drawStructure(stage, layer, model, buttons); highlight(null); fitPane(); };
     redraw();
     if (typeof ResizeObserver === "function") {
       structureObserver = new ResizeObserver(() => { if (stage.isConnected) redraw(); });
@@ -1323,15 +1382,17 @@
     // A refresh keeps the horizontal scroll, page position and keyboard focus where the user left them.
     if (savedScroll != null) scroller.scrollLeft = savedScroll;
     if (savedY != null && window.scrollY !== savedY) window.scrollTo(window.scrollX, savedY);
+    fitPane();
     if (restoreKey) focusByKey(section, restoreKey)?.focus({ preventScroll: true });
     savedScroll = savedY = restoreKey = pendingFocus = null;
   }
-  narrowQuery?.addEventListener?.("change", () => { if (active && view === "structure") render(); });
+  narrowQuery?.addEventListener?.("change", () => { sheetScope = null; if (active && view === "structure") render(); });
 
   function render(preferStructure = false) {
     if (!container || !active) return;
     closeMenu(false);
     structureObserver?.disconnect();
+    paneEffects?.abort();
     const nodes = items();
     let node = nodes.find(item => item.id === rootId);
     let removed = false;
@@ -1508,6 +1569,7 @@
   function hide() {
     active = false;
     closeMenu(false);
+    paneEffects?.abort();
     placeProjectTools();
     structureObserver?.disconnect();
   }

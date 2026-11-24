@@ -917,6 +917,27 @@ async function structureWorkspaceEditing() {
       assert.equal(new URL(page.url()).searchParams.get("panel"), "structure", "The project opens on its structure whiteboard");
       assert.equal(await page.locator("#project-surface-canvas").count(), 0);
       assert.equal(await page.locator(".research-edge[data-from]").count(), 2);
+      const frame = graph.locator(".research-structure-scroll");
+      const geometry = () => frame.evaluate(frame => {
+        const { x, y, width, height } = frame.getBoundingClientRect();
+        return { x, y, width, height, left: frame.scrollLeft, page: scrollY };
+      });
+      await entry.scrollIntoViewIfNeeded();
+      const beforeSelection = await geometry();
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+      await entry.click();
+      const inspector = graph.locator(".research-structure-detail");
+      await inspector.getByRole("heading", { name: "原卡工作", exact: true }).waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("focusCard"), "E41");
+      assert.deepEqual(await geometry(), beforeSelection, "Inspecting a card keeps the graph anchored");
+      if (width > 760) {
+        assert.ok((await inspector.boundingBox()).x >= beforeSelection.x + beforeSelection.width - 1);
+      } else {
+        await page.keyboard.press("Escape");
+        await inspector.waitFor({ state: "hidden" });
+        assert.equal(await entry.evaluate(element => document.activeElement === element), true);
+        assert.deepEqual(await geometry(), beforeSelection, "Closing the sheet keeps the graph anchored");
+      }
       await branch.locator(".research-snode-drill").click();
       await node("E42").waitFor();
       assert.equal(await graph.getAttribute("data-diagram-root"), "E41");
@@ -952,8 +973,10 @@ async function structureWorkspaceEditing() {
       assert.equal(await drawer.isVisible(), true);
       await page.locator("#workbench-card-body").fill("在结构白板上改好的第五级正文。");
       await drawer.getByRole("button", { name: "保存卡片" }).click();
-      await page.locator(".research-structure-detail").getByText("在结构白板上改好的第五级正文。", { exact: true }).waitFor();
       assert.equal(await node("E43").evaluate(node => node === document.activeElement), true);
+      if (width <= 760) await node("E43").press("Enter");
+      await inspector.getByText("在结构白板上改好的第五级正文。", { exact: true }).waitFor();
+      if (width <= 760) await page.keyboard.press("Escape");
       await page.locator("#project-surface-structure").click();
       await entry.click({ button: "right" });
       await menu.getByRole("menuitem", { name: "编辑原卡" }).click();

@@ -209,7 +209,6 @@ body.research-view {
 .research-compact .research-structure .research-zone { --zone-tint: #f1f4ef; --zone-line: #d6dfd6; }
 .research-compact .research-structure .research-zone[data-role="entry"] { --zone-tint: #e9f0ea; --zone-line: #c5d5c8; }
 .research-compact .research-structure .research-zone[data-role="feedback"] { --zone-tint: #f4f2ec; --zone-line: #ddd6c6; }
-.research-compact .research-structure-detail > details .research-evidence { margin-top: 10px; }
 .research-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .research-capability { margin: 20px 0; padding: 18px; border: 1px solid var(--research-line); border-radius: 10px; background: #fff; }
 .research-capability-fields { display: grid; grid-template-columns: 5em minmax(0, 1fr); gap: 8px 16px; margin: 14px 0 0; }
@@ -526,6 +525,42 @@ body.research-view {
 .research-structure-detail h3 { font-size: 16px; font-weight: 650; }
 .research-structure-detail .research-kicker { margin: 0; }
 .research-structure-detail .research-description { white-space: pre-wrap; max-width: 80ch; }
+/* Card reading pane: space is reserved from first paint, so selecting or closing never moves the graph. */
+.research-structure-layout {
+  display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 26vw, 400px); gap: 16px; align-items: start; min-width: 0;
+}
+.research-structure-pane {
+  position: sticky; top: 12px; box-sizing: border-box; min-width: 0; height: var(--structure-pane-height, 60dvh);
+  overflow: auto; overflow-anchor: none; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #b6c9b9 transparent;
+  border: 1px solid #d3ddd3; border-radius: 14px; background: #fff;
+  box-shadow: 0 1px 2px rgb(36 58 49 / 5%), 0 10px 24px -18px rgb(36 58 49 / 35%);
+}
+.research-structure-pane .research-structure-detail { border: 0; border-radius: 0; background: transparent; padding: 16px 18px; min-width: 0; }
+.research-structure-pane .research-structure-detail .research-description { max-width: none; overflow-wrap: anywhere; }
+.research-structure-pane .research-evidence { grid-template-columns: minmax(0, 1fr); }
+.research-structure-pane .research-metrics { grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap: 8px; }
+.research-structure-pane .research-metric { padding: 10px; }
+.research-structure-pane .research-metric strong { font-size: 21px; }
+.research-structure-pane .research-table-wrap { min-width: 0; max-width: 100%; }
+.research-structure-pane-bar { display: none; }
+@media (max-width: 760px) {
+  .research-structure-layout { display: block; }
+  .research-structure-pane { display: none; }
+  .research-structure-pane.is-open {
+    display: block; position: fixed; z-index: 30; left: 8px; right: 8px; bottom: 8px; top: auto;
+    height: auto; max-height: 46vh; max-height: 46dvh; border-radius: 14px; background: #fbfcfa;
+    box-shadow: 0 -2px 6px rgb(36 58 49 / 10%), 0 14px 32px -8px rgb(36 58 49 / 40%);
+  }
+  .research-structure.has-sheet { padding-bottom: 46vh; padding-bottom: 46dvh; }
+  .research-structure-pane-bar {
+    position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 6px 8px 6px 16px; background: #eef3ee; border-bottom: 1px solid #d3ddd3; font-size: 13px; color: var(--research-ink);
+  }
+  .research-structure-pane-bar strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; }
+  .research-structure-pane-close { flex: none; width: 36px; height: 36px; border: 0; border-radius: 8px; background: transparent; color: var(--research-ink); font-size: 16px; cursor: pointer; }
+  .research-structure-pane-close:hover { background: #dce9de; }
+  .research-structure-pane-close:focus-visible { outline: 2px solid var(--research-green); outline-offset: 1px; }
+}
 .research-structure-near { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
 .research-structure-enter { justify-self: start; }
 .research-structure-relation-list { display: grid; gap: 6px; margin: 10px 0 2px; padding-left: 20px; font-size: 13px; color: var(--research-ink); }
