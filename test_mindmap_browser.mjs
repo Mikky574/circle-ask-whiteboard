@@ -19,6 +19,7 @@ const boardCases = new Map([["main", boards]]);
 const errors = [];
 const unexpected = [];
 const requests = [];
+const opinionRequests = [];
 const fullAnswer = "合成问答：E27 的附件与事件流来自当前白板选区。" +
   "这是完整正文的验证段落，详情面板应该一直保留原来的回答，而不是被组织摘要截断。".repeat(75) + "完整回答末尾验收标记。";
 const artifacts = await mkdtemp(join(tmpdir(), "whiteboard-mindmap-browser-"));
@@ -73,11 +74,19 @@ async function relay(req, res) {
   }
   if (url.pathname === "/api/codex") {
     const payload = await body(req);
-    requests.push(payload);
+    (payload.branchIntent === "revise" ? opinionRequests : requests).push(payload);
     let event;
     if (payload.scope === "plan") {
       if (heldPlan) await heldPlan;
       event = { type: "answer", text: '{"action":"ask"}' };
+    }
+    else if (payload.branchIntent === "revise") {
+      const items = payload.question === "测试越界" ? [{ id: "E50", title: "不该改", summary: null }]
+        : payload.board.nodes.map(node => ({
+          id: node.id, title: node.id === payload.branchRootId ? "来自意见的标题" : null,
+          summary: node.id === payload.branchRootId ? null : "来自意见的下级正文。",
+        }));
+      event = { type: "branch", branch: { items }, requestId: payload.requestId, baseRevision: payload.baseRevision };
     }
     else if (payload.scope === "expandCard") event = { type: "children", children: [
       { title: "阅读选区的输入边界", summary: "保留用户输入的延伸方向，新增卡片归属 E27。" },
@@ -943,7 +952,7 @@ async function structureWorkspaceEditing() {
       await entry.getByText("图上名称", { exact: true }).waitFor();
       async function addBelow(parent, title) {
         await parent.click({ button: "right" });
-        await menu.getByRole("menuitem", { name: "新建子卡" }).click();
+        await menu.getByRole("menuitem", { name: "手动新建子卡" }).click();
         await page.locator("#workbench-card-title").fill(title);
         await drawer.getByRole("button", { name: "保存卡片" }).click();
         const saved = (await state()).organization.current.items.find(item => item.title === title);
@@ -956,6 +965,44 @@ async function structureWorkspaceEditing() {
       const grandchild = await addBelow(subcard(child.id), "在新卡下继续新建");
       assert.equal(grandchild.parentId, child.id);
       assert.notEqual(child.id, grandchild.id);
+      await subcard("E42").click();
+      await page.locator(".research-structure-branch").waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("root"), "E42");
+      assert.equal(await page.locator("#viewport").isVisible(), false);
+      await subcard("E43").waitFor();
+      await page.goBack();
+      await entry.waitFor();
+      await subcard("E42").waitFor();
+      const opinion = page.locator("#project-opinion-drawer");
+      const instruction = opinion.getByRole("textbox", { name: "你希望改成什么样？" });
+      const generate = opinion.getByRole("button", { name: "生成修改预览" });
+      await entry.click({ button: "right" });
+      await menu.getByRole("menuitem", { name: "提意见让 AI 改" }).click();
+      await opinion.waitFor();
+      assert.equal(await opinion.getByLabel("仅当前卡").isChecked(), true);
+      const beforeOpinion = (await state()).organization.current;
+      await instruction.fill("测试越界");
+      await generate.click();
+      await opinion.getByText("AI 建议超出本次卡片范围。").waitFor();
+      assert.deepEqual(opinionRequests.at(-1).board.nodes.map(node => node.id), ["E41"]);
+      assert.equal(await opinion.getByRole("button", { name: "应用勾选的修改" }).isVisible(), false);
+      await instruction.fill("把当前卡的名称说得更直白，补全下级说明。");
+      await opinion.getByLabel("当前卡及下级").check();
+      await generate.click();
+      const preview = opinion.getByRole("region", { name: "修改预览" });
+      await preview.getByText("来自意见的标题", { exact: true }).waitFor();
+      assert.deepEqual(new Set(opinionRequests.at(-1).board.nodes.map(node => node.id)),
+        new Set(["E41", "E42", "E43", child.id, grandchild.id]));
+      assert.deepEqual((await state()).organization.current, beforeOpinion, "Preview never writes to the board");
+      for (const input of await preview.getByRole("checkbox").all()) {
+        if (!(await input.getAttribute("value") === "E41")) await input.uncheck();
+      }
+      await opinion.getByRole("button", { name: "应用勾选的修改" }).click();
+      await opinion.waitFor({ state: "hidden" });
+      const afterOpinion = (await state()).organization.current;
+      assert.deepEqual(afterOpinion.items, beforeOpinion.items.map(item =>
+        item.id === "E41" ? { ...item, title: "来自意见的标题" } : item));
+      assert.deepEqual(afterOpinion.projectStructure, beforeOpinion.projectStructure);
       await fold.click();
       await subcard("E42").waitFor({ state: "hidden" });
       if (width > 760) {
@@ -987,7 +1034,7 @@ async function structureWorkspaceEditing() {
     } finally { await isolated.close(); }
   }
   page = previous;
-  pass("The structure whiteboard expands real descendants, edits and creates cards, and saves drag order on desktop and touch without switching views");
+  pass("The structure whiteboard keeps branches, manual edits, scoped opinion previews and drag ordering in one workspace on desktop and touch");
 }
 
 try {

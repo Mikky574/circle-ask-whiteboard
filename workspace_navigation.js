@@ -180,7 +180,7 @@
         case "showStructure": {
           const structureRoot = cleanId(context.structureRoot);
           if (!structureRoot || !(structureRoot === VIRTUAL ? t.virtual : t.has(structureRoot)) ||
-              (research && from.panel === "structure")) return from;
+              (research && from.panel === "structure" && from.readingRoot === structureRoot)) return from;
           return make({ ...from, presentation: "research", panel: "structure", readingRoot: structureRoot,
             card: research ? realId(from.readingRoot) : realId(context.canvasCard) ?? from.card,
             returnBranch: research ? from.returnBranch : from.canvasBranch });

@@ -596,6 +596,12 @@
     const top = nodes.find(node => !known.has(node.parentId))?.id;
     return { ...resolved, rootId: resolved.rootId && known.has(resolved.rootId) ? resolved.rootId : top };
   }
+  function structureRoot(nodes) {
+    const authored = structureFor(nodes);
+    if (authored || !options.canStructure?.()) return authored?.rootId || null;
+    const ids = new Set(nodes.map(node => node.id));
+    return nodes.find(node => !ids.has(node.parentId))?.id || null;
+  }
   function structureModel(structure, nodes) {
     const byId = new Map(nodes.map(node => [node.id, node]));
     const zones = structure.zones.map((zone, index) => ({ ...zone, lane: zone.lane ?? Math.min(index, 5) }));
@@ -778,12 +784,13 @@
     if (!card || card.id === "board") return;
     const row = add(parent, "div", "research-structure-actions");
     if (options.canEditCard?.(card.id)) {
+      button(row, "提意见让 AI 改", () => options.onOpinion?.(card.id), "research-button research-opinion-button");
       button(row, "编辑原卡", () => options.onEditCard?.(card.id), "research-button research-edit-card");
     }
     if (typeof options.onAddChild === "function") {
-      button(row, "新建子卡", () => options.onAddChild(card.id));
+      button(row, "手动新建子卡", () => options.onAddChild(card.id));
     }
-    if (card.id !== rootId) button(row, "进入这张卡 ↗", () => enter(card.id), "research-button research-structure-enter");
+    if (card.id !== rootId) button(row, "打开子白板", () => options.onStructureBranch?.(card.id), "research-button research-structure-enter");
   }
   /* Expansion state lives outside the DOM so refreshes keep the tree open. Key = structure node + parent card. */
   const expanded = new Set();
@@ -796,7 +803,8 @@
   function revealChildren(cardId) {
     if (view !== "structure" || structureSelection?.kind !== "node" || !structureSelection.id || !cardId) return;
     const key = expandKey(structureSelection.id, cardId);
-    const opened = expanded.has(key);
+    const closed = expanded.delete(`closed:${key}`);
+    const opened = expanded.has(key) && !closed;
     expanded.add(key);
     saveExpansion();
     if (!opened) render();
@@ -826,13 +834,16 @@
     if (!card || card.id === "board") return [];
     const list = [];
     if (typeof options.onEditCard === "function" && options.canEditCard?.(card.id)) {
+      list.push(["提意见让 AI 改", () => options.onOpinion?.(card.id)]);
       list.push(["编辑原卡", () => options.onEditCard(card.id)]);
     }
     if (c.kids) list.push([c.isOpen() ? "收起下级" : "展开下级", c.toggle]);
-    if (typeof options.onAddChild === "function") list.push(["新建子卡", () => options.onAddChild(card.id)]);
+    if (typeof options.onAddChild === "function") list.push(["手动新建子卡", () => options.onAddChild(card.id)]);
     if (c.move?.up) list.push(["在分区内上移", c.move.up]);
     if (c.move?.down) list.push(["在分区内下移", c.move.down]);
-    if (card.id !== rootId && typeof options.onEnter === "function") list.push(["查看卡片", () => enter(card.id)]);
+    if (card.id !== rootId && typeof options.onStructureBranch === "function") {
+      list.push(["打开子白板", () => options.onStructureBranch(card.id)]);
+    }
     return list;
   }
   /* spec: { key, name, target, trigger, selection, actions() } */
@@ -930,7 +941,7 @@
         return;
       }
       add(panel, "p", "research-proof-label", "证据卡片");
-      labelled(button(add(panel, "h3"), "", () => enter(evidence.id), "research-card-title"), evidence);
+      labelled(button(add(panel, "h3"), "", () => options.onStructureBranch?.(evidence.id), "research-card-title"), evidence);
       structureCardActions(panel, evidence);
       cardReading(panel, evidence, nodes);
       return;
@@ -959,24 +970,23 @@
     }
     if (card.id !== "board") cardReading(panel, card, nodes);
   }
-  function renderStructure(parent, nodes, structure) {
+  function renderStructure(parent, nodes, structure, branch) {
     structureObserver?.disconnect();
     closeMenu(false);
     const model = structureModel(structure, nodes);
     const section = add(parent, "section", "research-structure");
+    section.classList.toggle("research-structure-branch", branch);
     section.setAttribute("aria-label", structure.title || "项目结构");
     const header = add(section, "div", "research-structure-header");
     const intro = add(header, "div");
     add(intro, "h3", "", structure.title || "项目结构");
-    add(intro, "p", "research-muted research-small",
-      narrowQuery?.matches ? "点节点读原卡；右键或「⋯」就地编辑、展开下级。带文字的箭头是登记的关系，缩进细线是上下级。"
-        : "点节点读原卡；右键或「⋯」就地编辑、展开下级（Shift+→ / ←）。带文字的箭头是登记的关系，缩进细线是卡片的上下级归属。");
+    add(intro, "p", "research-muted research-small", "展开可浏览下级卡，点子卡打开子白板。右键或「⋯」可提意见、编辑或手动新建。");
     const legend = add(header, "ul", "research-structure-legend");
     legend.setAttribute("aria-label", "连线类型");
     const parentKey = add(legend, "li");
     parentKey.dataset.kind = "child";
     add(parentKey, "i").setAttribute("aria-hidden", "true");
-    parentKey.append(document.createTextNode("上下级（缩进）"));
+    parentKey.append(document.createTextNode("上下级"));
     for (const kind of Object.keys(kindNames)) {
       if (!model.links.some(link => link.kind === kind)) continue;
       const entry = add(legend, "li");
@@ -1035,6 +1045,10 @@
       const key = expandKey(nodeId, cardId);
       if (on) expanded.add(key);
       else expanded.delete(key);
+      if (branch && cardId === rootId) {
+        if (on) expanded.delete(`closed:${key}`);
+        else expanded.add(`closed:${key}`);
+      }
       saveExpansion();
       const tree = trees.get(nodeId);
       if (!tree) return;
@@ -1110,31 +1124,27 @@
         const selection = ref ? { kind: "node", id: ref.node.id } : { kind: "node", id: nodeId, cardId: kid.id };
         const li = add(list, "li", "research-subcard");
         const row = add(li, "div", "research-subrow");
-        if (below.length) {
-          const arrow = button(row, isOpen() ? "▾" : "▸", toggle, "research-sub-toggle");
-          arrow.dataset.focusKey = `t:${key}`;
-          arrow.setAttribute("aria-expanded", String(isOpen()));
-          arrow.setAttribute("aria-label", `${isOpen() ? "收起" : "展开"}「${name}」的 ${below.length} 张下级卡`);
-        } else add(row, "span", "research-sub-spacer");
-        const pick = button(row, name, () => {
-          model.select(selection);
-          if (ref) buttons.get(ref.node.id)?.focus();
-        }, "research-sub-title");
+        const pick = button(row, "", () => options.onStructureBranch?.(kid.id), "research-sub-title");
+        add(pick, "strong", "", name);
+        add(pick, "span", "research-sub-enter", "↗").setAttribute("aria-hidden", "true");
         pick.dataset.nodeId = nodeId;
         pick.dataset.cardId = kid.id;
         pick.dataset.focusKey = `s:${key}`;
+        const summary = capability(kid)?.outcome || kid.summary;
+        if (summary && !same(summary, name)) add(row, "p", "research-sub-summary", summary);
+        const footer = add(row, "div", "research-sub-footer");
+        if (below.length) {
+          const arrow = button(footer, `${isOpen() ? "收起" : "展开"}下级 · ${below.length}`, toggle, "research-sub-toggle");
+          arrow.dataset.focusKey = `t:${key}`;
+          arrow.setAttribute("aria-expanded", String(isOpen()));
+          arrow.setAttribute("aria-label", `${isOpen() ? "收起" : "展开"}「${name}」的 ${below.length} 张下级卡`);
+        }
         if (ref) {
           const counts = [model.links.filter(link => link.to === ref.node.id).length, model.links.filter(link => link.from === ref.node.id).length];
-          const badge = add(row, "span", "research-sub-ref", `已在图上 · ${counts[0]}入${counts[1]}出`);
-          badge.title = `与图上「${ref.name}」是同一张原卡，不是副本`;
+          const badge = add(footer, "span", "research-sub-ref", `${counts[0]} 入 / ${counts[1]} 出`);
+          badge.title = `总览中的「${ref.name}」引用这张原卡`;
         }
-        const tools = add(row, "span", "research-sub-tools");
-        if (typeof options.onEditCard === "function" && options.canEditCard?.(kid.id)) {
-          const edit = button(tools, "✎", () => { model.select(selection); options.onEditCard(kid.id); }, "research-snode-edit");
-          edit.setAttribute("aria-label", `编辑「${name}」原卡`);
-          edit.title = "编辑原卡";
-          edit.dataset.focusKey = `e:${key}`;
-        }
+        const tools = add(footer, "span", "research-sub-tools");
         const spec = { key: `sub:${key}`, name, target: row, trigger: null, selection,
           actions: () => cardActions(kid, { kids: below.length, isOpen, toggle }) };
         if (spec.actions().length) makeMore(tools, spec);
@@ -1180,9 +1190,10 @@
           buttons.set(entry.id, control);
           const isCard = info.card.id !== "board";
           const kidCount = children(info.card.id, nodes).filter(item => item.id !== info.card.id).length;
-          const open = () => expanded.has(expandKey(entry.id, info.card.id));
+          const open = () => branch ? !expanded.has(`closed:${expandKey(entry.id, info.card.id)}`)
+            : expanded.has(expandKey(entry.id, info.card.id));
           const toggle = () => setOpen(entry.id, info.card.id, !open());
-          const canMove = typeof options.onReorderZone === "function" && zone.nodes.length > 1;
+          const canMove = !branch && typeof options.onReorderZone === "function" && zone.nodes.length > 1;
           const order = () => [...list.children].map(element => element.dataset.nodeId);
           const place = delta => {
             const ids = order();
@@ -1380,21 +1391,23 @@
     const selectedCard = handoffCard && nodes.find(node => node.id === handoffCard && node.id !== "board");
     const ancestors = selectedCard ? pathFor(selectedCard.id, nodes).reverse() : [];
     const mapped = ancestors.map(ancestor => [...model.info.values()].find(info => info.card.id === ancestor.id)).find(Boolean);
-    const relations = add(section, "details", "research-sources research-proof research-structure-relations");
-    add(relations, "summary", "", `全部关系 · ${model.links.length} 条`);
-    relations.open = Boolean(narrowQuery?.matches);
-    if (model.links.length) {
-      const list = add(relations, "ol", "research-structure-relation-list");
-      for (const link of model.links) {
-        const row = add(list, "li");
-        row.dataset.kind = link.kind;
-        button(row, model.info.get(link.from).name, () => model.select({ kind: "node", id: link.from }), "research-card-title");
-        row.append(document.createTextNode(` → `));
-        button(row, model.info.get(link.to).name, () => model.select({ kind: "node", id: link.to }), "research-card-title");
-        add(row, "span", "research-muted research-small", ` · ${link.label} · ${kindNames[link.kind]}`);
-        if (link.evidence) button(row, "查看证据", () => model.select({ kind: "link", from: link.from, to: link.to }), "research-path-button");
-      }
-    } else add(relations, "p", "research-muted", "这份结构还没有连线。");
+    const relations = !branch && add(section, "details", "research-sources research-proof research-structure-relations");
+    if (relations) {
+      add(relations, "summary", "", `全部关系 · ${model.links.length} 条`);
+      relations.open = Boolean(narrowQuery?.matches);
+      if (model.links.length) {
+        const list = add(relations, "ol", "research-structure-relation-list");
+        for (const link of model.links) {
+          const row = add(list, "li");
+          row.dataset.kind = link.kind;
+          button(row, model.info.get(link.from).name, () => model.select({ kind: "node", id: link.from }), "research-card-title");
+          row.append(document.createTextNode(` → `));
+          button(row, model.info.get(link.to).name, () => model.select({ kind: "node", id: link.to }), "research-card-title");
+          add(row, "span", "research-muted research-small", ` · ${link.label} · ${kindNames[link.kind]}`);
+          if (link.evidence) button(row, "查看证据", () => model.select({ kind: "link", from: link.from, to: link.to }), "research-path-button");
+        }
+      } else add(relations, "p", "research-muted", "这份结构还没有连线。");
+    }
     const selection = linkedSelection ? structureSelection : selectedCard
       ? { kind: "node", id: mapped?.node.id, cardId: selectedCard.id }
       : { kind: "node", id: model.zones[0].nodes[0].id };
@@ -1441,7 +1454,10 @@
       breadcrumb.setAttribute("aria-label", "阅读路径");
       path.forEach((item, index) => {
         if (index) add(breadcrumb, "span", "research-muted", "›").setAttribute("aria-hidden", "true");
-        const link = button(breadcrumb, title(item), () => enter(item.id), "research-path-button");
+        const link = button(breadcrumb, title(item), () => {
+          if (view === "structure") options.onStructureBranch?.(item.id);
+          else enter(item.id);
+        }, "research-path-button");
         if (item.id === rootId) link.setAttribute("aria-current", "page");
       });
     }
@@ -1460,12 +1476,15 @@
     if (lead) add(intro, "p", mode ? "research-lead" : "research-muted", lead);
     if (mode && feature) add(intro, "p", "research-muted research-small", `适合：${feature.audience}`);
     const controls = add(heading, "div", "research-heading-actions");
-    if (mode && typeof options.onAsk === "function" && (mode.kind === "feature" || mode.kind === "scene")) {
+    if (view !== "structure" && mode && typeof options.onAsk === "function" && (mode.kind === "feature" || mode.kind === "scene")) {
       button(controls, mode.kind === "feature" ? "问这项功能" : "问这个场景",
         () => options.onAsk(node.id), "research-button research-ask");
     }
-    if (path.length > 1) button(controls, "返回上一级", () => enter(path.at(-2).id));
-    if (!options.getStructure?.()) button(controls, "编辑画布", () => options.onLocate?.(node?.id));
+    if (path.length > 1) button(controls, "返回上一级", () => {
+      if (view === "structure") options.onStructureBranch?.(path.at(-2).id);
+      else enter(path.at(-2).id);
+    });
+    if (view !== "structure" && !options.getStructure?.()) button(controls, "编辑画布", () => options.onLocate?.(node?.id));
     if (!node) {
       add(container, "p", "research-description", "画布还没有卡片，先在编辑画布中写下第一张卡片。");
       return;
@@ -1477,13 +1496,18 @@
     // The structure belongs to one card (default: the project root). Only that card offers it.
     const structure = structureFor(nodes);
     const hasStructure = Boolean(structure && node.id === structure.rootId);
+    const branch = !hasStructure && Boolean(structureRoot(nodes));
+    const branchStructure = branch ? { title: "当前分支", zones: [{
+      id: "branch", role: "capability", size: "large", title: "子白板",
+      nodes: [{ id: "branch-root", cardId: node.id }],
+    }] } : null;
     if (hasStructure && !autoOpened.has(node.id)) {
       autoOpened.add(node.id);
       if (view === "board" && preferStructure) view = "structure";
     }
-    const labels = { structure: "项目结构", board: mode ? boardLabels[mode.kind] : feature ? "功能概览" : comparisons.length ? "实验板" : "主题概览",
+    const labels = { structure: branch ? "子白板" : "项目结构", board: mode ? boardLabels[mode.kind] : feature ? "功能概览" : comparisons.length ? "实验板" : "主题概览",
       flow: "流程与分组", graph: "关系导图", comparison: "对比结果", evidence: "证据图片" };
-    const available = views.filter(id => id === "board" || (id === "structure" && hasStructure) || (id === "graph" && (!mode || direct.length)) ||
+    const available = views.filter(id => id === "board" || (id === "structure" && (hasStructure || branch)) || (id === "graph" && (!mode || direct.length)) ||
       (id === "flow" && (direct.length || node.flowSteps?.length)) ||
       (id === "comparison" && comparisons.length) || (id === "evidence" && hasPictures));
     if (!available.includes(view)) view = "board";
@@ -1516,7 +1540,7 @@
       content.setAttribute("role", "tabpanel");
       content.setAttribute("aria-labelledby", `research-tab-${view}`);
     } else content.classList.add("research-content-plain");
-    if (view === "structure") renderStructure(content, nodes, structure);
+    if (view === "structure") renderStructure(content, nodes, branchStructure || structure, branch);
     else if (view === "board" && mode) renderReading(content, node, nodes, mode, lead);
     else if (view === "board") {
       const topics = direct.filter(item => !item.codePreview);
@@ -1592,6 +1616,6 @@
     container.querySelector("h2")?.focus({ preventScroll: true });
     container.scrollIntoView({ block: "start", behavior: "instant" });
   }
-  window.BoardResearch = { init, show, hide, refresh, items, focusHeading, structureFor, revealChildren,
+  window.BoardResearch = { init, show, hide, refresh, items, focusHeading, structureRoot, revealChildren,
     get active() { return active; } };
 })();

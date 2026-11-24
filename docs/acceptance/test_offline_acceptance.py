@@ -886,6 +886,24 @@ class BranchOrganizationAcceptanceTests(unittest.TestCase):
             with self.subTest(update=update), self.assertRaises(ValueError):
                 server.parse_request(json.dumps({**request, **update}).encode())
 
+    def test_card_opinion_returns_optional_fields_and_never_writes(self):
+        request = self.request_body()
+        request.update(branchIntent="revise", question="只补充入口卡的正文。")
+        result = {"items": [{"id": "E02", "title": None, "summary": "新增的入口说明"}]}
+        body = json.dumps(request).encode()
+        with isolated_server() as (port, host), patch.object(server, "run_api", return_value=json.dumps(result)) as api:
+            status, _, raw = post(port, "/api/codex", body, good_headers(host, body))
+        events = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(status, 200)
+        self.assertEqual(events[2]["branch"], result)
+        self.assertEqual(events[3]["changedFiles"], [])
+        self.assertIsNone(api.call_args.kwargs["board_tools"])
+        context = server.parse_request(body)[2]
+        for item in ({"id": "E99", "title": "越界卡片", "summary": None},
+                     {"id": "E02", "title": None, "summary": "正文", "parentId": "E03"}):
+            with self.assertRaises(ValueError):
+                server.structured_candidate(json.dumps({"items": [item]}), context)
+
 
 class StructuredZCodeAcceptanceTests(unittest.TestCase):
     def exchange(self, fields, *answers):

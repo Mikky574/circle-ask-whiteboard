@@ -338,6 +338,7 @@
           <button id="project-surface-structure" type="button" aria-pressed="false">结构白板</button>
         </div>
         <span id="project-surface-card" hidden></span>
+        <button id="project-surface-opinion" type="button" class="research-button research-opinion-button" hidden>提意见让 AI 改</button>
         <button id="project-surface-edit" type="button" class="research-button research-edit-card" hidden>编辑当前卡片</button>
         <span id="project-surface-status" role="status"></span>
       </nav>
@@ -775,6 +776,26 @@
     </main>
   </div>
   <dialog id="project-card-drawer" aria-labelledby="workbench-card-form-title"></dialog>
+  <dialog id="project-opinion-drawer" aria-labelledby="structure-opinion-heading">
+    <form id="structure-opinion-form">
+      <header><h2 id="structure-opinion-heading">提意见让 AI 改</h2><p id="structure-opinion-target"></p></header>
+      <label for="structure-opinion-text">你希望改成什么样？</label>
+      <textarea id="structure-opinion-text" rows="4" maxlength="1800" required placeholder="例如，把这张卡改成面向使用者的说明。保留已有证据，把操作步骤说清楚。"></textarea>
+      <fieldset>
+        <legend>允许修改的范围</legend>
+        <label><input type="radio" name="opinion-scope" value="card" checked> 仅当前卡</label>
+        <label><input type="radio" name="opinion-scope" value="branch"> 当前卡及下级</label>
+      </fieldset>
+      <p id="structure-opinion-status" role="status"></p>
+      <section id="structure-opinion-preview" aria-label="修改预览" hidden></section>
+      <footer>
+        <button id="structure-opinion-close" class="research-button" type="button">关闭</button>
+        <button id="structure-opinion-stop" class="research-button" type="button" hidden>停止生成</button>
+        <button id="structure-opinion-generate" class="research-button research-opinion-button" type="submit">生成修改预览</button>
+        <button id="structure-opinion-apply" class="research-button research-opinion-button" type="button" hidden>应用勾选的修改</button>
+      </footer>
+    </form>
+  </dialog>
   <script id="project-template-data" type="application/json">
     {
       "title": "圈问白板｜项目总览",

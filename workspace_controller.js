@@ -14,7 +14,7 @@
   }
 
   function structureRoot(nodes) {
-    return adapters.hasStructure() ? reader.structureFor(nodes)?.rootId : null;
+    return adapters.canStructure() ? reader.structureRoot(nodes) : null;
   }
 
   function currentCard() {
@@ -23,17 +23,23 @@
 
   function renderNavigation(nodes) {
     const bar = $("project-surface-nav");
-    bar.hidden = !structureRoot(nodes);
+    const root = structureRoot(nodes);
+    bar.hidden = !root;
     if (bar.hidden) return;
-    $("project-surface-structure").setAttribute("aria-pressed", String(state.presentation === "research" && state.panel === "structure"));
+    const structureButton = $("project-surface-structure");
+    const showingStructure = state.presentation === "research" && state.panel === "structure";
+    structureButton.textContent = showingStructure && state.readingRoot !== root ? "返回结构总览" : "结构白板";
+    structureButton.setAttribute("aria-pressed", String(showingStructure && state.readingRoot === root));
     const found = nodes.find(node => node.id === currentCard() && node.id !== "board");
     const label = $("project-surface-card");
+    const ask = $("project-surface-opinion");
     label.hidden = !found;
     if (found) {
       label.textContent = found.title.replace(/^【[^】]+】\s*/u, "");
       label.title = label.textContent;
     }
     $("project-surface-edit").hidden = state.presentation !== "research" || !found || !adapters.canEditCard(found.id);
+    ask.hidden = $("project-surface-edit").hidden || state.panel !== "structure";
   }
 
   function setPresentation() {
@@ -60,7 +66,7 @@
       }
     } finally { applying = false; }
     if (historyMode) historyUpdate(historyMode === "replace");
-    renderNavigation(adapters.hasStructure() ? reader.items() : []);
+    renderNavigation(adapters.canStructure() ? reader.items() : []);
   }
 
   function move(action, settings) {
@@ -88,6 +94,11 @@
   }
   function enter(id) {
     if (!move({ type: "enterReading", root: id }, { preferStructure: true })) return false;
+    reader.focusHeading();
+    return true;
+  }
+  function enterStructure(id) {
+    if (!move({ type: "enterReading", root: id, panel: "structure" })) return false;
     reader.focusHeading();
     return true;
   }
@@ -124,6 +135,10 @@
       const card = currentCard();
       if (state.presentation === "research" && card) adapters.editCard(card);
     });
+    $("project-surface-opinion").addEventListener("click", () => {
+      const card = currentCard();
+      if (state.panel === "structure" && card) adapters.opinion(card);
+    });
     window.addEventListener("popstate", () => {
       if (!adapters.canNavigate()) { historyUpdate(true); return; }
       restore();
@@ -133,11 +148,11 @@
 
   function refresh() {
     if (!state || applying) return;
-    const nodes = state.presentation === "research" || adapters.hasStructure() ? reader.items() : [];
+    const nodes = state.presentation === "research" || adapters.canStructure() ? reader.items() : [];
     const readerState = reader.refresh(nodes);
     if (readerState) { state = { ...state, ...readerState }; historyUpdate(true); }
     renderNavigation(nodes);
   }
 
-  window.BoardWorkspace = { init, refresh, openCanvas, locate, includeCanvasCard, enter, panel, focus };
+  window.BoardWorkspace = { init, refresh, openCanvas, locate, includeCanvasCard, enter, enterStructure, panel, focus };
 })();
