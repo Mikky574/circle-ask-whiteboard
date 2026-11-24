@@ -98,19 +98,20 @@
   const requestedBoard = pageParams.get("board");
   const projectId = pageParams.get("project");
   const requestedView = pageParams.get("view");
-  const legacyWorkbench = !projectId && (requestedView === "canvas" || pageParams.has("project-guide") ||
+  const projectView = readingOnly ? "reading" : "canvas";
+  const legacyWorkbench = !projectId && (requestedView === "canvas" || pageParams.has("presentation") || pageParams.has("project-guide") ||
     pageParams.has("rebuild-project") || location.hash);
   const registeredBoard = /^[0-9a-f]{32}$/.test(projectId || "") ? `board-${projectId}` : "";
+  const projectPane = ["actions", "projects", "directory"].find(pane =>
+    pane === pageParams.get("projectPanel") || pane === requestedView);
   if (!pageParams.has("project") && memory.activeBoardInfo?.projectId) {
-    location.replace(projectUrl(memory.activeBoardInfo.projectId));
+    location.replace(projectUrl(memory.activeBoardInfo.projectId, projectPane, location));
     return;
   }
   const projectViews = pageParams.has("project") &&
     (!requestedBoard || requestedBoard === "project-workbench" || requestedBoard === registeredBoard);
-  const projectPane = ["actions", "projects", "directory"].find(pane =>
-    pane === pageParams.get("projectPanel") || pane === requestedView);
-  const projectCanvas = projectViews && requestedView === "canvas" && requestedBoard === registeredBoard &&
-    memory.activeBoard === registeredBoard;
+  const projectWorkspace = projectViews && requestedBoard === registeredBoard && memory.activeBoard === registeredBoard &&
+    (requestedView === projectView || (readingOnly && requestedView === "canvas"));
   const projectDirectory = !projectViews && (memory.activeBoard === memory.localProjectsBoard ||
     (requestedBoard === "project-workbench" && !legacyWorkbench));
   const boardControls = initBoardControls();
@@ -132,17 +133,17 @@
       if (!registeredBoard) throw new Error("这个项目链接无效。");
       projectDetails = await localProjectRequest({ action: "get", id: projectId });
       registeredProject = projectDetails.project;
-      const canvasUrl = projectCanvasUrl(registeredProject);
-      if (!projectPane && canvasUrl === registeredProject.boardUrl) {
-        location.replace(canvasUrl);
+      if (!projectPane && registeredProject.boardUrl) {
+        location.replace(projectEntryUrl(registeredProject));
         return;
       }
       const path = await validateRepositoryPath(registeredProject.path);
       await memory.openLocalProject(projectId, registeredProject.name, path);
-      if (!projectCanvas || path !== repositoryPath || registeredProject.name.slice(0, 80).trim() !== memory.activeBoardInfo.title) {
-        location.replace(projectUrl(projectId, projectPane));
+      if (!projectWorkspace || path !== repositoryPath || registeredProject.name.slice(0, 80).trim() !== memory.activeBoardInfo.title) {
+        location.replace(projectUrl(projectId, projectPane, location));
         return;
       }
+      if (readingOnly && requestedView === "canvas") history.replaceState(history.state, "", projectUrl(projectId, projectPane, location));
       projectActivity = await window.WorkbenchActivity.load(projectId);
       showProjectContext(projectDetails, projectActivity);
       cardRequirements = readCardRequirements(projectActivity?.cardRequirements);
@@ -281,14 +282,24 @@
     $("status").textContent = message;
   }
 
-  function projectUrl(id, pane) {
-    const params = new URLSearchParams({ board: `board-${id}`, project: id, view: "canvas" });
+  function projectUrl(id, pane, previous) {
+    const params = new URLSearchParams(readingOnly ? previous?.search : undefined);
+    params.set("board", `board-${id}`);
+    params.set("project", id);
+    params.set("view", projectView);
+    params.delete("projectPanel");
     if (pane) params.set("projectPanel", pane);
-    return `?${params}`;
+    if (readingOnly && !params.has("presentation")) params.set("presentation", "research");
+    return `?${params}${readingOnly ? previous?.hash || "" : ""}`;
   }
 
-  function projectCanvasUrl(project) {
-    return project.boardUrl || projectUrl(project.id);
+  function projectEntryUrl(project) {
+    if (!project.boardUrl) return projectUrl(project.id);
+    if (!readingOnly) return project.boardUrl;
+    const url = new URL(project.boardUrl);
+    url.searchParams.set("presentation", "research");
+    url.searchParams.set("panel", "structure");
+    return url.href;
   }
 
   function readCardRequirements(entries) {
@@ -428,7 +439,7 @@
     for (const child of children) {
       const entry = appendText(list, "article", "project-child-link", "");
       const link = appendText(entry, "a", "", child.name);
-      link.href = projectCanvasUrl(child);
+      link.href = projectEntryUrl(child);
       if (child.description) appendText(entry, "p", "", child.description);
     }
     if (!children.length) appendText(list, "p", "", "这个项目暂无子项目。");
@@ -539,7 +550,7 @@
       switcher.disabled = busy || saving || !switcher.querySelector("option[value]:not([value=''])");
       manage.disabled = create.disabled = busy || saving;
       importButton.disabled = $("home-import-board").disabled = busy || saving;
-      exportButton.disabled = forkButton.disabled = busy || saving || !available || projectDirectory || (projectViews && !projectCanvas);
+      exportButton.disabled = forkButton.disabled = busy || saving || !available || projectDirectory || (projectViews && !projectWorkspace);
       $("board-import-submit").disabled = saving || !importDocument;
       $("board-import-cancel").disabled = importFile.disabled = importName.disabled = importRepository.disabled = saving;
       remove.disabled = busy || saving || !available || projectDirectory || projectViews;
@@ -687,14 +698,14 @@
       }
     }
 
-    $("board-workspace").hidden = !active || projectDirectory || (projectViews && !projectCanvas);
-    if (projectDirectory || (projectViews && !projectCanvas)) switcher.closest(".board-picker").hidden = true;
+    $("board-workspace").hidden = !active || projectDirectory || (projectViews && !projectWorkspace);
+    if (projectDirectory || (projectViews && !projectWorkspace)) switcher.closest(".board-picker").hidden = true;
     $("local-projects").hidden = !projectDirectory;
     if (projectDirectory) $("local-project-link").setAttribute("aria-current", "page");
     close.hidden = projectDirectory || !active;
     close.textContent = projectViews ? "关闭项目" : "关闭白板";
     $("board-empty-state").hidden = Boolean(active);
-    document.querySelector(".connection-area").hidden = !active || projectDirectory || (projectViews && !projectCanvas);
+    document.querySelector(".connection-area").hidden = !active || projectDirectory || (projectViews && !projectWorkspace);
     if (projectDirectory) document.title = "首页 · 圈问白板";
     else if (active && active !== "original") document.title = `${memory.activeBoardInfo.title} · 圈问白板`;
     const currentUrl = new URL(location.href);
@@ -922,7 +933,7 @@
     path.textContent = project.path;
     const openProject = document.createElement("a");
     openProject.className = "submit-button";
-    openProject.href = projectCanvasUrl(project);
+    openProject.href = projectEntryUrl(project);
     openProject.textContent = "打开项目";
     openProject.setAttribute("aria-label", `打开项目：${project.name}`);
     const openFolder = document.createElement("button");
@@ -997,7 +1008,7 @@
       for (const { project, trail } of matches) {
         const item = document.createElement("li");
         const link = document.createElement("a");
-        link.href = projectCanvasUrl(project);
+        link.href = projectEntryUrl(project);
         link.textContent = trail.slice(1).map((entry) => entry.name).join(" / ");
         item.append(link);
         list.append(item);
@@ -3349,7 +3360,7 @@
   }
 
   function isCanvasWorkbench() {
-    return projectCanvas || Boolean(canvasBranchRoot) || Boolean(organization.current?.items.some(item => item.capability));
+    return projectWorkspace || Boolean(canvasBranchRoot) || Boolean(organization.current?.items.some(item => item.capability));
   }
 
   function canvasCollapsed(items) {
@@ -8939,9 +8950,9 @@
   }
   research.init({
     title: memory.activeBoardInfo.title,
-    compactWorkspace: () => projectCanvas,
+    compactWorkspace: () => projectWorkspace && !readingOnly,
     readingOnly,
-    projectTools: projectCanvas ? $("project-context-views") : null,
+    projectTools: projectWorkspace ? $("project-context-views") : null,
     getItems: () => hierarchyItems(boardForOrganization()).filter((item) => !deletedIds.has(item.id)),
     getAttachments: (id) => replies.get(id)?.saved?.payload?.attachments || [],
     getStructure: () => organization.current?.projectStructure || null,
@@ -9005,7 +9016,7 @@
     defaultPresentation: organization.current?.projectStructure || organization.current?.moduleDiagrams?.length
       ? "research" : mindmap?.active ? "mindmap" : "cards",
     canStructure,
-    compactWorkspace: () => projectCanvas,
+    compactWorkspace: () => projectWorkspace && !readingOnly,
     canNavigate: () => !gesture && !connectionDrag && !deletionPreparing && !projectCardDrawer.open && !opinionDrawer.open &&
       !diagramDrawer.open && finishEditingFirst(),
     canEditCard: id => Boolean(editableCard(id)),
@@ -9029,7 +9040,7 @@
       renderInspector();
     },
   });
-  if (projectCanvas && projectDetails) initProjectPanels(projectDetails, projectActivity);
+  if (projectWorkspace && projectDetails) initProjectPanels(projectDetails, projectActivity);
   if (rebuiltProject) $("organization-status").textContent = rebuiltProject;
   if (projectBoardMessage) $("organization-status").textContent = projectBoardMessage;
   if (recoveredReset) status(`已恢复重置前的 ${saved.notes.length} 条批注和白板排布。`);

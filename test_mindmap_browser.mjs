@@ -897,7 +897,10 @@ async function mindmapCardLifecycle() {
 
 async function structureWorkspaceEditing() {
   const previous = page;
-  const boardId = `board-${"b".repeat(32)}`;
+  const project = { id: "b".repeat(32), name: "同一个项目", description: "从模块关系读到实验结果。",
+    path: "C:\\fixtures\\reader", category: "阅读验收", childCount: 0 };
+  const boardId = `board-${project.id}`;
+  const projectUrl = `${origin}/?board=${boardId}&project=${project.id}`;
   const items = [
     { id: "E04", parentId: null, title: "同一个项目", category: "main" },
     { id: "E40", parentId: "E04", title: "使用入口", category: "reference" },
@@ -938,13 +941,36 @@ async function structureWorkspaceEditing() {
     isolated.setDefaultTimeout(12000);
     const caseName = `structure-workspace-${width}`;
     await isolated.addCookies([{ name: "mindmap-case", value: caseName, url: origin }]);
-    const records = new Map([[boardId, { id: boardId, title: current.title, revision: 1,
+    const records = new Map([[boardId, { id: boardId, title: current.title, projectId: project.id,
+      repositoryPath: project.path, revision: 1,
       updatedAt: new Date().toISOString(), storage: { organization: JSON.stringify({ current }) } }]]);
     boardCases.set(caseName, records);
     try {
       page = await isolated.newPage();
       page.on("pageerror", error => errors.push(error.message));
-      await page.goto(`${origin}/?board=${boardId}&view=canvas`);
+      await page.route("**/api/local-projects", route => {
+        const request = route.request().postDataJSON();
+        const json = request.action === "list" ? { projects: [project] } :
+          request.action === "get" && request.id === project.id ? { project, ancestors: [], children: [] } : null;
+        return json ? route.fulfill({ json }) : route.fallback();
+      });
+      await page.route("**/api/repository", route => route.fulfill({
+        json: { repositoryPath: route.request().postDataJSON().repositoryPath },
+      }));
+      await page.goto(`${origin}/?board=project-workbench`);
+      await page.getByRole("link", { name: `打开项目：${project.name}` }).click();
+      const compareTab = page.getByRole("tab", { name: "对比结果" });
+      await compareTab.waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("view"), "reading");
+      assert.equal(await page.locator(".research-window-stack > .research-module-board > .research-compact").count(), 0);
+      await compareTab.click();
+      await page.getByRole("tabpanel").getByRole("table").waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("panel"), "comparison");
+      await page.goto(`${projectUrl}&view=canvas&presentation=research&root=E04&panel=comparison`);
+      await page.getByRole("tabpanel").getByRole("table").waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("view"), "reading");
+      await page.getByRole("tab", { name: "模块关系图" }).click();
+      assert.equal(await page.locator(".research-heading #project-context-views").count(), 1);
       const overview = page.locator('.research-module-board[data-module-root="E04"] .research-structure');
       const graph = page.locator(".research-module-board.is-active .research-structure");
       const entry = overview.locator('.research-snode[data-node="continue"]');
@@ -1246,11 +1272,11 @@ async function structureWorkspaceEditing() {
       assert.deepEqual(saved.positions, positions);
       assert.deepEqual(saved.collapsedBranches, ["E40"]);
       assert.equal(new URL(page.url()).searchParams.get("panel"), "structure");
-      await page.goto(`${origin}/?board=${boardId}&view=canvas&presentation=cards&root=E41#E42`);
+      await page.goto(`${projectUrl}&view=canvas&presentation=cards&root=E41#E42`);
       await graph.locator('.research-snode[data-card-id="E42"][aria-pressed="true"]').waitFor();
       assert.equal(await page.locator("#viewport").isVisible(), false);
       assert.equal(new URL(page.url()).searchParams.get("presentation"), "research");
-      await page.goto(`${origin}/?board=${boardId}&view=canvas&presentation=mindmap&root=E42&focusCard=E43`);
+      await page.goto(`${projectUrl}&view=canvas&presentation=mindmap&root=E42&focusCard=E43`);
       await graph.locator('.research-snode[data-card-id="E43"][aria-pressed="true"]').waitFor();
       assert.equal(await page.getByRole("button", { name: "导图阅读" }).count(), 0);
       assert.equal(await page.getByRole("tab", { name: "关系导图" }).count(), 0);

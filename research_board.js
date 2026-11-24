@@ -2157,7 +2157,9 @@
       queueWindowLinks();
     }
     const first = ordered[0]?.body;
-    placeProjectTools(first?.classList.contains("research-compact") ? first.querySelector(".research-heading-actions") : undefined);
+    const heading = options.readingOnly || first?.classList.contains("research-compact")
+      ? first?.querySelector(".research-heading-actions") : undefined;
+    placeProjectTools(heading);
     signature = nextSignature;
     return projection();
   }
