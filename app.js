@@ -7169,6 +7169,9 @@
   }
   if (workbench) document.body.dataset.board = boardId;
   const workbenchEditor = $("workbench-card-editor");
+  const projectCardDrawer = $("project-card-drawer");
+  const workbenchEditorHome = workbenchEditor.parentNode;
+  const workbenchEditorNext = workbenchEditor.nextSibling;
   const newCard = $("new-card");
   const editWorkbenchCard = $("edit-workbench-card");
   const workbenchCardForm = $("workbench-card-form");
@@ -7181,13 +7184,15 @@
   const saveWorkbenchCard = $("save-workbench-card");
   let workbenchDraft = null;
   let workbenchFeedbackId = null;
+  let refreshCanvasAfterEdit = false;
+  let researchEditFromBar = false;
 
   function editableCard(id) {
     return (organization.current?.items || organization.rawCards || []).find((item) => item.id === id && !item.nativeFace);
   }
 
   function selectedWorkbenchCard() {
-    return editableCard(selectedModuleId());
+    return editableCard(projectCardDrawer.open ? workbenchDraft?.id : selectedModuleId());
   }
 
   function renderWorkbenchEditor(unavailable) {
@@ -7257,6 +7262,40 @@
     workbenchCardForm.scrollIntoView({ block: "nearest" });
     workbenchCardTitle.focus({ preventScroll: true });
   }
+
+  function editResearchCard(id) {
+    if (activeRun || gesture || connectionDrag || deletionPreparing || storageStale || projectCardDrawer.open ||
+        !finishEditingFirst() || !memory.storageIsCurrent() || (window.BoardSync && !window.BoardSync.writable)) {
+      $("project-surface-status").textContent = "白板正在更新，请稍后再编辑。";
+      return;
+    }
+    const item = editableCard(id);
+    if (!item) return;
+    researchEditFromBar = document.activeElement === $("project-surface-edit");
+    $("project-surface-status").textContent = "";
+    projectCardDrawer.append(workbenchEditor);
+    projectCardDrawer.showModal();
+    openCardEditor(item);
+  }
+
+  function closeResearchCardEditor(message = "") {
+    projectCardDrawer.close();
+    workbenchEditorHome.insertBefore(workbenchEditor, workbenchEditorNext);
+    $("project-surface-status").textContent = message;
+    renderInspector();
+    const barEdit = $("project-surface-edit");
+    const target = researchEditFromBar && !barEdit.hidden ? barEdit
+      : document.querySelector("#research-workspace .research-edit-card") || $("project-surface-structure");
+    target.focus({ preventScroll: true });
+  }
+
+  projectCardDrawer.addEventListener("cancel", event => {
+    event.preventDefault();
+    if (finishEditingFirst()) {
+      workbenchDraft = null;
+      closeResearchCardEditor();
+    } else workbenchEditFeedback(workbenchDraft.id, "请先保存或取消正在编辑的卡片。");
+  });
 
   function startNewCard(starter = false) {
     if (!newCard.disabled && !gesture && memory.storageIsCurrent()) openCardEditor(null, undefined, starter);
@@ -7499,6 +7538,7 @@
   $("cancel-workbench-card").addEventListener("click", () => {
     const creating = workbenchDraft?.creating;
     workbenchDraft = null;
+    if (projectCardDrawer.open) { closeResearchCardEditor(); return; }
     workbenchEditFeedback(null, "");
     (creating ? newCard : editWorkbenchCard).focus();
   });
@@ -7507,6 +7547,7 @@
     event.preventDefault();
     const creating = workbenchDraft?.creating === true;
     const old = creating ? null : selectedWorkbenchCard();
+    const editingInResearch = projectCardDrawer.open;
     if ((!creating && (!old || workbenchDraft?.id !== old.id)) || saveWorkbenchCard.disabled || gesture ||
         activeRun || deletionPreparing || !memory.storageIsCurrent()) return;
     const report = (message) => workbenchEditFeedback(old?.id ?? null, message);
@@ -7556,8 +7597,8 @@
     if (old && old.summary !== item.summary) delete item.capability;
     if (old && workbenchContentRevision(item) === workbenchDraft.revision) {
       workbenchDraft = null;
-      report("卡片内容未更改。");
-      editWorkbenchCard.focus();
+      if (editingInResearch) closeResearchCardEditor("卡片内容未更改。");
+      else { report("卡片内容未更改。"); editWorkbenchCard.focus(); }
       return;
     }
 
@@ -7582,7 +7623,7 @@
     const alreadyRevealed = parentId && searchOpenBranches.has(parentId);
     if (parentId) searchOpenBranches.add(parentId);
     try {
-      applyOrganization(true);
+      if (!editingInResearch) applyOrganization(true);
       if (creating) {
         const rect = visibleRect(id);
         if (!rect) throw new Error("未能放置新卡片。");
@@ -7607,6 +7648,7 @@
         layoutReplies(true);
       }
       if (!saveOrganization()) throw new Error("卡片未能保存。可以复制草稿后刷新重试。");
+      if (editingInResearch) refreshCanvasAfterEdit = true;
       const positionStored = !creating || !inMindmap || mindmap.savePositions(mindmapPositions);
       stored = true;
       deletionUndo = null;
@@ -7621,9 +7663,12 @@
       if (parentId && !alreadyRevealed) searchOpenBranches.delete(parentId);
       organization = previous;
       mindmapPositions = previousMindmapPositions;
-      applyOrganization(true);
+      if (!editingInResearch) applyOrganization(true);
       report(error.message);
-    } finally {
+    }
+    if (editingInResearch) {
+      if (stored) closeResearchCardEditor("卡片已保存。");
+    } else {
       const element = boardElements().find((node) => node.dataset.elementId === id && !node.hidden);
       if (element) {
         if (creating && stored) {
@@ -8422,7 +8467,17 @@
       const item = (organization.current?.items || organization.rawCards || []).find((entry) => entry.id === id);
       return item?.localContent ? item.summary : replies.get(id)?.saved?.answer || item?.summary || "";
     },
-    canNavigate: () => !gesture && !connectionDrag && !deletionPreparing && finishEditingFirst(),
+    canNavigate: () => !gesture && !connectionDrag && !deletionPreparing && !projectCardDrawer.open && finishEditingFirst(),
+    canEditCard: id => Boolean(editableCard(id)),
+    onEditCard: editResearchCard,
+    getCanvasCard: selectedModuleId,
+    onShowCard: id => {
+      const draft = question.value;
+      if (locateCard(id, true)) {
+        question.value = draft;
+        renderInspector();
+      }
+    },
     canEditFlow: (id) => Boolean((organization.current?.items || organization.rawCards || []).some(item => item.id === id)),
     onSaveFlow: (id, steps, previous) => {
       if (activeRun || questionRuns.size || deletionPreparing || !memory.storageIsCurrent()) {
@@ -8442,7 +8497,16 @@
       else delete item.flowSteps;
       return "流程未能保存。";
     },
-    onChange: (active, id) => { if (!active) applyCanvasBranch(id); },
+    onChange: (active, id) => {
+      if (active) return;
+      if (refreshCanvasAfterEdit) {
+        refreshCanvasAfterEdit = false;
+        const draft = question.value;
+        applyOrganization(true);
+        question.value = draft;
+      }
+      applyCanvasBranch(id);
+    },
     onAsk: (id) => {
       const draft = question.value;
       research.setActive(false);

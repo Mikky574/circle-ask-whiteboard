@@ -331,6 +331,15 @@
       </div>
     </main>
     <main id="board-workspace" class="workspace">
+      <nav id="project-surface-nav" aria-label="项目工作区" hidden>
+        <div class="project-surface-switch" role="group" aria-label="项目视图">
+          <button id="project-surface-structure" type="button" aria-pressed="false">项目结构</button>
+          <button id="project-surface-canvas" type="button" aria-pressed="false">项目画布</button>
+        </div>
+        <span id="project-surface-card" hidden></span>
+        <button id="project-surface-edit" type="button" class="research-button research-edit-card" hidden>编辑当前卡片</button>
+        <span id="project-surface-status" role="status"></span>
+      </nav>
       <dialog id="canvas-split-review" class="canvas-split-review" aria-labelledby="canvas-split-title">
         <form method="dialog">
           <h2 id="canvas-split-title">挑选要加入的子卡</h2>
@@ -756,6 +765,7 @@
       </aside>
     </main>
   </div>
+  <dialog id="project-card-drawer" aria-labelledby="workbench-card-form-title"></dialog>
   <script id="project-template-data" type="application/json">
     {
       "title": "圈问白板｜项目总览",

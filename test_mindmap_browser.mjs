@@ -864,6 +864,96 @@ async function mindmapCardLifecycle() {
   }
 }
 
+async function structureWorkspaceHandoff() {
+  const previous = page;
+  const boardId = `board-${"b".repeat(32)}`;
+  const items = [
+    { id: "E04", parentId: null, title: "同一个项目", category: "main" },
+    { id: "E40", parentId: "E04", title: "使用入口", category: "reference" },
+    { id: "E41", parentId: "E40", title: "保留同一张卡", category: "reference" },
+    { id: "E42", parentId: "E41", title: "只在原分支中的证据", category: "reference" },
+  ].map(item => ({ ...item, summary: item.title + "。" }));
+  const positions = { E04: { x: 80, y: 90, width: 300 } };
+  const current = { title: "同一个项目", items, positions, collapsedBranches: ["E40"],
+    layout: { flow: "horizontal", density: "compact" }, projectStructure: {
+      version: 1, rootId: "E04", zones: [
+        { id: "entry", title: "入口", nodes: [{ id: "start", cardId: "E40" }] },
+        { id: "work", title: "处理", nodes: [{ id: "continue", cardId: "E41" }] },
+      ], links: [{ from: "start", to: "continue", label: "继续", evidence: "E42" }],
+    } };
+  for (const width of [1480, 500]) {
+    const isolated = await browser.newContext({ viewport: { width, height: 1000 }, serviceWorkers: "block" });
+    isolated.setDefaultTimeout(12000);
+    const caseName = `structure-workspace-${width}`;
+    await isolated.addCookies([{ name: "mindmap-case", value: caseName, url: origin }]);
+    boardCases.set(caseName, new Map([[boardId, { id: boardId, title: current.title, revision: 1,
+      updatedAt: new Date().toISOString(), storage: { organization: JSON.stringify({ current }) } }]]));
+    try {
+      page = await isolated.newPage();
+      page.on("pageerror", error => errors.push(error.message));
+      await page.goto(`${origin}/?board=${boardId}&view=canvas&presentation=research&root=E04&panel=structure`);
+      const detail = page.locator(".research-structure-detail");
+      const body = page.locator("#workbench-card-body");
+      const drawer = page.locator("#project-card-drawer");
+      const card = identity => page.locator(`#board [data-element-id="${identity}"]`);
+      await page.locator('.research-snode[data-node="continue"]').click();
+      const edit = width > 760 ? page.locator("#project-surface-edit") : detail.getByRole("button", { name: "编辑卡片" });
+      await edit.click();
+      assert.equal(await drawer.isVisible(), true);
+      assert.equal(await page.locator(".research-structure-stage").isVisible(), true);
+      assert.equal(await body.inputValue(), "保留同一张卡。");
+      await body.fill("取消的修改不可写入。");
+      await body.press("Escape");
+      assert.equal(await drawer.isVisible(), true, "Escape must preserve an unsaved editor");
+      await drawer.getByRole("button", { name: "取消" }).click();
+      await detail.getByRole("button", { name: "编辑卡片" }).click();
+      assert.equal(await body.inputValue(), "保留同一张卡。");
+      await body.fill("这是两个视图共享的正文。");
+      await drawer.getByRole("button", { name: "保存卡片" }).click();
+      await detail.getByText("这是两个视图共享的正文。", { exact: true }).waitFor();
+      assert.equal(await drawer.isVisible(), false);
+      assert.equal(new URL(page.url()).searchParams.get("focusCard"), "E41");
+      await page.locator("#project-surface-canvas").click();
+      await card("E41").waitFor();
+      assert.equal(await card("E41").getAttribute("aria-pressed"), "true");
+      assert.match(await card("E41").innerText(), /这是两个视图共享的正文/u);
+      assert.equal(await page.locator("#project-surface-card").textContent(), "保留同一张卡");
+      await flush();
+      await page.reload();
+      await page.waitForFunction(() => document.querySelector('#board [data-element-id="E41"]')?.getAttribute("aria-pressed") === "true");
+      const saved = (await state()).organization.current;
+      assert.deepEqual(saved.positions, positions);
+      assert.deepEqual(saved.collapsedBranches, ["E40"]);
+      await selectCard("E42");
+      await page.locator("#edit-workbench-card").click();
+      await body.fill("从画布更新的证据说明。");
+      await page.locator("#project-surface-structure").click();
+      assert.equal(await body.isVisible(), true, "Switching views must preserve an unsaved canvas edit");
+      await page.locator("#save-workbench-card").click();
+      await page.locator("#project-surface-structure").click();
+      await detail.getByRole("heading", { name: "只在原分支中的证据" }).waitFor();
+      await detail.getByText("从画布更新的证据说明。", { exact: true }).waitFor();
+      assert.equal(await page.locator('.research-snode[data-node="continue"]').getAttribute("aria-pressed"), "true");
+      await detail.getByRole("button", { name: "在画布定位" }).click();
+      assert.equal(await card("E42").getAttribute("aria-pressed"), "true");
+      await page.goBack();
+      await detail.getByRole("heading", { name: "只在原分支中的证据" }).waitFor();
+      await page.goto(`${origin}/?board=${boardId}&view=canvas&presentation=cards&root=E40&focusCard=E42`);
+      await page.waitForFunction(() => document.querySelector('#board [data-element-id="E42"]')?.getAttribute("aria-pressed") === "true");
+      await page.locator("#project-surface-structure").click();
+      await detail.getByRole("heading", { name: "只在原分支中的证据" }).waitFor();
+      await page.reload();
+      await page.locator("#project-surface-canvas").click();
+      assert.equal(new URL(page.url()).searchParams.get("root"), "E40", "Returning keeps the originating canvas branch");
+      assert.equal(await card("E42").getAttribute("aria-pressed"), "true");
+    } finally {
+      await isolated.close();
+    }
+  }
+  page = previous;
+  pass("Project structure and canvas share editing, card focus, deep descendants, URL history and saved layout on desktop and narrow screens");
+}
+
 try {
   server = createServer((req, res) => { void relay(req, res).catch(error => json(res, { text: error.message }, 500)); });
   await new Promise(resolveListen => server.listen(0, "127.0.0.1", resolveListen));
@@ -872,6 +962,7 @@ try {
     "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
   ].find(existsSync);
   browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
+  await structureWorkspaceHandoff();
   await mindmapCardLifecycle();
   await branchCameraStability();
   const context = await browser.newContext({ viewport: { width: 1900, height: 1200 }, serviceWorkers: "block" });

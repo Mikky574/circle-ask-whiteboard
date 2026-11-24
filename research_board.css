@@ -22,7 +22,44 @@ body.research-view {
 .research-view .activity-nav .tool-button { color: #65766d; }
 .research-view .activity-nav [aria-current="page"] { color: #245d48; background: #eaf1e9; border-color: #c4d3c5; }
 .research-view #board-workspace { display: block; }
-#board-workspace[data-research-active="true"] > :not(#research-workspace) { display: none; }
+#board-workspace[data-research-active="true"] > :not(#research-workspace, #project-surface-nav) { display: none; }
+#project-surface-nav {
+  position: sticky; top: 8px; z-index: 12;
+  display: flex; grid-column: 1 / -1; align-items: center; gap: 8px 14px; flex-wrap: wrap;
+  margin-bottom: 10px; padding: 8px 12px; min-width: 0;
+  border: 1px solid #cedcd3; border-radius: 9px; background: #f2f6f0; color: #243a31;
+  font: 13px/1.5 Inter, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+#project-surface-nav[hidden], #project-surface-card[hidden], #project-surface-edit[hidden] { display: none; }
+#project-surface-nav:not([hidden]) ~ .canvas-panel #presentation-cards { display: none; }
+.project-surface-switch { display: flex; align-items: center; gap: 2px; padding: 2px; border-radius: 6px; background: #e5eee6; }
+.project-surface-switch button { padding: 5px 11px; border: 0; border-radius: 5px; font: inherit; background: transparent; color: #3d614e; }
+.project-surface-switch button:hover, .project-surface-switch button[aria-pressed="true"] { background: #fff; color: #193e2c; }
+.project-surface-switch button[aria-pressed="true"] { box-shadow: 0 1px 3px #28453422; font-weight: 650; }
+#project-surface-card { min-width: 0; overflow-wrap: anywhere; color: #3d614e; }
+#project-surface-card::before { content: "当前卡片 · "; color: #536c5e; }
+#project-surface-edit { padding: 4px 10px; }
+#project-surface-status { color: #245d48; }
+#project-surface-status:empty { display: none; }
+.research-structure-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.research-edit-card { border-color: #a9c3af; background: #eaf3eb; font-weight: 600; }
+#project-card-drawer {
+  box-sizing: border-box; position: fixed; inset: 14px 14px 14px auto; margin: 0;
+  width: min(440px, calc(100vw - 28px)); max-height: calc(100dvh - 28px); overflow-y: auto;
+  padding: 20px; border: 1px solid #bfd0c2; border-radius: 12px; background: #f8faf7; color: #243a31;
+  box-shadow: 0 14px 48px #172d2540;
+}
+#project-card-drawer::backdrop { background: #283c3428; }
+#project-card-drawer .project-section { margin: 0; padding: 0; border: 0; }
+#project-card-drawer h3 { color: #243a31; font-size: 18px; }
+#project-card-drawer label, #project-card-drawer #workbench-card-status { color: #36594a; }
+#project-card-drawer :is(input, textarea, select, .tool-button) { background: #fff; color: #243a31; border-color: #b8cabc; }
+#project-card-drawer #save-workbench-card { background: #245d48; border-color: #245d48; color: #fff; }
+#project-card-drawer :focus-visible, .project-surface-switch :focus-visible { outline: 2px solid #245d48; outline-offset: 2px; }
+@media (max-width: 660px) {
+  #project-surface-nav { margin-bottom: 8px; }
+  #project-card-drawer { inset: auto 8px 8px; width: calc(100vw - 16px); max-height: calc(100dvh - 16px); padding: 15px; }
+}
 #research-workspace {
   --research-ink: #243a31;
   --research-muted: #65766d;
