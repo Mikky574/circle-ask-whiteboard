@@ -7352,6 +7352,7 @@
     const opener = document.activeElement;
     const node = opener?.closest(".research-snode-wrap")?.querySelector(".research-snode");
     const scope = opener?.closest("[data-diagram-root]")?.dataset.diagramRoot ||
+      opener?.closest(".research-structure-pane[data-module-root]")?.dataset.moduleRoot ||
       $("research-workspace").querySelector(".research-module-board.is-active [data-diagram-root]")?.dataset.diagramRoot;
     researchEditOrigin = { opener, scope, node: node?.dataset.node, focusKey: opener?.dataset.focusKey };
     $("project-surface-status").textContent = "";
@@ -7409,7 +7410,10 @@
     renderInspector();
     const origin = researchEditOrigin;
     researchEditOrigin = null;
-    const activeDiagram = $("research-workspace").querySelector(".research-module-board.is-active");
+    const workspaceElement = $("research-workspace");
+    const activeDiagram = (origin?.scope && workspaceElement.querySelector(
+      `.research-module-board[data-module-root="${CSS.escape(origin.scope)}"]`)) ||
+      workspaceElement.querySelector(".research-module-board.is-active");
     const trigger = origin?.focusKey && activeDiagram?.querySelector(`[data-focus-key="${CSS.escape(origin.focusKey)}"]`);
     const node = origin?.node && activeDiagram?.querySelector(`.research-snode[data-node="${CSS.escape(origin.node)}"]`);
     const target = origin?.opener?.isConnected && origin.opener.getClientRects().length ? origin.opener

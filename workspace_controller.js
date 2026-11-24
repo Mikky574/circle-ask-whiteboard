@@ -140,13 +140,14 @@
     if (card) reader.revealDiagramCard(card);
     return true;
   }
-  function jumpStructure(id) {
+  function jumpStructure(id, sourceCard) {
     if (!trail.includes(id)) return enterStructure(id);
     if (!adapters.canNavigate()) return false;
     const next = navigation.transition(state, { type: "enterReading", root: id, panel: "structure", card: reader.cardAt(id) },
       { nodes: reader.items() });
     apply(next, { historyMode: "replace", path: trail });
     reader.focusHeading(true);
+    if (sourceCard) reader.revealDiagramCard(sourceCard);
     return true;
   }
   function openStructure(id, from) {

@@ -10,6 +10,10 @@
   const boardLabels = { home: "功能目录", feature: "功能说明", scene: "场景说明", detail: "细节说明" };
   let options = {};
   let workspace;
+  let detailDock;
+  let windowLinks;
+  let inspected;
+  let linkFrame = 0;
   let container;
   let currentEntry;
   const entries = new Map();
@@ -958,6 +962,7 @@
       reset.textContent = `${Math.round(100 * scale)}%`;
       smaller.disabled = scale <= 0.1;
       larger.disabled = scale >= 2.5;
+      queueWindowLinks();
     };
     const zoom = (value, x = frame.clientWidth / 2, y = frame.clientHeight / 2) => {
       const view = read();
@@ -1193,6 +1198,64 @@
     return { chart, grid, layer, model, tracks, buttons: new Map(), expanded: new Map() };
   }
 
+  function inspectModule(entry) {
+    if (!detailDock) return;
+    inspected = entry;
+    detailDock.hidden = !entry?.pane;
+    for (const other of entries.values()) {
+      if (other.pane) other.pane.hidden = other !== entry;
+    }
+    entry?.fitPane?.();
+  }
+
+  function queueWindowLinks() {
+    if (!windowLinks || linkFrame) return;
+    linkFrame = requestAnimationFrame(() => {
+      linkFrame = 0;
+      if (!active) return;
+      const ordered = [...workspace.children].map(el => entries.get(el.dataset.moduleRoot));
+      const rail = workspace.getBoundingClientRect();
+      const firstGraph = ordered.find(entry => entry?.graphFrame)?.graphFrame;
+      detailDock.style.marginBlockStart = firstGraph ? `${firstGraph.getBoundingClientRect().top - rail.top}px` : "";
+      inspected?.fitPane?.();
+      windowLinks.setAttribute("viewBox", `0 0 ${Math.max(1, rail.width)} ${Math.max(1, rail.height)}`);
+      windowLinks.replaceChildren();
+      const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+      for (let i = 1; i < ordered.length; i++) {
+        const above = ordered[i - 1];
+        const next = ordered[i];
+        if (!above?.graphFrame || !next) continue;
+        const plot = above.graphFrame.getBoundingClientRect();
+        const source = above.body.querySelector(`[data-open-module="${CSS.escape(next.root)}"]`) ||
+          above.body.querySelector(`.research-snode[data-card-id="${CSS.escape(next.root)}"]`);
+        const button = source?.getBoundingClientRect();
+        const target = next.el.getBoundingClientRect();
+        const visible = button && button.width && button.right > plot.left && button.left < plot.right &&
+          button.bottom > plot.top && button.top < plot.bottom;
+        const startX = clamp(button ? (button.left + button.right) / 2 : plot.left + 24, plot.left + 9, plot.right - 9);
+        const startY = clamp(button?.bottom ?? plot.bottom, plot.top + 7, plot.bottom);
+        const finishX = clamp(startX, target.left + 16, target.right - 16);
+        const finishY = target.top - 2;
+        const points = [{ x: startX, y: startY }];
+        const sourceLane = source?.closest(".research-structure-lane");
+        if (sourceLane && visible && [...sourceLane.querySelectorAll(".research-snode")].some(card => {
+          const box = card.getBoundingClientRect();
+          return box.top > startY + 4 && box.top < plot.bottom && box.left < startX && box.right > startX;
+        })) {
+          const gutter = Math.min(sourceLane.getBoundingClientRect().right + 8, plot.right - 9);
+          points.push({ x: startX, y: startY + 5 }, { x: gutter, y: startY + 5 }, { x: gutter, y: plot.bottom + 12 });
+        } else points.push({ x: startX, y: plot.bottom + 12 });
+        points.push({ x: finishX, y: plot.bottom + 12 }, { x: finishX, y: finishY });
+        const group = svgNode(windowLinks, "g", { "data-source-card": next.root, "data-parent-root": above.root });
+        svgNode(group, "path", { class: `research-window-link${visible ? "" : " is-clipped"}`,
+          d: roundedPath(points.map(({ x, y }) => ({ x: x - rail.left, y: y - rail.top })), 4) });
+        svgNode(group, "circle", { class: "research-window-port", cx: startX - rail.left, cy: startY - rail.top, r: 3 });
+        const x = finishX - rail.left, y = finishY - rail.top;
+        svgNode(group, "path", { class: "research-window-port", d: `M${x - 5} ${y - 6}H${x + 5}L${x} ${y + 2}Z` });
+      }
+    });
+  }
+
   function measureExpandedChart(surface) {
     const { chart, grid, model, tracks, expanded, original } = surface;
     const style = getComputedStyle(chart);
@@ -1274,6 +1337,7 @@
     const announce = text => { live.textContent = text; };
     const layout = add(section, "div", "research-structure-layout");
     const scroller = add(layout, "div", "research-structure-scroll");
+    mounted.graphFrame = scroller;
     scroller.tabIndex = 0;
     scroller.setAttribute("aria-label", "模块关系图");
     scroller.setAttribute("role", "group");
@@ -1592,11 +1656,14 @@
             attachMenu(wrap, control, spec);
           }
           if (hasModule) {
-            const open = button(wrap, "打开模块图 ↓", () => options.onStructureBranch?.(info.card.id, scope), "research-snode-drill");
+            const open = button(wrap, options.readingOnly ? "＋" : "打开模块图 ↓",
+              () => options.onStructureBranch?.(info.card.id, scope),
+              options.readingOnly ? "research-snode-drill research-window-open" : "research-snode-drill");
             open.dataset.openModule = info.card.id;
             open.setAttribute("aria-label", `打开「${info.name}」的模块图`);
+            open.title = `打开「${info.name}」的模块图`;
             open.dataset.focusKey = `d:${entry.id}`;
-            inlineToggle(surface, wrap, info, `/${entry.id}`, new Set([scope]));
+            if (!options.readingOnly) inlineToggle(surface, wrap, info, `/${entry.id}`, new Set([scope]));
           }
           control.addEventListener("mouseenter", () => highlight(surface, entry.id));
           control.addEventListener("focus", () => highlight(surface, entry.id));
@@ -1622,7 +1689,10 @@
       return column;
     });
     /* Reading pane: a reserved right column on wide screens, a non-modal bottom sheet on narrow ones. */
-    const aside = add(layout, "aside", "research-structure-pane");
+    const aside = add(detailDock || layout, "aside", "research-structure-pane");
+    mounted.pane = aside;
+    aside.dataset.moduleRoot = scope;
+    if (detailDock) aside.hidden = inspected !== mounted;
     aside.setAttribute("role", "region");
     const bar = add(aside, "div", "research-structure-pane-bar");
     const barTitle = add(bar, "strong", "", "卡片详情");
@@ -1648,11 +1718,13 @@
     let fitting = false;
     const fitPane = () => {
       if (narrowQuery?.matches || !layout.isConnected) return;
+      if (detailDock && inspected !== mounted) return;
       const stacked = workspace.childElementCount > 1;
-      if (stacked && aside.style.getPropertyValue("--structure-pane-height")) return;
-      const top = stacked ? 128 : Math.max(12, layout.getBoundingClientRect().top);
+      if (!detailDock && stacked && aside.style.getPropertyValue("--structure-pane-height")) return;
+      const top = !detailDock && stacked ? 128 : Math.max(12, (detailDock || layout).getBoundingClientRect().top);
       aside.style.setProperty("--structure-pane-height", `${Math.max(148, Math.floor(window.innerHeight - top - 12))}px`);
     };
+    mounted.fitPane = fitPane;
     const scheduleFit = () => {
       if (fitting || narrowQuery?.matches) return;
       fitting = true;
@@ -1699,6 +1771,7 @@
         control.setAttribute("aria-pressed", String(value.kind === "node" && value.id === id));
       }
       renderStructureDetail(detail, model, nodes, structureSelection, scope);
+      if (emphasize) inspectModule(mounted);
       const name = detail.querySelector("h3")?.textContent.trim();
       barTitle.textContent = name ? `卡片详情 · ${name}` : "卡片详情";
       aside.setAttribute("aria-label", barTitle.textContent);
@@ -1727,7 +1800,8 @@
     const selectedCard = nodes.find(node => node.id === (mounted.card || (compact ? scope : null)) && node.id !== "board");
     const ancestors = selectedCard ? pathFor(selectedCard.id, nodes).reverse() : [];
     const mapped = ancestors.map(ancestor => [...model.info.values()].find(info => info.card.id === ancestor.id)).find(Boolean);
-    const relations = model.links.length && add(section, "details", "research-sources research-proof research-structure-relations");
+    const controlsHost = detailDock ? aside : section;
+    const relations = model.links.length && add(controlsHost, "details", "research-sources research-proof research-structure-relations");
     if (relations) {
       add(relations, "summary", "", `全部关系 · ${model.links.length} 条`);
       relations.open = Boolean(narrowQuery?.matches);
@@ -1745,7 +1819,7 @@
     const shown = new Set([...model.info.values()].map(info => info.card.id));
     const other = children(scope, nodes).filter(item => !shown.has(item.id));
     if (other.length) {
-      const details = add(section, "details", "research-sources research-proof");
+      const details = add(controlsHost, "details", "research-sources research-proof");
       add(details, "summary", "", `其他资料 · ${other.length} 张`);
       const list = add(details, "ul", "research-structure-relation-list");
       for (const card of other) {
@@ -1772,6 +1846,7 @@
       camera.measure();
       paint(surface);
       fitPane();
+      queueWindowLinks();
     };
     redraw();
     for (const restore of restoreExpansions) restore();
@@ -1820,6 +1895,8 @@
     mounted.camera = null;
     mounted.closeSheet = null;
     mounted.showCard = null;
+    if (detailDock) mounted.pane?.remove();
+    mounted.pane = mounted.graphFrame = mounted.fitPane = null;
     savedY = previousScope === rootId ? window.scrollY : null;
     restoreKey = mounted.pendingFocus || (previousScope === rootId && container.contains(document.activeElement)
       ? document.activeElement.dataset?.focusKey || null : null);
@@ -1828,7 +1905,9 @@
     lastPath = path.map(item => item.id);
     const structure = node ? diagramFor(node.id, nodes) : null;
     const compact = Boolean(structure && options.compactWorkspace?.());
-    container.classList.toggle("research-compact", compact);
+    const framed = Boolean(options.readingOnly && !mounted.first && structure && view === "structure");
+    container.classList.toggle("research-compact", compact || framed);
+    mounted.el.classList.toggle("research-module-window", framed);
     if (compact) view = "structure";
     /* The path starts at the real or virtual root, so a single root is never listed twice. */
     if (path.length > 1 && mounted.first) {
@@ -1851,13 +1930,13 @@
     const lead = feature?.outcome || record.question || (mode ? "" : node?.summary || "");
     const heading = add(container, "header", "research-heading");
     const intro = add(heading, "div");
-    if (mode && !compact) add(intro, "span", "research-kicker", kickers[mode.kind]);
+    if (mode && !compact && !framed) add(intro, "span", "research-kicker", kickers[mode.kind]);
     const name = add(intro, "h2");
     if (node) labelled(name, node);
     else name.textContent = options.title || "白板";
     name.tabIndex = -1;
-    if (lead) add(intro, "p", mode ? "research-lead" : "research-muted", lead);
-    if (mode && feature && !compact) add(intro, "p", "research-muted research-small", `适合：${feature.audience}`);
+    if (lead && !framed) add(intro, "p", mode ? "research-lead" : "research-muted", lead);
+    if (mode && feature && !compact && !framed) add(intro, "p", "research-muted research-small", `适合：${feature.audience}`);
     const controls = add(heading, "div", "research-heading-actions");
     if (view !== "structure" && mode && typeof options.onAsk === "function" && (mode.kind === "feature" || mode.kind === "scene")) {
       button(controls, mode.kind === "feature" ? "问这项功能" : "问这个场景",
@@ -1874,7 +1953,7 @@
       if (!options.readingOnly) add(container, "p", "research-description", "画布还没有卡片，先在编辑画布中写下第一张卡片。");
       return;
     }
-    if (compact) {
+    if (compact || framed) {
       renderStructure(add(container, "div", "research-content-plain"), nodes, structure);
       signature = contentSignature(nodes);
       return;
@@ -1954,14 +2033,25 @@
       const gallery = add(content, "div", "research-evidence research-evidence-grid");
       for (const item of members) for (const file of images(item)) figure(gallery, item, file);
     }
-    if (!mode) add(container, "footer", "research-footer", `${node.id === "board" ? "整张白板" : `卡号 ${node.id}`} · ` +
+    if (!mode && (!options.readingOnly || view !== "structure")) add(container, "footer", "research-footer", `${node.id === "board" ? "整张白板" : `卡号 ${node.id}`} · ` +
       `${members.length - 1} 张下级卡`);
     signature = contentSignature(nodes);
   }
   function init(settings) {
     options = settings;
-    workspace = document.getElementById("research-workspace");
-    if (!workspace) return;
+    const host = document.getElementById("research-workspace");
+    if (!host) return;
+    workspace = host;
+    if (options.readingOnly) {
+      host.classList.add("research-linked-reader");
+      const rail = add(host, "div", "research-window-rail");
+      workspace = add(rail, "div", "research-window-stack");
+      windowLinks = svgNode(rail, "svg", { class: "research-window-links", "aria-hidden": "true", focusable: "false" });
+      detailDock = add(host, "div", "research-detail-dock");
+      detailDock.hidden = true;
+      workspace.addEventListener("scroll", queueWindowLinks, true);
+      window.addEventListener("resize", queueWindowLinks, { passive: true });
+    }
     if (!initialized) {
       const dialog = add(document.body, "dialog", "research-image-dialog");
       dialog.id = "research-image-dialog";
@@ -2014,14 +2104,19 @@
       bridge.replaceChildren();
       if (above) {
         const parent = byId.get(above.root);
-        button(bridge, `↑ ${title(parent)}`, () => options.onStructureNavigate?.(above.root), "research-path-button");
-        add(bridge, "span", "research-module-arrow", "↓").setAttribute("aria-hidden", "true");
-        button(bridge, title(name), () => options.onStructureNavigate?.(entry.root), "research-path-button research-module-destination");
+        if (options.readingOnly) {
+          button(bridge, `↑ 来源 · ${title(parent)}`, () => options.onStructureNavigate?.(above.root, entry.root), "research-path-button");
+        } else {
+          button(bridge, `↑ ${title(parent)}`, () => options.onStructureNavigate?.(above.root), "research-path-button");
+          add(bridge, "span", "research-module-arrow", "↓").setAttribute("aria-hidden", "true");
+          button(bridge, title(name), () => options.onStructureNavigate?.(entry.root), "research-path-button research-module-destination");
+        }
       }
       for (const control of body.querySelectorAll("[data-open-module]")) {
         const follows = below?.root === control.dataset.openModule;
-        control.textContent = follows ? "跳到模块图 ↓" : "打开模块图 ↓";
+        control.textContent = options.readingOnly ? follows ? "↓" : "＋" : follows ? "跳到模块图 ↓" : "打开模块图 ↓";
         control.classList.toggle("is-followed", follows);
+        if (options.readingOnly) control.closest(".research-snode-wrap")?.classList.toggle("is-window-source", follows);
       }
     });
   }
@@ -2056,6 +2151,11 @@
     }
     activate(selected);
     updateModuleGuides(ordered, byId);
+    if (detailDock) {
+      const keep = inspected?.el.isConnected && inspected.pane ? inspected : null;
+      inspectModule(keep || (currentEntry?.pane ? currentEntry : ordered.find(entry => entry.pane)));
+      queueWindowLinks();
+    }
     const first = ordered[0]?.body;
     placeProjectTools(first?.classList.contains("research-compact") ? first.querySelector(".research-heading-actions") : undefined);
     signature = nextSignature;
@@ -2069,9 +2169,12 @@
       if (entry.camera && entry.el.isConnected) diagramViews.set(entry.root, entry.camera.read());
       entry.observer?.disconnect();
       entry.effects?.abort();
+      if (detailDock) entry.pane?.remove();
     }
     workspace.replaceChildren();
     entries.clear();
+    inspectModule(null);
+    windowLinks?.replaceChildren();
     currentEntry = container = null;
   }
   function refresh(nodes) {
