@@ -421,8 +421,79 @@ body.research-view {
   .research-structure-grid { grid-template-columns: minmax(0, 1fr) !important; row-gap: 14px; }
   .research-structure-lane { gap: 14px; }
 }
+/* In-place editing: node tools, expandable real child cards, in-zone reordering. */
+.research-structure-live { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.research-snode-tools {
+  position: absolute; top: 4px; right: 4px; z-index: 3; display: flex; align-items: center; gap: 1px; padding: 1px;
+  border-radius: 8px; background: rgb(255 255 255 / 94%); opacity: 0; transition: opacity .12s;
+}
+.research-snode-wrap:hover > .research-snode-tools,
+.research-snode:hover ~ .research-snode-tools,
+.research-snode-tools:hover,
+.research-snode-tools:focus-within,
+.research-snode:focus-visible ~ .research-snode-tools,
+.research-snode[aria-pressed="true"] ~ .research-snode-tools,
+.research-snode-wrap.is-lifted > .research-snode-tools,
+.research-snode-wrap.is-context-target > .research-snode-tools { opacity: 1; }
+.research-snode-tools button, .research-sub-tools button {
+  width: 26px; height: 26px; padding: 0; border: 0; border-radius: 7px; background: transparent;
+  color: var(--research-muted); font: inherit; font-size: 15px; line-height: 1; cursor: pointer; position: static; opacity: 1;
+}
+.research-snode-tools button:hover, .research-sub-tools button:hover,
+.research-snode-handle[aria-pressed="true"] { background: var(--research-tint); color: var(--research-ink); }
+.research-snode-tools button:focus-visible, .research-sub-tools button:focus-visible,
+.research-sub-toggle:focus-visible, .research-snode-expand:focus-visible, .research-sub-title:focus-visible,
+.research-sub-ref:focus-visible { outline: 2px solid var(--research-green); outline-offset: 1px; }
+.research-snode-handle { cursor: grab !important; touch-action: none; }
+.research-snode-wrap.is-lifted { z-index: 4; position: relative; filter: drop-shadow(0 4px 10px rgb(36 58 49 / 22%)); }
+.research-snode-wrap.is-lifted .research-snode { border-color: var(--research-green); border-style: dashed; }
+.research-snode-wrap.is-lifted .research-snode-handle { cursor: grabbing !important; }
+.research-zone-nodes { position: relative; }
+.research-snode-wrap.is-drop-before::before, .research-zone-nodes.is-drop-end::after {
+  content: ""; position: absolute; pointer-events: none; inset-inline: 0; height: 2px;
+  border-radius: 2px; background: var(--research-green); z-index: 3;
+}
+.research-snode-wrap.is-drop-before::before { top: -7px; }
+.research-zone-nodes.is-drop-end::after { bottom: -7px; }
+.research-snode-expand {
+  display: block; width: 100%; margin-top: 3px; padding: 2px 6px; border: 0; border-radius: 6px; background: transparent;
+  color: var(--research-muted); font: inherit; font-size: 11.5px; text-align: left; cursor: pointer;
+}
+.research-snode-expand:hover { background: var(--research-tint); color: var(--research-ink); }
+/* Parent/child = thin grey indented rule, clearly unlike the labelled, arrowed relation links. */
+.research-subtree { position: relative; z-index: 2; display: grid; gap: 2px; margin: 4px 0 0 9px; padding: 0 0 0 10px;
+  list-style: none; border-left: 1px solid #c3cdc5; }
+.research-subtree-host .research-subtree-host { margin: 0; }
+.research-subcard { position: relative; margin: 0; padding: 0; }
+.research-subcard::before { content: ""; position: absolute; left: -10px; top: 15px; width: 8px; border-top: 1px solid #c3cdc5; }
+.research-subrow { position: relative; display: flex; align-items: center; gap: 2px; min-height: 30px; padding: 0 2px; border-radius: 7px; background: rgb(255 255 255 / 85%); }
+.research-subrow:hover, .research-subrow.is-context-target { background: var(--research-tint); }
+.research-subrow.is-context-target { box-shadow: 0 0 0 2px var(--research-green); }
+.research-sub-toggle, .research-sub-spacer { flex: none; width: 22px; height: 24px; padding: 0; }
+.research-sub-toggle { border: 0; border-radius: 6px; background: transparent; color: var(--research-muted); font: inherit; font-size: 12px; cursor: pointer; }
+.research-sub-title {
+  flex: 1 1 auto; min-width: 0; padding: 4px 4px; border: 0; border-radius: 6px; background: transparent; color: var(--research-ink);
+  font: inherit; font-size: 12.5px; line-height: 1.4; text-align: left; overflow-wrap: anywhere; cursor: pointer;
+}
+.research-sub-title[aria-pressed="true"] { background: var(--research-tint); box-shadow: inset 2px 0 0 var(--research-green); font-weight: 650; }
+.research-sub-ref { flex: none; padding: 1px 6px; border-radius: 999px; background: #eef2f6; color: var(--research-muted); font-size: 10.5px; white-space: nowrap; }
+.research-sub-tools { flex: none; display: flex; opacity: 0; transition: opacity .12s; }
+.research-subrow:hover > .research-sub-tools, .research-sub-tools:focus-within,
+.research-subrow:focus-within > .research-sub-tools, .research-subrow.is-context-target > .research-sub-tools { opacity: 1; }
+.research-structure-legend [data-kind="child"] i { border-top: 1px solid #9aa89d; border-left: 1px solid #9aa89d; height: 8px; width: 14px; }
+@media (hover: none), (pointer: coarse) {
+  .research-snode-tools, .research-sub-tools { opacity: 1; }
+  .research-snode-tools button, .research-sub-tools button, .research-sub-toggle { width: 36px; height: 36px; font-size: 18px; }
+  .research-snode-wrap:has(.research-snode-more) .research-snode { padding-right: 112px; }
+  .research-sub-title, .research-snode-expand { min-height: 36px; }
+  .research-sub-spacer { width: 12px; }
+}
+@media (max-width: 760px) {
+  .research-snode-wrap:has(.research-snode-more) .research-snode { padding-right: 112px; }
+}
 @media (prefers-reduced-motion: reduce) {
   .research-edge, .research-edge-label { transition: none; }
+  .research-snode-tools, .research-sub-tools { transition: none; }
 }
 @media (max-width: 740px) {
   .research-grid { grid-template-columns: 1fr; }

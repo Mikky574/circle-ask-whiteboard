@@ -25,8 +25,7 @@
     const bar = $("project-surface-nav");
     bar.hidden = !structureRoot(nodes);
     if (bar.hidden) return;
-    $("project-surface-structure").setAttribute("aria-pressed", String(state.presentation === "research"));
-    $("project-surface-canvas").setAttribute("aria-pressed", String(state.presentation === "cards"));
+    $("project-surface-structure").setAttribute("aria-pressed", String(state.presentation === "research" && state.panel === "structure"));
     const found = nodes.find(node => node.id === currentCard() && node.id !== "board");
     const label = $("project-surface-card");
     label.hidden = !found;
@@ -102,7 +101,13 @@
 
   function restore() {
     const parsed = navigation.read(location.href, adapters.defaultPresentation);
-    const next = navigation.transition(parsed.state, { type: "reconcile" }, { nodes: reader.items() });
+    const nodes = reader.items();
+    let next = navigation.transition(parsed.state, { type: "reconcile" }, { nodes });
+    if (!parsed.explicit && next.presentation === "research" && !next.readingRoot) {
+      const card = next.card;
+      next = navigation.transition(next, { type: "showStructure" }, { nodes, structureRoot: structureRoot(nodes) });
+      if (card) next = navigation.transition(next, { type: "focusCard", card }, { nodes });
+    }
     apply(next, { historyMode: next.presentation === "research" || next !== parsed.state ? "replace" : undefined,
       preferStructure: !new URLSearchParams(location.search).has("panel") });
   }
@@ -114,9 +119,6 @@
     $("presentation-mindmap").addEventListener("click", () => move({ type: "setPresentation", presentation: "mindmap" }, { remember: true }));
     $("project-surface-structure").addEventListener("click", () => {
       if (move({ type: "showStructure" })) $("project-surface-structure").focus({ preventScroll: true });
-    });
-    $("project-surface-canvas").addEventListener("click", () => {
-      if (state.presentation !== "cards" && locate(currentCard())) $("project-surface-canvas").focus({ preventScroll: true });
     });
     $("project-surface-edit").addEventListener("click", () => {
       const card = currentCard();

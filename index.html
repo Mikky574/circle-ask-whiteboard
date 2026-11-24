@@ -335,8 +335,7 @@
     <main id="board-workspace" class="workspace">
       <nav id="project-surface-nav" aria-label="项目工作区" hidden>
         <div class="project-surface-switch" role="group" aria-label="项目视图">
-          <button id="project-surface-structure" type="button" aria-pressed="false">项目结构</button>
-          <button id="project-surface-canvas" type="button" aria-pressed="false">项目画布</button>
+          <button id="project-surface-structure" type="button" aria-pressed="false">结构白板</button>
         </div>
         <span id="project-surface-card" hidden></span>
         <button id="project-surface-edit" type="button" class="research-button research-edit-card" hidden>编辑当前卡片</button>
@@ -665,6 +664,13 @@
               <input id="workbench-card-title" type="text" maxlength="100" required>
               <label for="workbench-card-body">正文</label>
               <textarea id="workbench-card-body" rows="5" maxlength="800"></textarea>
+              <details id="workbench-card-appearance" hidden>
+                <summary>图上显示</summary>
+                <label for="workbench-card-diagram-title">图上名称</label>
+                <input id="workbench-card-diagram-title" maxlength="24" placeholder="沿用卡片标题">
+                <label for="workbench-card-diagram-note">图上说明</label>
+                <textarea id="workbench-card-diagram-note" rows="2" maxlength="80"></textarea>
+              </details>
               <div id="workbench-card-task-fields" hidden>
                 <label for="workbench-card-dependencies">依赖 <span>每行一条</span></label>
                 <textarea id="workbench-card-dependencies" rows="2" maxlength="905"></textarea>

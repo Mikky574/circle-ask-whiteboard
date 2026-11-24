@@ -660,17 +660,23 @@
     const edges = model.links.map(link => {
       const from = model.info.get(link.from);
       const to = model.info.get(link.to);
+      const source = buttons.get(link.from);
+      const target = buttons.get(link.to);
+      const a = rect(source);
+      const b = rect(target);
+      const first = a.y <= b.y ? source : target;
       const nodes = from.zone.nodes;
       const internal = from.zone === to.zone &&
-        Math.abs(nodes.indexOf(from.node) - nodes.indexOf(to.node)) === 1;
-      return { link, from, to, a: rect(buttons.get(link.from)), b: rect(buttons.get(link.to)), delta: to.lane - from.lane, internal };
+        Math.abs(nodes.indexOf(from.node) - nodes.indexOf(to.node)) === 1 &&
+        !first.closest(".research-snode-wrap")?.querySelector(".research-subtree");
+      return { link, from, to, a, b, delta: to.lane - from.lane, internal };
     });
     // Spread ports along a node side and vertical runs inside a gutter so parallel links stay apart.
     const sides = new Map();
     const runs = new Map();
     const side = (edge, end) => end === "from" ? (edge.delta >= 0 ? "r" : "l") : (edge.delta >= 1 ? "l" : "r");
     const gutters = edge => edge.delta >= 2 ? [edge.from.lane, edge.to.lane - 1] : edge.delta >= 0 ? [edge.from.lane]
-      : [edge.from.lane - 1, edge.to.lane];
+      : edge.delta === -1 ? [edge.to.lane] : [edge.from.lane - 1, edge.to.lane];
     for (const edge of edges) {
       if (edge.internal) continue;
       for (const end of ["from", "to"]) {
@@ -691,7 +697,7 @@
       (edge.offsets ||= [])[order] = (index - (list.length - 1) / 2) * 10;
     });
     const top = edges.filter(edge => edge.delta >= 2);
-    const bottom = edges.filter(edge => edge.delta < 0);
+    const bottom = edges.filter(edge => edge.delta < -1);
     const labels = [];
     const lines = svgNode(layer, "g", { class: "research-edge-lines" });
     for (const edge of edges) {
@@ -710,6 +716,8 @@
         } else if (delta >= 0) {
           points = [{ x: a.r, y: edge.fromY }, { x: first, y: edge.fromY }, { x: first, y: edge.toY },
             { x: delta ? b.l : b.r, y: edge.toY }];
+        } else if (delta === -1) {
+          points = [{ x: a.l, y: edge.fromY }, { x: first, y: edge.fromY }, { x: first, y: edge.toY }, { x: b.r, y: edge.toY }];
         } else {
           const channel = height - 14 - bottom.indexOf(edge) * 14;
           points = [{ x: a.l, y: edge.fromY }, { x: first, y: edge.fromY }, { x: first, y: channel }, { x: second, y: channel },
@@ -748,6 +756,8 @@
       placed.push({ x, y, w: boxWidth, h: boxHeight });
       const group = svgNode(labelLayer, "g", { ...attributes, class: `research-edge-label research-edge-label-${edge.link.kind}` });
       group.dataset.hasEvidence = String(Boolean(edge.link.evidence));
+      svgNode(group, "title", {}, `${kindNames[edge.link.kind]} · ${edge.from.name} → ${edge.to.name} · ` +
+        (edge.link.evidence ? "来源：已登记关系，附证据卡" : "来源：已登记关系"));
       svgNode(group, "rect", { x: x - boxWidth / 2, y: y - boxHeight / 2, width: boxWidth, height: boxHeight, rx: 5 });
       const text = svgNode(group, "text", { x, "text-anchor": "middle" });
       rows.forEach((row, index) => svgNode(text, "tspan", { x, y: y - boxHeight / 2 + 14 + index * 14 - 2 }, row));
@@ -768,11 +778,34 @@
     if (!card || card.id === "board") return;
     const row = add(parent, "div", "research-structure-actions");
     if (options.canEditCard?.(card.id)) {
-      button(row, "编辑卡片", () => options.onEditCard?.(card.id), "research-button research-edit-card");
+      button(row, "编辑原卡", () => options.onEditCard?.(card.id), "research-button research-edit-card");
     }
-    button(row, "在画布定位", () => options.onLocate?.(card.id));
+    if (typeof options.onAddChild === "function") {
+      button(row, "新建子卡", () => options.onAddChild(card.id));
+    }
     if (card.id !== rootId) button(row, "进入这张卡 ↗", () => enter(card.id), "research-button research-structure-enter");
   }
+  /* Expansion state lives outside the DOM so refreshes keep the tree open. Key = structure node + parent card. */
+  const expanded = new Set();
+  const expandKey = (nodeId, cardId) => `${nodeId}>${cardId}`;
+  const expansionStorageKey = () => `whiteboard.presentation.${window.BoardMemory.activeBoard}.structure-expanded.v1`;
+  function saveExpansion() {
+    try { localStorage.setItem(expansionStorageKey(), JSON.stringify([...expanded])); }
+    catch { /* A browser storage error leaves the open branches usable in this tab. */ }
+  }
+  function revealChildren(cardId) {
+    if (view !== "structure" || structureSelection?.kind !== "node" || !structureSelection.id || !cardId) return;
+    const key = expandKey(structureSelection.id, cardId);
+    const opened = expanded.has(key);
+    expanded.add(key);
+    saveExpansion();
+    if (!opened) render();
+  }
+  let savedScroll = null;
+  let savedY = null;
+  let restoreKey = null;
+  let pendingFocus = null;
+  let revealedFor = null;
   /* One shared node menu. It is appended to <body> with fixed positioning so the scrolling
      stage cannot clip it, and it always acts on the node it was opened for, never on the
      current selection. */
@@ -787,33 +820,38 @@
     trigger?.setAttribute("aria-expanded", "false");
     if (restore && opener?.isConnected) opener.focus({ preventScroll: true });
   }
-  function nodeActions(card) {
+  /* Actions work in place on the original card: edit, expand/collapse real children, add a child, move in zone.
+     `c` carries per-spot callbacks: kids, isOpen(), toggle(), move {up, down}. */
+  function cardActions(card, c = {}) {
     if (!card || card.id === "board") return [];
     const list = [];
     if (typeof options.onEditCard === "function" && options.canEditCard?.(card.id)) {
-      list.push(["编辑卡片", () => options.onEditCard(card.id)]);
+      list.push(["编辑原卡", () => options.onEditCard(card.id)]);
     }
-    if (typeof options.onOpenBranch === "function") list.push(["进入分支", () => options.onOpenBranch(card.id)]);
-    if (typeof options.onLocate === "function") list.push(["在画布定位", () => options.onLocate(card.id)]);
+    if (c.kids) list.push([c.isOpen() ? "收起下级" : "展开下级", c.toggle]);
+    if (typeof options.onAddChild === "function") list.push(["新建子卡", () => options.onAddChild(card.id)]);
+    if (c.move?.up) list.push(["在分区内上移", c.move.up]);
+    if (c.move?.down) list.push(["在分区内下移", c.move.down]);
     if (card.id !== rootId && typeof options.onEnter === "function") list.push(["查看卡片", () => enter(card.id)]);
     return list;
   }
-  function openMenu(model, id, opener, point) {
+  /* spec: { key, name, target, trigger, selection, actions() } */
+  function openMenu(model, spec, opener, point) {
     closeMenu(false);
-    const info = model.info.get(id);
-    const actions = nodeActions(info?.card);
+    const actions = spec.actions();
     if (!actions.length) return;
-    const target = opener.closest(".research-snode-wrap");
-    const trigger = target.querySelector(".research-snode-more");
+    const { target, trigger } = spec;
     const el = document.createElement("div");
     el.className = "research-context-menu";
     el.setAttribute("role", "menu");
-    el.setAttribute("aria-label", `${info.name} 的操作`);
+    el.setAttribute("aria-label", `${spec.name} 的操作`);
     const entries = actions.map(([label, run]) => {
       const item = button(el, label, () => {
         closeMenu(true);
         const selected = structureSelection;
-        if (!(selected?.kind === "node" && selected.id === id && !selected.cardId)) model.select({ kind: "node", id });
+        const want = spec.selection;
+        if (!(selected?.kind === "node" && selected.id === want.id && (selected.cardId || null) === (want.cardId || null) &&
+          !(want.cardId == null && selected.cardId))) model.select(want);
         run();
       }, "research-context-item");
       item.setAttribute("role", "menuitem");
@@ -839,12 +877,21 @@
     const view = { w: document.documentElement.clientWidth, h: document.documentElement.clientHeight };
     el.style.maxHeight = `${view.h - margin * 2}px`;
     const height = Math.min(box.height, view.h - margin * 2);
-    const left = Math.min(point.x, view.w - box.width - margin);
-    const top = point.y + height + margin > view.h ? point.y - height : point.y;
-    el.style.left = `${Math.max(margin, left)}px`;
-    el.style.top = `${Math.max(margin, Math.min(top, view.h - height - margin))}px`;
+    const anchor = opener.getBoundingClientRect();
+    const place = (x, y) => {
+      const left = Math.min(x, view.w - box.width - margin);
+      const top = y + height + margin > view.h ? y - height : y;
+      el.style.left = `${Math.max(margin, left)}px`;
+      el.style.top = `${Math.max(margin, Math.min(top, view.h - height - margin))}px`;
+    };
+    place(point.x, point.y);
     const outside = event => { if (!el.contains(event.target) && event.target !== trigger) closeMenu(false); };
-    const scrolled = event => { if (!el.contains(event.target)) closeMenu(false); };
+    const scrolled = event => {
+      if (el.contains(event.target)) return;
+      const current = opener.getBoundingClientRect();
+      if (current.bottom <= 0 || current.top >= view.h || current.right <= 0 || current.left >= view.w) closeMenu(false);
+      else place(point.x + current.x - anchor.x, point.y + current.y - anchor.y);
+    };
     const away = event => { if (!el.contains(event.target) && event.target !== opener && event.target !== trigger) closeMenu(false); };
     const dismiss = () => closeMenu(false);
     document.addEventListener("pointerdown", outside, true);
@@ -852,7 +899,7 @@
     document.addEventListener("focusin", away, true);
     window.addEventListener("resize", dismiss);
     window.addEventListener("blur", dismiss);
-    menu = { el, id, opener, target, trigger, off: () => {
+    menu = { el, id: spec.key, opener, target, trigger, off: () => {
       document.removeEventListener("pointerdown", outside, true);
       document.removeEventListener("scroll", scrolled, true);
       document.removeEventListener("focusin", away, true);
@@ -875,6 +922,8 @@
       button(heading, from.name, () => select({ kind: "node", id: link.from }), "research-card-title");
       heading.append(document.createTextNode(` → ${link.label} → `));
       button(heading, to.name, () => select({ kind: "node", id: link.to }), "research-card-title");
+      add(panel, "p", "research-muted research-small",
+        `类型：${kindNames[link.kind]}。来源：作者在结构图中登记的关系，不是卡片的上下级归属。`);
       const evidence = link.evidence && nodes.find(item => item.id === link.evidence);
       if (!evidence) {
         add(panel, "p", "research-muted", "这条连线没有关联证据卡片。");
@@ -920,9 +969,14 @@
     const intro = add(header, "div");
     add(intro, "h3", "", structure.title || "项目结构");
     add(intro, "p", "research-muted research-small",
-      narrowQuery?.matches ? "点节点读原卡，在「全部关系」里查看去向和证据。" : "点节点读原卡，点连线文字看证据。");
+      narrowQuery?.matches ? "点节点读原卡；右键或「⋯」就地编辑、展开下级。带文字的箭头是登记的关系，缩进细线是上下级。"
+        : "点节点读原卡；右键或「⋯」就地编辑、展开下级（Shift+→ / ←）。带文字的箭头是登记的关系，缩进细线是卡片的上下级归属。");
     const legend = add(header, "ul", "research-structure-legend");
     legend.setAttribute("aria-label", "连线类型");
+    const parentKey = add(legend, "li");
+    parentKey.dataset.kind = "child";
+    add(parentKey, "i").setAttribute("aria-hidden", "true");
+    parentKey.append(document.createTextNode("上下级（缩进）"));
     for (const kind of Object.keys(kindNames)) {
       if (!model.links.some(link => link.kind === kind)) continue;
       const entry = add(legend, "li");
@@ -932,6 +986,19 @@
     }
     if (model.dropped) add(section, "p", "research-caveat",
       `结构中有 ${model.dropped} 项引用的卡片已不存在，已暂时隐藏；卡片恢复后会再次出现。`);
+    const live = add(section, "p", "research-structure-live");
+    live.setAttribute("role", "status");
+    const announce = text => { live.textContent = text; };
+    /* Keep the selected card in context: open the real parents between its mapped node and itself. */
+    const linkedEarly = structureSelection?.kind === "link";
+    const pickedCard = !linkedEarly && handoffCard && nodes.find(node => node.id === handoffCard && node.id !== "board");
+    const pickedMap = pickedCard && pathFor(pickedCard.id, nodes).reverse()
+      .map(ancestor => [...model.info.values()].find(info => info.card.id === ancestor.id)).find(Boolean);
+    if (pickedCard && pickedMap && pickedMap.card.id !== pickedCard.id && revealedFor !== pickedCard.id) {
+      const chain = pathFor(pickedCard.id, nodes);
+      const from = chain.findIndex(item => item.id === pickedMap.card.id);
+      if (from >= 0) for (const item of chain.slice(from, -1)) expanded.add(expandKey(pickedMap.node.id, item.id));
+    }
     const scroller = add(section, "div", "research-structure-scroll");
     if (!narrowQuery?.matches) scroller.tabIndex = 0;
     scroller.setAttribute("aria-label", narrowQuery?.matches ? "项目职责分区" : "项目结构图，可横向滚动");
@@ -939,7 +1006,7 @@
     const stage = add(scroller, "div", "research-structure-stage");
     const layer = svgNode(stage, "svg", { class: "research-structure-lines", "aria-hidden": "true", focusable: "false" });
     const topCount = model.links.filter(link => model.info.get(link.to).lane - model.info.get(link.from).lane >= 2).length;
-    const bottomCount = model.links.filter(link => model.info.get(link.to).lane < model.info.get(link.from).lane).length;
+    const bottomCount = model.links.filter(link => model.info.get(link.to).lane - model.info.get(link.from).lane <= -2).length;
     stage.style.setProperty("--structure-top", `${28 + topCount * 14}px`);
     stage.style.setProperty("--structure-bottom", `${28 + bottomCount * 14}px`);
     stage.style.setProperty("--structure-lanes", model.lanes.length);
@@ -949,6 +1016,142 @@
       ...model.zones.filter(zone => zone.lane === lane).map(zone => weight[zone.size])
     )}fr)`).join(" ");
     const buttons = new Map();
+    const trees = new Map();
+    let frame = 0;
+    const soon = () => {
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; if (stage.isConnected) redraw(); });
+    };
+    const refOf = cardId => [...model.info.values()].find(item => item.card.id === cardId);
+    const focusByKey = (root, key) => [...root.querySelectorAll("[data-focus-key]")].find(element => element.dataset.focusKey === key);
+    const markSelection = () => {
+      const selected = structureSelection;
+      for (const element of stage.querySelectorAll(".research-sub-title")) {
+        const on = selected?.kind === "node" && selected.id === element.dataset.nodeId && selected.cardId === element.dataset.cardId;
+        element.setAttribute("aria-pressed", String(on));
+      }
+    };
+    /* Expand/collapse one level in place: only this node's subtree is rebuilt, then the routing is redrawn. */
+    function setOpen(nodeId, cardId, on) {
+      const key = expandKey(nodeId, cardId);
+      if (on) expanded.add(key);
+      else expanded.delete(key);
+      saveExpansion();
+      const tree = trees.get(nodeId);
+      if (!tree) return;
+      const wanted = document.activeElement?.dataset?.focusKey;
+      tree.rebuild();
+      const selected = structureSelection;
+      const collapsingSelection = !on && selected?.id === nodeId && selected.cardId !== cardId &&
+        pathFor(selected.cardId, nodes).some(item => item.id === cardId);
+      if (collapsingSelection) {
+        model.select({ kind: "node", id: nodeId, cardId });
+      } else markSelection();
+      if (wanted) focusByKey(tree.wrap, wanted)?.focus({ preventScroll: true });
+      soon();
+    }
+    /* Persist a new order of one zone. Hidden (stale) nodes keep their slots. Resolves true when saved. */
+    function saveOrder(zone, ids, focusId) {
+      const raw = options.getStructure?.()?.zones?.find(item => item.id === zone.id);
+      const shown = new Set(ids);
+      let next = 0;
+      const full = raw ? raw.nodes.map(item => shown.has(item.id) ? ids[next++] : item.id) : ids;
+      return Promise.resolve().then(() => options.onReorderZone(zone.id, full)).then(result => result === true, () => false).then(ok => {
+        if (ok) {
+          pendingFocus = focusId ? `h:${focusId}` : null;
+          if (active) render();
+        } else announce("未能保存新顺序，已恢复原位。");
+        return ok;
+      });
+    }
+    function makeMore(parent, spec) {
+      const more = button(parent, "⋯", () => {
+        if (menu?.id === spec.key) closeMenu(true);
+        else {
+          const box = more.getBoundingClientRect();
+          openMenu(model, spec, more, { x: box.left, y: box.bottom + 4 });
+        }
+      }, "research-snode-more");
+      more.dataset.focusKey = `m:${spec.key}`;
+      more.setAttribute("aria-label", `${spec.name} 的更多操作`);
+      more.setAttribute("aria-haspopup", "menu");
+      more.setAttribute("aria-expanded", "false");
+      spec.trigger = more;
+      return more;
+    }
+    function attachMenu(area, fallback, spec, skipTree) {
+      const open = (event, point) => {
+        if (skipTree && event.target.closest(".research-subtree")) return false;
+        event.preventDefault();
+        const opener = event.target.closest("button") || fallback;
+        const box = opener.getBoundingClientRect();
+        openMenu(model, spec, opener, point || { x: box.left + 12, y: box.bottom - 6 });
+        return true;
+      };
+      area.addEventListener("contextmenu", event => {
+        open(event, event.clientX || event.clientY ? { x: event.clientX, y: event.clientY } : null);
+      });
+      area.addEventListener("keydown", event => {
+        if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) open(event, null);
+      });
+    }
+    /* Real child cards under a structure node, recursively. A child that is already a node on the map
+       is shown as a reference to that same card (never a second copy). */
+    function fillTree(host, nodeId, card, seen) {
+      const kids = children(card.id, nodes).filter(item => !seen.has(item.id));
+      if (!kids.length) return;
+      const list = add(host, "ul", "research-subtree");
+      for (const kid of kids) {
+        const below = children(kid.id, nodes).filter(item => !seen.has(item.id) && item.id !== kid.id);
+        const key = expandKey(nodeId, kid.id);
+        const isOpen = () => expanded.has(key);
+        const toggle = () => setOpen(nodeId, kid.id, !isOpen());
+        const ref = refOf(kid.id);
+        const name = title(kid);
+        const selection = ref ? { kind: "node", id: ref.node.id } : { kind: "node", id: nodeId, cardId: kid.id };
+        const li = add(list, "li", "research-subcard");
+        const row = add(li, "div", "research-subrow");
+        if (below.length) {
+          const arrow = button(row, isOpen() ? "▾" : "▸", toggle, "research-sub-toggle");
+          arrow.dataset.focusKey = `t:${key}`;
+          arrow.setAttribute("aria-expanded", String(isOpen()));
+          arrow.setAttribute("aria-label", `${isOpen() ? "收起" : "展开"}「${name}」的 ${below.length} 张下级卡`);
+        } else add(row, "span", "research-sub-spacer");
+        const pick = button(row, name, () => {
+          model.select(selection);
+          if (ref) buttons.get(ref.node.id)?.focus();
+        }, "research-sub-title");
+        pick.dataset.nodeId = nodeId;
+        pick.dataset.cardId = kid.id;
+        pick.dataset.focusKey = `s:${key}`;
+        if (ref) {
+          const counts = [model.links.filter(link => link.to === ref.node.id).length, model.links.filter(link => link.from === ref.node.id).length];
+          const badge = add(row, "span", "research-sub-ref", `已在图上 · ${counts[0]}入${counts[1]}出`);
+          badge.title = `与图上「${ref.name}」是同一张原卡，不是副本`;
+        }
+        const tools = add(row, "span", "research-sub-tools");
+        if (typeof options.onEditCard === "function" && options.canEditCard?.(kid.id)) {
+          const edit = button(tools, "✎", () => { model.select(selection); options.onEditCard(kid.id); }, "research-snode-edit");
+          edit.setAttribute("aria-label", `编辑「${name}」原卡`);
+          edit.title = "编辑原卡";
+          edit.dataset.focusKey = `e:${key}`;
+        }
+        const spec = { key: `sub:${key}`, name, target: row, trigger: null, selection,
+          actions: () => cardActions(kid, { kids: below.length, isOpen, toggle }) };
+        if (spec.actions().length) makeMore(tools, spec);
+        attachMenu(row, pick, spec, false);
+        pick.addEventListener("keydown", event => {
+          if (event.altKey || event.ctrlKey || event.metaKey) return;
+          if (event.key === "ArrowRight" && below.length && !isOpen()) { event.preventDefault(); toggle(); }
+          else if (event.key === "ArrowLeft" && isOpen()) { event.preventDefault(); toggle(); }
+          else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            const all = [...pick.closest(".research-snode-wrap").querySelectorAll(".research-snode, .research-sub-title")];
+            const next = all[all.indexOf(pick) + (event.key === "ArrowDown" ? 1 : -1)];
+            if (next) { event.preventDefault(); next.focus(); }
+          }
+        });
+        if (isOpen() && below.length) fillTree(add(li, "div", "research-subtree-host"), nodeId, kid, new Set([...seen, kid.id]));
+      }
+    }
     model.laneEls = model.lanes.map(lane => {
       const column = add(grid, "div", "research-structure-lane");
       for (const zone of model.zones.filter(entry => entry.lane === lane)) {
@@ -964,6 +1167,7 @@
         for (const entry of zone.nodes) {
           const info = model.info.get(entry.id);
           const wrap = add(list, "div", "research-snode-wrap");
+          wrap.dataset.nodeId = entry.id;
           const control = button(wrap, "", () => model.select({ kind: "node", id: entry.id }), "research-snode");
           if (entry.label) control.title = title(info.card);
           add(control, "strong", "", info.name);
@@ -972,39 +1176,149 @@
           const incoming = model.links.filter(link => link.to === entry.id).length;
           control.setAttribute("aria-label", `${info.name}，${zone.title}，${incoming} 条入线，${out} 条出线`);
           control.dataset.node = entry.id;
+          control.dataset.focusKey = `n:${entry.id}`;
           buttons.set(entry.id, control);
-          if (nodeActions(info.card).length) {
-            const more = button(wrap, "⋯", () => {
-              if (menu?.id === entry.id) closeMenu(true);
-              else {
-                const box = more.getBoundingClientRect();
-                openMenu(model, entry.id, more, { x: box.left, y: box.bottom + 4 });
-              }
-            }, "research-snode-more");
-            more.setAttribute("aria-label", `${info.name} 的更多操作`);
-            more.setAttribute("aria-haspopup", "menu");
-            more.setAttribute("aria-expanded", "false");
-            control.setAttribute("aria-keyshortcuts", "Shift+F10");
-            wrap.addEventListener("contextmenu", event => {
-              event.preventDefault();
-              const opener = event.target.closest("button") || control;
-              const box = opener.getBoundingClientRect();
-              const pointer = event.clientX || event.clientY;
-              openMenu(model, entry.id, opener, pointer ? { x: event.clientX, y: event.clientY } : { x: box.left + 12, y: box.bottom - 6 });
-            });
-            wrap.addEventListener("keydown", event => {
-              if (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey)) return;
-              event.preventDefault();
-              const opener = event.target.closest("button") || control;
-              const box = opener.getBoundingClientRect();
-              openMenu(model, entry.id, opener, { x: box.left + 12, y: box.bottom - 6 });
-            });
+          const isCard = info.card.id !== "board";
+          const kidCount = children(info.card.id, nodes).filter(item => item.id !== info.card.id).length;
+          const open = () => expanded.has(expandKey(entry.id, info.card.id));
+          const toggle = () => setOpen(entry.id, info.card.id, !open());
+          const canMove = typeof options.onReorderZone === "function" && zone.nodes.length > 1;
+          const order = () => [...list.children].map(element => element.dataset.nodeId);
+          const place = delta => {
+            const ids = order();
+            const at = ids.indexOf(entry.id);
+            const to = at + delta;
+            if (to < 0 || to >= ids.length) return;
+            [ids[at], ids[to]] = [ids[to], ids[at]];
+            saveOrder(zone, ids, entry.id);
+          };
+          const tools = add(wrap, "div", "research-snode-tools");
+          if (isCard && typeof options.onEditCard === "function" && options.canEditCard?.(info.card.id)) {
+            const edit = button(tools, "✎", () => { model.select({ kind: "node", id: entry.id }); options.onEditCard(info.card.id); },
+              "research-snode-edit");
+            edit.setAttribute("aria-label", `编辑「${info.name}」原卡`);
+            edit.title = "编辑原卡";
+            edit.dataset.focusKey = `e:${entry.id}`;
           }
+          if (canMove) {
+            const handle = button(tools, "⠿", event => {
+              if (event.detail !== 0) return;
+              if (drag) { drop(true); announce("已放下"); }
+              else { lift("key"); announce(`已拿起 ${info.name}。用上下方向键移动，空格或回车放下，Esc 取消。`); }
+            }, "research-snode-handle");
+            handle.setAttribute("aria-label", `在「${zone.title}」内调整「${info.name}」的位置`);
+            handle.setAttribute("aria-pressed", "false");
+            handle.title = "拖动调整本分区内的顺序";
+            handle.dataset.focusKey = `h:${entry.id}`;
+            let drag = null;
+            const restoreOrder = ids => {
+              for (const id of ids) list.append(trees.get(id).wrap);
+              soon();
+            };
+            const lift = mode => {
+              closeMenu(false);
+              drag = { mode, before: order() };
+              wrap.classList.add("is-lifted");
+              handle.setAttribute("aria-pressed", "true");
+            };
+            const drop = keep => {
+              if (!drag) return;
+              const { before, mode, target } = drag;
+              drag = null;
+              list.querySelector(".is-drop-before")?.classList.remove("is-drop-before");
+              list.classList.remove("is-drop-end");
+              wrap.classList.remove("is-lifted");
+              handle.setAttribute("aria-pressed", "false");
+              if (keep && mode === "pointer" && target !== undefined) list.insertBefore(wrap, target);
+              const after = order();
+              if (keep && after.join("\n") !== before.join("\n")) {
+                saveOrder(zone, after, entry.id).then(ok => { if (!ok) { restoreOrder(before); if (mode === "key") handle.focus({ preventScroll: true }); } });
+              } else if (!keep) { restoreOrder(before); if (mode === "key") handle.focus({ preventScroll: true }); }
+            };
+            handle.addEventListener("pointerdown", event => {
+              if (event.button > 0 || drag) return;
+              event.preventDefault();
+              handle.setPointerCapture?.(event.pointerId);
+              lift("pointer");
+            });
+            handle.addEventListener("pointermove", event => {
+              if (drag?.mode !== "pointer") return;
+              const others = [...list.children].filter(element => element !== wrap);
+              let index = 0;
+              for (const other of others) {
+                const box = other.getBoundingClientRect();
+                if (event.clientY > box.top + box.height / 2) index++;
+                else break;
+              }
+              const target = others[index] || null;
+              if (drag.target === target) return;
+              drag.target?.classList.remove("is-drop-before");
+              drag.target = target;
+              target?.classList.add("is-drop-before");
+              list.classList.toggle("is-drop-end", !target);
+            });
+            handle.addEventListener("pointerup", () => { if (drag?.mode === "pointer") drop(true); });
+            handle.addEventListener("pointercancel", () => { if (drag?.mode === "pointer") drop(false); });
+            handle.addEventListener("keydown", event => {
+              if (drag?.mode !== "key") return;
+              if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); drop(false); announce("已取消"); }
+              else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+                event.preventDefault();
+                event.stopPropagation();
+                const all = [...list.children];
+                const at = all.indexOf(wrap);
+                const to = at + (event.key === "ArrowUp" ? -1 : 1);
+                if (to < 0 || to >= all.length) return;
+                list.insertBefore(wrap, event.key === "ArrowUp" ? all[to] : all[to].nextElementSibling);
+                handle.focus({ preventScroll: true });
+                soon();
+                announce(`第 ${to + 1} 位，共 ${all.length} 个`);
+              }
+            });
+            handle.addEventListener("focusout", event => { if (drag?.mode === "key" && event.relatedTarget) drop(false); });
+          }
+          const spec = { key: `node:${entry.id}`, name: info.name, target: wrap, trigger: null, selection: { kind: "node", id: entry.id },
+            actions: () => cardActions(info.card, { kids: kidCount, isOpen: open, toggle,
+              move: canMove ? { up: order().indexOf(entry.id) > 0 ? () => place(-1) : null,
+                down: order().indexOf(entry.id) < order().length - 1 ? () => place(1) : null } : null }) };
+          if (spec.actions().length) {
+            makeMore(tools, spec);
+            control.setAttribute("aria-keyshortcuts", "Shift+F10");
+            attachMenu(wrap, control, spec, true);
+          }
+          let strip = null;
+          if (kidCount) {
+            strip = button(wrap, "", toggle, "research-snode-expand");
+            strip.dataset.focusKey = `t:${expandKey(entry.id, info.card.id)}`;
+          }
+          const host = add(wrap, "div", "research-subtree-host");
+          if (strip) strip.setAttribute("aria-controls", (host.id = `research-tree-${entry.id}`));
+          const paintToggle = () => {
+            if (strip) {
+              strip.textContent = `${open() ? "▾ 收起" : "▸ 展开"}下级 ${kidCount}`;
+              strip.setAttribute("aria-expanded", String(open()));
+            }
+          };
+          const rebuild = () => {
+            host.replaceChildren();
+            if (open()) fillTree(host, entry.id, info.card, new Set([info.card.id]));
+            paintToggle();
+          };
+          trees.set(entry.id, { wrap, rebuild });
+          paintToggle();
           control.addEventListener("mouseenter", () => highlight(entry.id));
           control.addEventListener("focus", () => highlight(entry.id));
           control.addEventListener("mouseleave", () => highlight(null));
           control.addEventListener("blur", () => highlight(null));
           control.addEventListener("keydown", event => {
+            if (kidCount && event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey) {
+              if (event.key === "ArrowRight" && !open()) { event.preventDefault(); toggle(); return; }
+              if (event.key === "ArrowLeft" && open()) { event.preventDefault(); toggle(); return; }
+            }
+            if (event.key === "ArrowDown" && !event.shiftKey && open()) {
+              const first = host.querySelector(".research-sub-title");
+              if (first) { event.preventDefault(); first.focus(); return; }
+            }
             const arrows = ["ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"];
             if (!arrows.includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
             let target;
@@ -1022,6 +1336,13 @@
       }
       return column;
     });
+    // Hold the compact layout's lane offsets while one branch grows in place.
+    const offsets = model.laneEls.map(column => column.firstElementChild.getBoundingClientRect().top - column.getBoundingClientRect().top);
+    model.laneEls.forEach((column, index) => {
+      column.style.paddingTop = `${Math.max(0, offsets[index])}px`;
+      column.style.justifyContent = "flex-start";
+    });
+    for (const tree of trees.values()) tree.rebuild();
     const detail = add(section, "div", "research-structure-detail");
     detail.setAttribute("aria-live", "polite");
     let showSelection = false;
@@ -1045,7 +1366,11 @@
       structureSelection = value;
       handoffCard = value.kind === "link" ? model.links.find(link => link.from === value.from && link.to === value.to)?.evidence || null
         : value.cardId || model.info.get(value.id)?.card.id || null;
-      for (const [id, control] of buttons) control.setAttribute("aria-pressed", String(value.kind === "node" && value.id === id));
+      for (const [id, control] of buttons) {
+        control.setAttribute("aria-pressed", String(value.kind === "node" && value.id === id));
+      }
+      revealedFor = handoffCard;
+      markSelection();
       renderStructureDetail(detail, model, nodes);
       highlight(null);
       if (emphasize) options.onFocus?.(handoffCard);
@@ -1081,6 +1406,11 @@
       structureObserver.observe(stage);
     }
     document.fonts?.ready?.then(() => { if (stage.isConnected) redraw(); });
+    // A refresh keeps the horizontal scroll, page position and keyboard focus where the user left them.
+    if (savedScroll != null) scroller.scrollLeft = savedScroll;
+    if (savedY != null && window.scrollY !== savedY) window.scrollTo(window.scrollX, savedY);
+    if (restoreKey) focusByKey(section, restoreKey)?.focus({ preventScroll: true });
+    savedScroll = savedY = restoreKey = pendingFocus = null;
   }
   narrowQuery?.addEventListener?.("change", () => { if (active && view === "structure") render(); });
 
@@ -1097,6 +1427,11 @@
         nodes.find(item => !nodes.some(parent => parent.id === item.parentId)) || nodes[0];
       rootId = node?.id || null;
     }
+    const oldScroller = container.querySelector(".research-structure-scroll");
+    savedScroll = oldScroller ? oldScroller.scrollLeft : null;
+    savedY = oldScroller ? window.scrollY : null;
+    restoreKey = pendingFocus || (oldScroller && container.contains(document.activeElement)
+      ? document.activeElement.dataset?.focusKey || null : null);
     container.replaceChildren();
     const path = node ? pathFor(node.id, nodes) : [];
     lastPath = path.map(item => item.id);
@@ -1219,6 +1554,10 @@
     container = document.getElementById("research-workspace");
     if (!container) return;
     if (!initialized) {
+      try {
+        const saved = JSON.parse(localStorage.getItem(expansionStorageKey()));
+        if (Array.isArray(saved)) for (const key of saved) if (typeof key === "string") expanded.add(key);
+      } catch { /* Invalid or unavailable preferences start with a compact view. */ }
       const dialog = add(document.body, "dialog", "research-image-dialog");
       dialog.id = "research-image-dialog";
       const heading = add(dialog, "header");
@@ -1253,6 +1592,6 @@
     container.querySelector("h2")?.focus({ preventScroll: true });
     container.scrollIntoView({ block: "start", behavior: "instant" });
   }
-  window.BoardResearch = { init, show, hide, refresh, items, focusHeading, structureFor,
+  window.BoardResearch = { init, show, hide, refresh, items, focusHeading, structureFor, revealChildren,
     get active() { return active; } };
 })();

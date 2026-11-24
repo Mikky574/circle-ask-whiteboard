@@ -864,150 +864,130 @@ async function mindmapCardLifecycle() {
   }
 }
 
-async function structureWorkspaceHandoff() {
+async function structureWorkspaceEditing() {
   const previous = page;
   const boardId = `board-${"b".repeat(32)}`;
   const items = [
     { id: "E04", parentId: null, title: "同一个项目", category: "main" },
     { id: "E40", parentId: "E04", title: "使用入口", category: "reference" },
-    { id: "E41", parentId: "E40", title: "保留同一张卡", category: "reference" },
-    { id: "E42", parentId: "E41", title: "只在原分支中的证据", category: "reference" },
+    { id: "E41", parentId: "E40", title: "原卡工作", category: "reference" },
+    { id: "E42", parentId: "E41", title: "原分支中的证据", category: "reference" },
+    { id: "E43", parentId: "E42", title: "第五级验收", category: "reference" },
+    { id: "E50", parentId: "E04", title: "同区另一张卡", category: "reference" },
   ].map(item => ({ ...item, summary: item.title + "。" }));
   const positions = { E04: { x: 80, y: 90, width: 300 } };
+  const links = [{ from: "start", to: "continue", label: "继续", evidence: "E42" },
+    { from: "continue", to: "output", label: "提交结果" }];
   const current = { title: "同一个项目", items, positions, collapsedBranches: ["E40"],
     layout: { flow: "horizontal", density: "compact" }, projectStructure: {
       version: 1, rootId: "E04", zones: [
         { id: "entry", title: "入口", nodes: [{ id: "start", cardId: "E40" }] },
-        { id: "work", title: "处理", nodes: [{ id: "continue", cardId: "E41" }] },
-      ], links: [{ from: "start", to: "continue", label: "继续", evidence: "E42" }],
+        { id: "work", title: "处理", nodes: [{ id: "continue", cardId: "E41" }, { id: "output", cardId: "E50" }] },
+      ], links,
     } };
   for (const width of [1480, 500]) {
     const isolated = await browser.newContext({ viewport: { width, height: 1000 }, hasTouch: width < 760, serviceWorkers: "block" });
     isolated.setDefaultTimeout(12000);
     const caseName = `structure-workspace-${width}`;
     await isolated.addCookies([{ name: "mindmap-case", value: caseName, url: origin }]);
-    boardCases.set(caseName, new Map([[boardId, { id: boardId, title: current.title, revision: 1,
-      updatedAt: new Date().toISOString(), storage: { organization: JSON.stringify({ current }) } }]]));
+    const records = new Map([[boardId, { id: boardId, title: current.title, revision: 1,
+      updatedAt: new Date().toISOString(), storage: { organization: JSON.stringify({ current }) } }]]);
+    boardCases.set(caseName, records);
     try {
       page = await isolated.newPage();
       page.on("pageerror", error => errors.push(error.message));
-      await page.goto(`${origin}/?board=${boardId}&view=canvas&presentation=research&root=E04&panel=structure`);
-      const detail = page.locator(".research-structure-detail");
-      const body = page.locator("#workbench-card-body");
-      const drawer = page.locator("#project-card-drawer");
-      const card = identity => page.locator(`#board [data-element-id="${identity}"]`);
+      await page.goto(`${origin}/?board=${boardId}&view=canvas`);
       const entry = page.locator('.research-snode[data-node="continue"]');
-      const menu = page.getByRole("menu", { name: "保留同一张卡 的操作" });
-      await page.locator('.research-snode[data-node="start"]').click();
-      await entry.scrollIntoViewIfNeeded();
-      const scroll = await page.evaluate(() => window.scrollY);
+      const start = page.locator('.research-snode[data-node="start"]');
+      const branch = entry.locator("..");
+      const subcard = id => page.locator(`.research-sub-title[data-card-id="${id}"]`).first();
+      const menu = page.getByRole("menu");
+      const drawer = page.locator("#project-card-drawer");
+      const fold = branch.locator(".research-snode-expand");
+      await entry.waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("panel"), "structure", "The project opens on its structure whiteboard");
+      assert.equal(await page.locator("#project-surface-canvas").count(), 0);
+      await fold.scrollIntoViewIfNeeded();
+      const pose = await entry.boundingBox();
+      const peer = await start.boundingBox();
+      const scroll = await page.evaluate(() => scrollY);
       await entry.click({ button: "right" });
       await menu.waitFor();
-      const bounds = await menu.boundingBox();
-      assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width && bounds.y >= 0 && bounds.y + bounds.height <= 1000);
-      assert.equal(await page.evaluate(() => window.scrollY), scroll, "Opening a node menu must not scroll to card details");
-      assert.equal(new URL(page.url()).searchParams.get("focusCard"), "E40", "Showing a menu must not change the selected card");
-      await menu.getByRole("menuitem", { name: "编辑卡片" }).click();
-      assert.equal(new URL(page.url()).searchParams.get("focusCard"), "E41", "The menu command acts on the clicked node");
-      assert.equal(await body.inputValue(), "保留同一张卡。");
-      await drawer.getByRole("button", { name: "取消" }).click();
-      assert.equal(await entry.evaluate(node => node === document.activeElement), true);
-      await entry.press("Shift+F10");
-      assert.equal(await menu.isVisible(), true);
-      await page.keyboard.press("ArrowDown");
-      assert.equal(await page.evaluate(() => document.activeElement.textContent), "进入分支");
-      await page.keyboard.press("Escape");
-      assert.equal(await menu.isVisible(), false);
-      assert.equal(await entry.evaluate(node => node === document.activeElement), true);
-      if (width < 760) {
-        const more = page.getByRole("button", { name: "保留同一张卡 的更多操作" });
-        assert.equal(await more.evaluate(node => getComputedStyle(node).opacity), "1");
-        await more.tap();
-        assert.equal(await menu.isVisible(), true);
-        await page.locator('.research-snode[data-node="start"]').tap();
-        assert.equal(await menu.isVisible(), false);
-        await entry.tap();
-      }
-      const edit = width > 760 ? page.locator("#project-surface-edit") : detail.getByRole("button", { name: "编辑卡片" });
-      await edit.click();
+      assert.equal(await page.evaluate(() => scrollY), scroll);
+      assert.equal(await menu.getByRole("menuitem", { name: "在画布定位" }).count(), 0);
+      await menu.getByRole("menuitem", { name: "展开下级" }).click();
+      await subcard("E42").waitFor();
+      const nextPose = await entry.boundingBox();
+      const nextPeer = await start.boundingBox();
+      assert.ok(Math.abs(nextPose.y - pose.y) < 1 && Math.abs(nextPeer.y - peer.y) < 1, "Expanding a card keeps the parent and other lane steady");
+      await subcard("E42").locator("..").locator(".research-sub-toggle").click();
+      await subcard("E43").waitFor();
+      assert.equal(await page.locator(".research-edge[data-from]").count(), 2);
+      assert.equal(await page.locator("#research-workspace").isVisible(), true);
+      await flush();
+      assert.equal(records.get(boardId).revision, 1, "Expanded branches are a reading preference");
+      await page.reload();
+      await subcard("E43").waitFor();
+      await subcard("E43").press("Shift+F10");
+      await menu.getByRole("menuitem", { name: "编辑原卡" }).click();
       assert.equal(await drawer.isVisible(), true);
-      assert.equal(await page.locator(".research-structure-stage").isVisible(), true);
-      assert.equal(await body.inputValue(), "保留同一张卡。");
-      await body.fill("取消的修改不可写入。");
-      await body.press("Escape");
-      assert.equal(await drawer.isVisible(), true, "Escape must preserve an unsaved editor");
-      await drawer.getByRole("button", { name: "取消" }).click();
-      await entry.click({ button: "right" });
-      await menu.getByRole("menuitem", { name: "编辑卡片" }).click();
-      assert.equal(await body.inputValue(), "保留同一张卡。");
-      await body.fill("这是两个视图共享的正文。");
+      await page.locator("#workbench-card-body").fill("在结构白板上改好的第五级正文。");
       await drawer.getByRole("button", { name: "保存卡片" }).click();
-      await detail.getByText("这是两个视图共享的正文。", { exact: true }).waitFor();
-      assert.equal(await drawer.isVisible(), false);
-      assert.equal(await entry.evaluate(node => node === document.activeElement), true, "Saving from the menu restores focus to the rebuilt node");
-      assert.equal(new URL(page.url()).searchParams.get("focusCard"), "E41");
-      await page.locator("#project-surface-canvas").click();
-      await card("E41").waitFor();
-      assert.equal(await card("E41").getAttribute("aria-pressed"), "true");
-      assert.match(await card("E41").innerText(), /这是两个视图共享的正文/u);
-      assert.equal(await page.locator("#project-surface-card").textContent(), "保留同一张卡");
+      await page.locator(".research-structure-detail").getByText("在结构白板上改好的第五级正文。", { exact: true }).waitFor();
+      assert.equal(await subcard("E43").evaluate(node => node === document.activeElement), true);
+      await entry.click({ button: "right" });
+      await menu.getByRole("menuitem", { name: "编辑原卡" }).click();
+      await page.locator("#workbench-card-appearance summary").click();
+      await page.locator("#workbench-card-diagram-title").fill("图上名称");
+      await drawer.getByRole("button", { name: "保存卡片" }).click();
+      await entry.getByText("图上名称", { exact: true }).waitFor();
+      async function addBelow(parent, title) {
+        await parent.click({ button: "right" });
+        await menu.getByRole("menuitem", { name: "新建子卡" }).click();
+        await page.locator("#workbench-card-title").fill(title);
+        await drawer.getByRole("button", { name: "保存卡片" }).click();
+        const saved = (await state()).organization.current.items.find(item => item.title === title);
+        assert.ok(saved);
+        await subcard(saved.id).waitFor();
+        return saved;
+      }
+      const child = await addBelow(entry, "直接新建的子卡");
+      assert.equal(child.parentId, "E41");
+      const grandchild = await addBelow(subcard(child.id), "在新卡下继续新建");
+      assert.equal(grandchild.parentId, child.id);
+      assert.notEqual(child.id, grandchild.id);
+      await fold.click();
+      await subcard("E42").waitFor({ state: "hidden" });
+      if (width > 760) {
+        const handle = branch.locator(".research-snode-handle");
+        await handle.scrollIntoViewIfNeeded();
+        const grip = await handle.boundingBox();
+        const other = await page.locator('.research-snode[data-node="output"]').boundingBox();
+        await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(other.x + other.width / 2, other.y + other.height * 0.8, { steps: 8 });
+        await page.mouse.up();
+      } else {
+        await branch.locator(".research-snode-tools .research-snode-more").tap();
+        await menu.getByRole("menuitem", { name: "在分区内下移" }).tap();
+      }
+      await page.waitForFunction(() => window.BoardOrganization.load()?.current?.projectStructure?.zones[1]?.nodes[0].id === "output");
       await flush();
       await page.reload();
-      await page.waitForFunction(() => document.querySelector('#board [data-element-id="E41"]')?.getAttribute("aria-pressed") === "true");
+      await entry.waitFor();
       const saved = (await state()).organization.current;
+      assert.deepEqual(saved.projectStructure.zones[1].nodes.map(node => node.id), ["output", "continue"]);
+      assert.deepEqual(saved.projectStructure.links.map(({ from, to, label, evidence }) => ({ from, to, label, ...(evidence ? { evidence } : {}) })), links);
       assert.deepEqual(saved.positions, positions);
       assert.deepEqual(saved.collapsedBranches, ["E40"]);
-      await selectCard("E42");
-      await page.locator("#edit-workbench-card").click();
-      await body.fill("从画布更新的证据说明。");
-      await page.locator("#project-surface-structure").click();
-      assert.equal(await body.isVisible(), true, "Switching views must preserve an unsaved canvas edit");
-      await page.locator("#save-workbench-card").click();
-      await page.locator("#project-surface-structure").click();
-      await detail.getByRole("heading", { name: "只在原分支中的证据" }).waitFor();
-      await detail.getByText("从画布更新的证据说明。", { exact: true }).waitFor();
-      assert.equal(await page.locator('.research-snode[data-node="continue"]').getAttribute("aria-pressed"), "true");
-      await detail.getByRole("button", { name: "在画布定位" }).click();
-      assert.equal(await card("E42").getAttribute("aria-pressed"), "true");
-      await page.goBack();
-      await detail.getByRole("heading", { name: "只在原分支中的证据" }).waitFor();
-      await page.goto(`${origin}/?board=${boardId}&view=canvas&presentation=cards&root=E40&focusCard=E42`);
+      assert.equal(new URL(page.url()).searchParams.get("panel"), "structure");
+      await page.goto(`${origin}/?board=${boardId}&view=canvas&presentation=cards&root=E41#E42`);
       await page.waitForFunction(() => document.querySelector('#board [data-element-id="E42"]')?.getAttribute("aria-pressed") === "true");
-      await page.locator("#project-surface-structure").click();
-      await detail.getByRole("heading", { name: "只在原分支中的证据" }).waitFor();
-      await page.reload();
-      await page.locator("#project-surface-canvas").click();
-      assert.equal(new URL(page.url()).searchParams.get("root"), "E40", "Returning keeps the originating canvas branch");
-      assert.equal(await card("E42").getAttribute("aria-pressed"), "true");
-      await flush();
-      const savedRevision = boardCases.get(caseName).get(boardId).revision;
-      await page.locator("#presentation-mindmap").click();
-      assert.equal(new URL(page.url()).searchParams.get("presentation"), "mindmap");
-      await page.goto(`${origin}/?board=${boardId}&view=canvas&presentation=cards&root=E40#E42`);
-      await page.waitForFunction(() => document.querySelector('#board [data-element-id="E42"]')?.getAttribute("aria-pressed") === "true");
-      assert.equal(await page.locator("#project-surface-canvas").getAttribute("aria-pressed"), "true");
-      const preference = await page.evaluate(id => localStorage.getItem(`whiteboard.presentation.${id}.v1`), boardId);
-      assert.equal(preference, "mindmap", "An explicit cards link must not overwrite the saved default");
-      await flush();
-      assert.equal(boardCases.get(caseName).get(boardId).revision, savedRevision, "Reading and switching modes don't save the document");
-      await page.locator("#project-surface-structure").click();
-      await entry.click({ button: "right" });
-      await menu.getByRole("menuitem", { name: "进入分支" }).click();
-      assert.equal(new URL(page.url()).searchParams.get("root"), "E41");
-      assert.equal(await card("E41").getAttribute("aria-pressed"), "true");
-      const childTitle = card("E42").locator(".organized-title");
-      await childTitle.click({ button: "right" });
-      await page.locator("#canvas-menu-open-branch").click();
-      assert.equal(new URL(page.url()).searchParams.get("root"), "E42");
-      assert.equal(await card("E42").getAttribute("aria-pressed"), "true");
-      await flush();
-      assert.equal(boardCases.get(caseName).get(boardId).revision, savedRevision, "Menu navigation should not revise the board");
-    } finally {
-      await isolated.close();
-    }
+      assert.equal(await page.locator("#viewport").isVisible(), true, "An explicit legacy canvas link still opens its card");
+    } finally { await isolated.close(); }
   }
   page = previous;
-  pass("Project structure and canvas share editing and branch focus. Node menus stay local and support right-click, keyboard and touch");
+  pass("The structure whiteboard expands real descendants, edits and creates cards, and saves drag order on desktop and touch without switching views");
 }
 
 try {
@@ -1018,7 +998,7 @@ try {
     "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
   ].find(existsSync);
   browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
-  await structureWorkspaceHandoff();
+  await structureWorkspaceEditing();
   await mindmapCardLifecycle();
   await branchCameraStability();
   const context = await browser.newContext({ viewport: { width: 1900, height: 1200 }, serviceWorkers: "block" });

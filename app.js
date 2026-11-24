@@ -4890,6 +4890,7 @@
     const occupied = new Set([
       ...nodes.map((node) => node.id), ...pinnedIds, ...deletedIds,
       ...(organization.rawCards || []).map((item) => item.id),
+      ...(organization.current?.items || []).map((item) => item.id),
       ...(organization.previous?.items || []).map((item) => item.id),
       ...project.decisions.flatMap((decision) => decision.sourceIds),
       ...savedNotes().flatMap((note) => [...note.payload.anchor.elementIds, ...note.sourceCardIds]),
@@ -7162,6 +7163,8 @@
   const workbenchCardDependencies = $("workbench-card-dependencies");
   const workbenchCardAcceptance = $("workbench-card-acceptance");
   const workbenchCardKind = $("workbench-card-kind");
+  const diagramTitle = $("workbench-card-diagram-title");
+  const diagramNote = $("workbench-card-diagram-note");
   const workbenchCardFeedback = $("workbench-card-status");
   const saveWorkbenchCard = $("save-workbench-card");
   let workbenchDraft = null;
@@ -7188,7 +7191,7 @@
     workbenchCardForm.hidden = !editing;
     workbenchCardFeedback.hidden = creating ? workbenchFeedbackId !== null : !item || workbenchFeedbackId !== item.id;
     for (const field of [workbenchCardTitle, workbenchCardBody, workbenchCardDependencies,
-      workbenchCardAcceptance, workbenchCardKind, saveWorkbenchCard]) field.disabled = unavailable;
+      workbenchCardAcceptance, workbenchCardKind, diagramTitle, diagramNote, saveWorkbenchCard]) field.disabled = unavailable;
   }
 
   function workbenchContentRevision(item) {
@@ -7239,27 +7242,54 @@
     caseOption.disabled = !workbench || !item || !hasWorkbenchRequirement(item);
     workbenchCardKind.value = constraint ? "constraint" : "";
     $("constraint-card-hint").hidden = !constraint;
+    const mapped = projectCardDrawer.open && item ? organization.current?.projectStructure?.zones
+      .flatMap(zone => zone.nodes).filter(node => node.cardId === item.id) || [] : [];
+    const appearance = mapped.find(node => node.id === researchEditOrigin?.node) || (mapped.length === 1 ? mapped[0] : null);
+    workbenchDraft.appearance = appearance;
+    const appearanceFields = $("workbench-card-appearance");
+    appearanceFields.hidden = !appearance;
+    appearanceFields.open = false;
+    diagramTitle.value = appearance?.label || "";
+    diagramNote.value = appearance?.note || "";
     workbenchDraft.originalFields = cardEditorFields();
     workbenchEditFeedback(item?.id ?? null, "");
     workbenchCardForm.scrollIntoView({ block: "nearest" });
     workbenchCardTitle.focus({ preventScroll: true });
   }
 
-  function editResearchCard(id) {
+  function editResearchCard(id, creatingChild = false) {
     if (activeRun || gesture || connectionDrag || deletionPreparing || storageStale || projectCardDrawer.open ||
         !finishEditingFirst() || !memory.storageIsCurrent() || (window.BoardSync && !window.BoardSync.writable)) {
       $("project-surface-status").textContent = "白板正在更新，请稍后再编辑。";
       return;
     }
-    const item = editableCard(id);
-    if (!item) return;
+    const item = creatingChild ? null : editableCard(id);
+    if (creatingChild ? !hierarchyItems(boardForOrganization()).some(card => card.id === id && card.category !== "archive") : !item) return;
     const opener = document.activeElement;
     const node = opener?.closest(".research-snode-wrap")?.querySelector(".research-snode");
-    researchEditOrigin = { opener, node: node?.dataset.node };
+    researchEditOrigin = { opener, node: node?.dataset.node, focusKey: opener?.dataset.focusKey };
     $("project-surface-status").textContent = "";
     projectCardDrawer.append(workbenchEditor);
     projectCardDrawer.showModal();
-    openCardEditor(item);
+    openCardEditor(item, undefined, false, creatingChild ? id : null);
+  }
+
+  function reorderStructureZone(id, order) {
+    const before = organization.current?.projectStructure;
+    const zone = before?.zones.find(entry => entry.id === id);
+    if (!zone || activeRun || questionRuns.size || deletionPreparing || !finishEditingFirst() || !memory.storageIsCurrent() ||
+        (window.BoardSync && !window.BoardSync.writable)) return false;
+    const included = new Map(zone.nodes.map(node => [node.id, node]));
+    if (order.length !== included.size || new Set(order).size !== order.length || order.some(node => !included.has(node))) return false;
+    const nodes = order.map(node => included.get(node));
+    if (nodes.every((node, position) => node === zone.nodes[position])) return true;
+    organization.current.projectStructure = { ...before, zones: before.zones.map(entry => entry === zone ? { ...zone, nodes } : entry) };
+    if (saveOrganization()) {
+      $("project-surface-status").textContent = "分区顺序已保存。";
+      return true;
+    }
+    organization.current.projectStructure = before;
+    return false;
   }
 
   function closeResearchCardEditor(message = "") {
@@ -7269,9 +7299,10 @@
     renderInspector();
     const origin = researchEditOrigin;
     researchEditOrigin = null;
+    const trigger = origin?.focusKey && document.querySelector(`#research-workspace [data-focus-key="${CSS.escape(origin.focusKey)}"]`);
     const node = origin?.node && document.querySelector(`.research-snode[data-node="${CSS.escape(origin.node)}"]`);
     const target = origin?.opener?.isConnected && origin.opener.getClientRects().length ? origin.opener
-      : node || document.querySelector("#research-workspace .research-edit-card") || $("project-surface-structure");
+      : trigger || node || document.querySelector("#research-workspace .research-edit-card") || $("project-surface-structure");
     target.focus({ preventScroll: true });
   }
 
@@ -7362,7 +7393,8 @@
   }
 
   function cardEditorFields() {
-    return [workbenchCardTitle, workbenchCardBody, workbenchCardDependencies, workbenchCardAcceptance, workbenchCardKind]
+    return [workbenchCardTitle, workbenchCardBody, workbenchCardDependencies, workbenchCardAcceptance, workbenchCardKind,
+      diagramTitle, diagramNote]
       .map((field) => field.value);
   }
 
@@ -7548,11 +7580,12 @@
       report(title ? "请填写任务正文。" : "请填写卡片标题。");
       return;
     }
-    const nodes = boardForOrganization();
+    const nodes = editingInResearch ? hierarchyItems(boardForOrganization()) : boardForOrganization();
     const id = old?.id || availableModuleIds(nodes, 1)[0];
     const starter = creating && workbenchDraft.starter && !nodes.length;
     const parentId = creating ? workbenchDraft.parentId : null;
-    if (parentId && !visibleRect(parentId)) {
+    const liveParent = editingInResearch && nodes.some(node => node.id === parentId && node.category !== "archive");
+    if (parentId && (editingInResearch ? !liveParent : !visibleRect(parentId))) {
       report("上级卡片已变化，请重新选择后新建。");
       return;
     }
@@ -7582,7 +7615,26 @@
     else if (old?.spec?.kind === "constraint") delete item.spec;
     else if (old?.spec) item.spec = specAfterContentChange(old, item);
     if (old && old.summary !== item.summary) delete item.capability;
-    if (old && workbenchContentRevision(item) === workbenchDraft.revision) {
+    const appearance = workbenchDraft.appearance;
+    const label = diagramTitle.value.trim();
+    const note = diagramNote.value.trim();
+    const appearanceChanged = Boolean(appearance && (label !== (appearance.label || "") || note !== (appearance.note || "")));
+    let structure = organization.current?.projectStructure;
+    if (appearanceChanged) {
+      const live = structure?.zones.flatMap(zone => zone.nodes).find(node => node.id === appearance.id && node.cardId === id);
+      if (!live || live.label !== appearance.label || live.note !== appearance.note) {
+        report("图上显示已更新，请取消并重新打开。");
+        return;
+      }
+      const { label: previousLabel, note: previousNote, ...identity } = live;
+      const node = { ...identity, ...(label ? { label } : {}), ...(note ? { note } : {}) };
+      try {
+        structure = window.ProjectStructure.validate({ ...structure, zones: structure.zones.map(zone => ({
+          ...zone, nodes: zone.nodes.map(entry => entry === live ? node : entry),
+        })) });
+      } catch (error) { report(error.message); return; }
+    }
+    if (old && !appearanceChanged && workbenchContentRevision(item) === workbenchDraft.revision) {
       workbenchDraft = null;
       if (editingInResearch) closeResearchCardEditor("卡片内容未更改。");
       else { report("卡片内容未更改。"); editWorkbenchCard.focus(); }
@@ -7602,16 +7654,17 @@
     const draft = question.value;
     const askWasOpen = !askComposer.hidden;
     organization = previous.current
-      ? { ...previous, current: { ...previous.current, items, positions }, previous: previous.current, quickUndo: null, undoAvailable: true }
+      ? { ...previous, current: { ...previous.current, items, positions, ...(appearanceChanged ? { projectStructure: structure } : {}) },
+        previous: previous.current, quickUndo: null, undoAvailable: true }
       : { ...previous, rawCards: items, rawPositions: positions, quickUndo: null,
         ...(parentId ? { rawLinks: { ...previous.rawLinks, [id]: [parentId] } } : {}) };
     let stored = false;
     let movedFromPoint = false;
     const alreadyRevealed = parentId && searchOpenBranches.has(parentId);
-    if (parentId) searchOpenBranches.add(parentId);
+    if (parentId && !editingInResearch) searchOpenBranches.add(parentId);
     try {
       if (!editingInResearch) applyOrganization(true);
-      if (creating) {
+      if (creating && !editingInResearch) {
         const rect = visibleRect(id);
         if (!rect) throw new Error("未能放置新卡片。");
         const currentRects = previous.current ? organizedRects : rawRects;
@@ -7636,12 +7689,12 @@
       }
       if (!saveOrganization()) throw new Error("卡片未能保存。可以复制草稿后刷新重试。");
       if (editingInResearch) refreshCanvasAfterEdit = true;
-      const positionStored = !creating || !inMindmap || mindmap.savePositions(mindmapPositions);
+      const positionStored = editingInResearch || !creating || !inMindmap || mindmap.savePositions(mindmapPositions);
       stored = true;
       deletionUndo = null;
       workbenchDraft = null;
       workbenchEditFeedback(id, (starter ? "第一张卡片已保存到主干。" :
-        creating ? parentId ? "子卡已保存，可以拖动或连到其他卡片。" :
+        creating ? parentId ? editingInResearch ? "子卡已保存。" : "子卡已保存，可以拖动或连到其他卡片。" :
           (movedFromPoint ? "指定位置会盖住其他卡片，草稿已保存到附近空位。" : "草稿已保存，可继续细化，验收后再整合。")
         : item.spec?.kind === "case" && item.spec.status === "pending" && old?.spec?.status !== "pending"
         ? "卡片已保存，测试用例待验证。"
@@ -7654,7 +7707,10 @@
       report(error.message);
     }
     if (editingInResearch) {
-      if (stored) closeResearchCardEditor("卡片已保存。");
+      if (stored) {
+        if (creating) research.revealChildren?.(parentId);
+        closeResearchCardEditor(creating ? "子卡已保存。" : "卡片已保存。");
+      }
     } else {
       const element = boardElements().find((node) => node.dataset.elementId === id && !node.hidden);
       if (element) {
@@ -8453,7 +8509,8 @@
     },
     onEnter: workspace.enter,
     onLocate: workspace.locate,
-    onOpenBranch: id => workspace.openCanvas(id, { focus: true }),
+    onAddChild: id => editResearchCard(id, true),
+    onReorderZone: reorderStructureZone,
     onPanel: workspace.panel,
     onFocus: workspace.focus,
     canEditCard: id => Boolean(editableCard(id)),
@@ -8482,7 +8539,7 @@
     },
   });
   workspace.init({
-    defaultPresentation: mindmap?.active ? "mindmap" : "cards",
+    defaultPresentation: organization.current?.projectStructure ? "research" : mindmap?.active ? "mindmap" : "cards",
     hasStructure: () => Boolean(organization.current?.projectStructure),
     canNavigate: () => !gesture && !connectionDrag && !deletionPreparing && !projectCardDrawer.open && finishEditingFirst(),
     canEditCard: id => Boolean(editableCard(id)),
