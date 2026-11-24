@@ -752,7 +752,7 @@ body.research-view {
 :is(#structure-opinion-text, #module-diagram-json) { width: 100%; resize: vertical; padding: 9px 10px; border: 1px solid #bccdbf; border-radius: 8px;
   background: #fff; color: #20362c; font: inherit; }
 #module-diagram-json { font: 13px/1.5 ui-monospace, Consolas, monospace; min-height: 12rem; max-height: 62vh; }
-#structure-opinion-form fieldset { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0; padding: 8px 12px;
+#structure-opinion-form fieldset:not([hidden]) { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 0; padding: 8px 12px;
   border: 1px solid #cfdacf; border-radius: 8px; font-size: 13px; }
 :is(#structure-opinion-form, #module-diagram-form) :is(input, textarea, button):focus-visible { outline: 2px solid #245d48; outline-offset: 2px; }
 :is(#structure-opinion-status, #module-diagram-status) { min-height: 1.3em; font-size: 13px; color: #36594a; }

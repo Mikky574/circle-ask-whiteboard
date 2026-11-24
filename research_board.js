@@ -925,6 +925,7 @@
     const row = add(parent, "div", "research-structure-actions");
     if (options.readingOnly && options.onAsk) button(row, "问这张卡", () => options.onAsk(card.id));
     if (options.canEditCard?.(card.id)) {
+      if (options.readingOnly) button(row, "AI 推荐下级", () => options.onOpinion?.(card.id, "recommend", scope));
       button(row, "提意见让 AI 改", () => options.onOpinion?.(card.id), "research-button research-opinion-button");
       button(row, "编辑原卡", () => options.onEditCard?.(card.id), "research-button research-edit-card");
     }
@@ -1041,6 +1042,7 @@
     if (!card || card.id === "board") return [];
     const list = [];
     if (typeof options.onEditCard === "function" && options.canEditCard?.(card.id)) {
+      if (options.readingOnly) list.push(["AI 推荐下级", () => options.onOpinion?.(card.id, "recommend", scope)]);
       list.push(["提意见让 AI 改", () => options.onOpinion?.(card.id)]);
       list.push(["AI 向下延伸", () => options.onOpinion?.(card.id, "children")]);
       list.push(["编辑原卡", () => options.onEditCard(card.id)]);

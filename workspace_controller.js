@@ -150,12 +150,13 @@
     if (sourceCard) reader.revealDiagramCard(sourceCard);
     return true;
   }
-  function openStructure(id, from) {
-    if (trail.includes(id)) return jumpStructure(id);
+  function openStructure(id, from, card) {
+    if (trail.includes(id)) return card ? enterStructure(id, card) : jumpStructure(id);
     const parent = trail.indexOf(from || state.readingRoot);
     const path = parent >= 0 && state.presentation === "research" ? [...trail.slice(0, parent + 1), id] : [id];
-    if (!move({ type: "enterReading", root: id, panel: "structure" }, { path })) return false;
+    if (!move({ type: "enterReading", root: id, panel: "structure", card }, { path })) return false;
     reader.focusHeading(true);
+    if (card) reader.revealDiagramCard(card);
     return true;
   }
   function panel(id, scope) {

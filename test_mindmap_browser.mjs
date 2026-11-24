@@ -20,6 +20,7 @@ const errors = [];
 const unexpected = [];
 const requests = [];
 const opinionRequests = [];
+const recommendations = [];
 const fullAnswer = "合成问答：E27 的附件与事件流来自当前白板选区。" +
   "这是完整正文的验证段落，详情面板应该一直保留原来的回答，而不是被组织摘要截断。".repeat(75) + "完整回答末尾验收标记。";
 const artifacts = await mkdtemp(join(tmpdir(), "whiteboard-mindmap-browser-"));
@@ -75,7 +76,8 @@ async function relay(req, res) {
   if (url.pathname === "/api/codex") {
     const payload = await body(req);
     const extendModule = payload.scope === "expandCard" && payload.project?.expansion?.targetId === "E41";
-    (payload.branchIntent === "revise" || extendModule ? opinionRequests : requests).push(payload);
+    (payload.branchIntent === "recommend" ? recommendations :
+      payload.branchIntent === "revise" || extendModule ? opinionRequests : requests).push(payload);
     let event;
     if (payload.scope === "plan") {
       if (heldPlan) await heldPlan;
@@ -93,6 +95,15 @@ async function relay(req, res) {
           { id: "entry", title: "项目", nodes: [{ id: "root", cardId: root }, { id: "feature", cardId: feature }] },
         ] },
       } };
+    }
+    else if (payload.branchIntent === "recommend") {
+      const items = payload.question === "测试重写父卡"
+        ? [{ id: payload.branchRootId, title: "越界父卡", summary: null }]
+        : [{ id: "E42", title: null, summary: "推荐把验收信号写在已有证据卡里。" },
+          { id: "E44", title: null, summary: "这条建议应当可以跳过。" }];
+      event = { type: "branch", branch: { items, children: [
+        { title: "观察失败后的反馈", summary: "核对失败时可见的提示与重试入口。" },
+      ] }, requestId: payload.requestId, baseRevision: payload.baseRevision };
     }
     else if (payload.branchIntent === "revise") {
       const items = payload.question === "测试越界" ? [{ id: "E50", title: "不该改", summary: null }]
@@ -1272,6 +1283,35 @@ async function structureWorkspaceEditing() {
       assert.deepEqual(saved.positions, positions);
       assert.deepEqual(saved.collapsedBranches, ["E40"]);
       assert.equal(new URL(page.url()).searchParams.get("panel"), "structure");
+      await entry.click({ button: "right" });
+      await menu.getByRole("menuitem", { name: "AI 推荐下级" }).click();
+      await preview.getByText("推荐把验收信号写在已有证据卡里。").waitFor();
+      const direction = opinion.getByRole("textbox", { name: "补充方向（可选）" });
+      assert.equal(await direction.inputValue(), "");
+      const recommendation = recommendations.at(-1);
+      assert.equal(recommendation.question, "");
+      assert.equal(recommendation.branchRootId, "E41");
+      assert.deepEqual(new Set(recommendation.board.nodes.map(item => item.id)),
+        new Set(saved.items.filter(item => item.id !== "E04" && item.id !== "E40" && item.id !== "E50").map(item => item.id)));
+      assert.deepEqual((await state()).organization.current, saved);
+      await direction.fill("测试重写父卡");
+      await opinion.getByRole("button", { name: "生成下级建议" }).click();
+      await opinion.getByText("AI 建议超出本次卡片范围。").waitFor();
+      assert.equal(await opinion.getByRole("button", { name: "应用勾选的建议" }).isVisible(), false);
+      await direction.fill("补充使用反馈");
+      await opinion.getByRole("button", { name: "生成下级建议" }).click();
+      await preview.getByRole("checkbox", { name: /局部流程终点/ }).uncheck();
+      await opinion.getByRole("button", { name: "应用勾选的建议" }).click();
+      await opinion.waitFor({ state: "hidden" });
+      const recommended = (await state()).organization.current;
+      const feedback = recommended.items.find(item => item.title === "观察失败后的反馈");
+      assert.equal(feedback.parentId, "E41");
+      assert.deepEqual(recommended.items.filter(item => item.id !== feedback.id),
+        saved.items.map(item => item.id === "E42" ? { ...item, summary: "推荐把验收信号写在已有证据卡里。" } : item));
+      assert.deepEqual(recommended.projectStructure, saved.projectStructure);
+      assert.equal(new URL(page.url()).searchParams.get("trail"), "E04.E41");
+      await graph.locator(".research-snode").filter({ hasText: feedback.title }).waitFor();
+      await flush();
       await page.goto(`${projectUrl}&view=canvas&presentation=cards&root=E41#E42`);
       await graph.locator('.research-snode[data-card-id="E42"][aria-pressed="true"]').waitFor();
       assert.equal(await page.locator("#viewport").isVisible(), false);
@@ -1282,7 +1322,7 @@ async function structureWorkspaceEditing() {
       assert.equal(await page.getByRole("tab", { name: "关系导图" }).count(), 0);
       await page.locator("#reading-search #card-search-toggle").click();
       await page.locator("#card-search-input").fill("来自意见的标题");
-      await page.locator("#card-search-results").getByRole("button", { name: /来自意见的标题/ }).click();
+      await page.locator("#card-search-results").getByRole("button", { name: /^E41 · 来自意见的标题/ }).click();
       await inspector.getByRole("heading", { name: "来自意见的标题", exact: true }).waitFor();
       if (width > 760) {
         const newBoard = `board-${"d".repeat(32)}`;
@@ -1321,7 +1361,7 @@ async function structureWorkspaceEditing() {
     } finally { await isolated.close(); }
   }
   page = previous;
-  pass("The overview and scoped module diagrams share graph navigation, evidence, card edits, opinions and persistent layout on desktop and touch");
+  pass("Project reading supports scoped diagrams, evidence, card edits, manual opinions and automatic child recommendations on desktop and touch");
 }
 
 try {

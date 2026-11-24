@@ -905,6 +905,45 @@ class BranchOrganizationAcceptanceTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 server.structured_candidate(json.dumps({"items": [item]}), context)
 
+    @classmethod
+    def recommendation_request(cls):
+        request = cls.request_body()
+        root = {"id": "E02", "parentId": None, "title": "验证结果", "summary": "核对实际观察。", "pinned": False}
+        existing = {**root, "id": "E03", "parentId": "E02", "title": "已有步骤"}
+        request.update(branchIntent="recommend", question="", anchor={"elementIds": ["E02"]},
+                       project={"expansion": {"targetId": "E02", "path": [root], "children": [existing],
+                                              "pinned": [], "strategy": "evidence"}})
+        return request
+
+    def test_child_recommendation_accepts_blank_direction_and_is_scoped(self):
+        request = self.recommendation_request()
+        result = {"items": [{"id": "E03", "title": None, "summary": "记录失败信号和复现条件。"}],
+                  "children": [{"title": "验收边界", "summary": "核对无结果时的提示。"}]}
+        body = json.dumps(request).encode()
+        with isolated_server() as (port, host), patch.object(server, "run_api", return_value=json.dumps(result)) as api:
+            status, _, raw = post(port, "/api/codex", body, good_headers(host, body))
+        events = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(status, 200)
+        self.assertEqual(events[2]["branch"], result)
+        self.assertEqual(events[3]["changedFiles"], [])
+        self.assertIsNone(api.call_args.kwargs["board_tools"])
+        self.assertIn("independently identify the most useful", api.call_args.args[2])
+        schema = api.call_args.args[4]["properties"]
+        self.assertEqual(set(schema), {"items", "children"})
+        self.assertNotIn("E02", schema["items"]["items"]["properties"]["id"]["enum"])
+        context = server.parse_request(body)[2]
+        for candidate in (
+            {**result, "items": [{"id": node_id, "title": "越界", "summary": None}]}
+            for node_id in ("E02", "E99")
+        ):
+            with self.assertRaises(ValueError):
+                server.structured_candidate(json.dumps(candidate), context)
+        duplicate = {**result, "children": [{"title": "已有步骤", "summary": "重复。"}]}
+        with self.assertRaisesRegex(ValueError, "重复标题"):
+            server.structured_candidate(json.dumps(duplicate), context)
+        empty = {"items": [], "children": []}
+        self.assertEqual(server.structured_candidate(json.dumps(empty), context), ("branch", {"branch": empty}))
+
 
 class StructuredZCodeAcceptanceTests(unittest.TestCase):
     def exchange(self, fields, *answers):
@@ -985,6 +1024,10 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
         children = DecompositionAcceptanceTests.children()
         expansion_fields = CardExpansionAcceptanceTests.request_body()
         expansion = CardExpansionAcceptanceTests.candidate()
+        recommendation = BranchOrganizationAcceptanceTests.recommendation_request()
+        recommendation_fields = {key: recommendation[key] for key in
+                                 ("scope", "branchIntent", "branchRootId", "board", "anchor", "project", "question")}
+        new_child = {"title": "验收入口", "summary": "核对提示和复测条件。"}
         filing = {
             "orphans": [{"id": "E04", "title": "Unfiled", "summary": "Detached"}],
             "parents": [{"id": "E01", "parentId": None, "title": "Root", "summary": "Overview"}],
@@ -998,6 +1041,8 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
              expansion, {"children": []}),
             ("organizeBranch", {key: node_fields[key] for key in ("scope", "board", "branchRootId")}, "branch",
              branch, invalid_branch),
+            ("recommend", recommendation_fields, "branch", {"items": [], "children": [new_child]},
+             {"items": [{"id": "E02", "title": None, "summary": "越界修改"}], "children": [new_child]}),
             ("regenerate", {key: node_fields[key] for key in ("scope", "board", "branchRootId")} | {"branchIntent": "regenerate"},
              "branch", unchanged_branch, branch),
             ("organize", {"scope": "organize", "board": board_snapshot()}, "map",

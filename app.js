@@ -4273,8 +4273,9 @@
     if (request.backend !== "codex" && request.backend !== "zcode") return null;
     const phases = { plan: "判断意图", expandCard: "展开卡片", explain: "拆分说明", organize: "整理白板",
       organizeBranch: "整理分支", decompose: "拆解任务", initialize: "初始化工程介绍" };
-    const phase = request.branchIntent === "revise" ? "根据意见生成修改" :
-      phases[request.scope] || (request.mode === "edit" ? "修改源码" : "处理问题");
+    const branchPhases = { revise: "根据意见生成修改", recommend: "推荐下级卡片" };
+    const phase = branchPhases[request.branchIntent] || phases[request.scope] ||
+      (request.mode === "edit" ? "修改源码" : "处理问题");
     const id = request.requestId;
     const label = `${backendLabels[request.backend]} · ${phase} · ${excerpt(run.question || request.question, 48)}`;
     const picker = $("execution-request");
@@ -7478,6 +7479,7 @@
   const opinionPreview = $("structure-opinion-preview");
   const opinionApply = $("structure-opinion-apply");
   const opinionGenerate = $("structure-opinion-generate");
+  const opinionFieldset = opinionForm.querySelector("fieldset");
   const opinionScope = opinionForm.elements.namedItem("opinion-scope");
   let cardOpinion = null;
 
@@ -7488,28 +7490,53 @@
   }
 
   function updateOpinionMode() {
+    const automatic = cardOpinion.automatic;
     const extending = opinionScope.value === "children";
-    opinionGenerate.textContent = extending ? "生成下级卡预览" : "生成修改预览";
-    opinionApply.textContent = extending ? "加入勾选的下级卡" : "应用勾选的修改";
-    opinionText.placeholder = extending ? "例如，按现有资料补出两张卡，分别说明使用步骤和验收方法。"
+    $("structure-opinion-heading").textContent = automatic ? "AI 推荐下级" : "提意见让 AI 改";
+    $("structure-opinion-label").textContent = automatic ? "补充方向（可选）" : "你希望改成什么样？";
+    opinionFieldset.hidden = automatic;
+    opinionText.required = !automatic;
+    opinionGenerate.textContent = automatic ? "生成下级建议" : extending ? "生成下级卡预览" : "生成修改预览";
+    opinionApply.textContent = automatic ? "应用勾选的建议" : extending ? "加入勾选的下级卡" : "应用勾选的修改";
+    opinionText.placeholder = automatic ? "留空即可推荐，也可以补充你最想了解的问题。"
+      : extending ? "例如，按现有资料补出两张卡，分别说明使用步骤和验收方法。"
       : "例如，面向使用者重写这张卡，保留事实并说清操作步骤。";
   }
 
-  function openCardOpinion(id, mode = "card") {
+  function openCardOpinion(id, mode = "card", scope) {
     const card = editableCard(id);
     if (!card || opinionDrawer.open || projectCardDrawer.open || !finishEditingFirst()) return;
-    cardOpinion = { id, run: null, proposal: null };
+    cardOpinion = { id, scope, automatic: mode === "recommend", run: null, proposal: null };
     opinionForm.reset();
-    opinionScope.value = mode;
+    if (!cardOpinion.automatic) opinionScope.value = mode;
     updateOpinionMode();
     clearOpinionPreview();
     $("structure-opinion-target").textContent = card.title;
     opinionStatus.textContent = "";
     opinionDrawer.showModal();
-    opinionText.focus();
+    if (cardOpinion.automatic) opinionForm.requestSubmit();
+    else opinionText.focus();
   }
 
-  function showOpinionPreview(result, originals, revision) {
+  function opinionChoice(id, title) {
+    const row = appendText(opinionPreview, "article", "research-opinion-change", "");
+    const label = appendText(row, "label", "", "");
+    const pick = document.createElement("input");
+    pick.type = "checkbox";
+    pick.value = id;
+    pick.checked = true;
+    label.append(pick, ` ${title}`);
+    return row;
+  }
+
+  function appendNewOpinionCards(additions) {
+    for (const item of additions) {
+      const row = opinionChoice(item.id, `新增 · ${item.title}`);
+      appendText(row, "p", "", item.summary);
+    }
+  }
+
+  function showOpinionPreview(result, originals, revision, additions = [], limited = false) {
     if (!Array.isArray(result?.items) || result.items.length > originals.size) throw new Error("AI 没有返回有效的修改方案。");
     const seen = new Set();
     const changes = new Map();
@@ -7529,20 +7556,17 @@
       if (Object.keys(fields).length) changes.set(update.id, fields);
     }
     clearOpinionPreview();
-    if (!changes.size) {
-      opinionStatus.textContent = "这条意见没有产生卡片改动。可以补充希望修改的内容。";
+    const automatic = cardOpinion.automatic;
+    const range = limited ? "已优先检查靠近当前卡的下级，可到更深的卡片继续推荐。" : "";
+    if (!changes.size && !additions.length) {
+      opinionStatus.textContent = automatic ? `现有资料未支持改写或新增下级卡。${range}`
+        : "这条意见没有产生卡片改动。可以补充希望修改的内容。";
       return;
     }
-    cardOpinion.proposal = { changes, revision };
+    cardOpinion.proposal = { changes, additions, revision };
     for (const [id, fields] of changes) {
       const original = originals.get(id);
-      const row = appendText(opinionPreview, "article", "research-opinion-change", "");
-      const label = appendText(row, "label", "", "");
-      const pick = document.createElement("input");
-      pick.type = "checkbox";
-      pick.value = id;
-      pick.checked = true;
-      label.append(pick, ` ${original.title}`);
+      const row = opinionChoice(id, automatic ? `改写 · ${original.title}` : original.title);
       for (const [field, value] of Object.entries(fields)) {
         const diff = appendText(row, "dl", "", "");
         appendText(diff, "dt", "", field === "title" ? "原标题" : "原正文");
@@ -7551,8 +7575,11 @@
         appendText(diff, "dd", "", value);
       }
     }
+    appendNewOpinionCards(additions);
     opinionPreview.hidden = opinionApply.hidden = false;
-    opinionStatus.textContent = `建议修改 ${changes.size} 张卡片。勾选要保存的改动。`;
+    opinionStatus.textContent = automatic
+      ? `建议改写 ${changes.size} 张下级卡，新增 ${additions.length} 张直属下级。勾选要保存的建议。${range}`
+      : `建议修改 ${changes.size} 张卡片。勾选要保存的改动。`;
   }
 
   function showNewCardPreview(additions, revision) {
@@ -7561,61 +7588,67 @@
       return;
     }
     cardOpinion.proposal = { additions, revision };
-    for (const item of additions) {
-      const row = appendText(opinionPreview, "article", "research-opinion-change", "");
-      const label = appendText(row, "label", "", "");
-      const pick = document.createElement("input");
-      pick.type = "checkbox";
-      pick.value = item.id;
-      pick.checked = true;
-      label.append(pick, ` ${item.title}`);
-      appendText(row, "p", "", item.summary);
-    }
+    appendNewOpinionCards(additions);
     opinionPreview.hidden = opinionApply.hidden = false;
     opinionStatus.textContent = `建议新增 ${additions.length} 张下级卡。确认后会打开当前卡片的模块图。`;
   }
 
   function opinionRequest(id, mode, instruction) {
-    const live = organization.current.items.filter(item => item.category !== "archive" && !deletedIds.has(item.id));
-    if (mode === "children") {
-      const nodes = boardForOrganization();
-      const project = cardExpansionContext(id, live, nodes, "auto", instruction);
+    const automatic = mode === "recommend";
+    const boardNodes = boardForOrganization();
+    const live = (organization.current?.items || hierarchyItems(boardNodes))
+      .filter(item => item.category !== "archive" && !deletedIds.has(item.id));
+    let expansion;
+    if (mode === "children" || automatic) {
+      const project = cardExpansionContext(id, live, boardNodes, "auto", instruction);
       const files = inheritedAttachments([id]);
       if (attachmentCount(files) > attachmentLimit) throw new Error("关联附件超过本轮上限。");
       if (!project.expansion.path.length) throw new Error("当前卡片已移除。");
       const card = live.find(item => item.id === id);
       const repositoryFiles = connection.backend === "api" ? [] : card.repositoryFiles || [];
-      return {
+      expansion = { project, anchor: { elementIds: [id], wholeCardIds: [id], quote: "", repositoryFiles },
+        ...(files.length ? { attachments: files } : {}) };
+      if (!automatic) return {
         expected: "children",
-        payload: { scope: "expandCard", project,
-          anchor: { elementIds: [id], wholeCardIds: [id], quote: "", repositoryFiles },
-          ...(files.length ? { attachments: files } : {}) },
+        payload: { scope: "expandCard", ...expansion },
         preview: (value, revision) => showNewCardPreview(
-          expansionAdditions(value, id, live, nodes, project.expansion.strategy), revision),
+          expansionAdditions(value, id, live, boardNodes, project.expansion.strategy), revision),
       };
+      project.expansion.strategy ||= "evidence";
     }
     const byId = new Map(live.map(item => [item.id, item]));
-    const ids = mode === "branch" ? subtreeIds(live, id) : new Set([id]);
-    const originals = new Map(live.filter(item => ids.has(item.id) && !item.nativeFace).map(item => [item.id, item]));
-    if (!originals.has(id) || originals.size > 64) throw new Error("一次最多预览 64 张卡片。请缩小修改范围。");
-    const nodeTextLimit = Math.min(2800, Math.floor(18000 / originals.size));
-    const nodes = [...originals.values()].map(item => {
+    const ids = mode === "card" ? [id] : [...subtreeIds(live, id)];
+    const included = ids.map(key => byId.get(key)).filter(item => item && !item.nativeFace && (!automatic || item.id === id || !item.codePreview));
+    if (included[0]?.id !== id || (!automatic && included.length > 64)) throw new Error("一次最多预览 64 张卡片。请缩小修改范围。");
+    const scoped = new Map(included.slice(0, 64).map(item => [item.id, item]));
+    const nodeTextLimit = Math.min(2800, Math.floor(18000 / scoped.size));
+    const nodes = [...scoped.values()].map(item => {
       let parent = item.id === id ? null : item.parentId;
       const visited = new Set([item.id]);
-      while (parent && !originals.has(parent) && !visited.has(parent)) {
+      while (parent && !scoped.has(parent) && !visited.has(parent)) {
         visited.add(parent);
         parent = byId.get(parent)?.parentId;
       }
       return { id: item.id, title: excerpt(item.title, 160), kind: replies.get(item.id)?.kind || "card",
         text: excerpt(item.taskDetails?.task || item.summary || "", nodeTextLimit),
+        ...(automatic && item.sources?.length ? { sources: item.sources } : {}),
         layoutParentId: parent || null, parentIds: parent ? [parent] : [], box: { x: 0, y: 0, width: 0, height: 0 } };
     });
+    if (automatic) {
+      scoped.delete(id);
+      return {
+        expected: "branch",
+        payload: { scope: "organizeBranch", branchIntent: "recommend", branchRootId: id, board: { nodes }, ...expansion },
+        preview: (value, revision) => showOpinionPreview(value, scoped, revision,
+          expansionAdditions(value.children, id, live, boardNodes, expansion.project.expansion.strategy), included.length > 64),
+      };
+    }
     return {
       expected: "branch",
       payload: { scope: "organizeBranch", branchIntent: "revise", branchRootId: id, board: { nodes },
         project: projectContext([id]), branch: { parent: byId.get(byId.get(id).parentId)?.title || "",
           children: live.filter(item => item.parentId === id).slice(0, 24).map(item => ({ id: item.id, title: item.title })) } },
-      preview: (value, revision) => showOpinionPreview(value, originals, revision),
+      preview: (value, revision) => showOpinionPreview(value, scoped, revision),
     };
   }
 
@@ -7637,30 +7670,33 @@
     if (!cardOpinion || cardOpinion.run) return;
     clearOpinionPreview();
     const instruction = opinionText.value.trim();
-    const { id } = cardOpinion;
-    if (!instruction || !editableCard(id)) return;
+    const { id, automatic } = cardOpinion;
+    const card = editableCard(id);
+    if ((!automatic && !instruction) || !card) return;
     if (activeRun || questionRuns.size || storageStale || !memory.storageIsCurrent() || !relayAvailable) {
       opinionStatus.textContent = "当前无法连接 AI 或白板正在更新。请检查连接后重试。";
       return;
     }
     let task;
-    try { task = opinionRequest(id, opinionScope.value, instruction); }
+    try { task = opinionRequest(id, automatic ? "recommend" : opinionScope.value, instruction); }
     catch (error) {
       opinionStatus.textContent = error.message;
       return;
     }
     const target = connectionTarget();
     const revision = captureBoardRevision();
-    const run = { controller: new AbortController(), mode: "opinion", target, requestId: newRequestId(), stopping: false };
+    const run = { controller: new AbortController(), mode: "opinion", target, requestId: newRequestId(), stopping: false,
+      question: instruction || card.title };
     const request = { ...target, ...task.payload, mode: "ask",
       boardId, requestId: run.requestId, question: instruction,
       baseRevision: revisionToken(`${revision.organization}\n${JSON.stringify(revision.storage)}`),
     };
     cardOpinion.run = activeRun = run;
-    opinionGenerate.disabled = opinionText.disabled = opinionForm.querySelector("fieldset").disabled = true;
+    opinionGenerate.disabled = opinionText.disabled = opinionFieldset.disabled = true;
     $("structure-opinion-close").disabled = true;
     $("structure-opinion-stop").hidden = false;
-    opinionStatus.textContent = task.expected === "children" ? "AI 正在按意见生成下级卡片…" : "AI 正在阅读所选范围并生成修改预览…";
+    opinionStatus.textContent = automatic ? `${backendLabels[target.backend]} 正在阅读当前卡和下级资料…`
+      : task.expected === "children" ? "AI 正在按意见生成下级卡片…" : "AI 正在阅读所选范围并生成修改预览…";
     renderInspector();
     let result, completed = false, errorText = "";
     try {
@@ -7684,7 +7720,7 @@
       if (run.stopping) { await run.stopPromise; opinionStatus.textContent = "已停止生成。"; }
       if (activeRun === run) activeRun = null;
       cardOpinion.run = null;
-      opinionGenerate.disabled = opinionText.disabled = opinionForm.querySelector("fieldset").disabled = false;
+      opinionGenerate.disabled = opinionText.disabled = opinionFieldset.disabled = false;
       $("structure-opinion-close").disabled = false;
       $("structure-opinion-stop").hidden = true;
       renderInspector();
@@ -7700,22 +7736,30 @@
     const picked = new Set([...opinionPreview.querySelectorAll("input:checked")].map(input => input.value));
     if (!picked.size) { opinionStatus.textContent = "请选择要应用的卡片。"; return; }
     const before = organization;
-    const current = before.current;
+    const { id, automatic, scope } = cardOpinion;
+    const current = before.current || {
+      title: $("canvas-title").textContent, summary: "",
+      layout: organizationEngine.settings({ flow: "vertical", density: before.rawCompact ? "compact" : "normal" }),
+      positions: before.rawPositions, collapsedBranches: before.rawCollapsedBranches || [],
+      items: hierarchyItems(boardForOrganization()),
+    };
+    let changed = 0;
     const items = current.items.map(item => {
       const change = picked.has(item.id) && proposal.changes?.get(item.id);
       if (!change) return item;
+      changed++;
       const next = { ...item, ...change };
       if (replies.has(item.id)) next.localContent = true;
       if (Object.hasOwn(change, "summary")) {
         if (item.taskDetails) next.taskDetails = { ...item.taskDetails, task: excerpt(change.summary, 500) };
-        delete next.capability;
+        if (!automatic) delete next.capability;
       }
       if (item.spec) next.spec = specAfterContentChange(item, next);
       return next;
     });
     const additions = (proposal.additions || []).filter(item => picked.has(item.id)).map(item => ({ ...item, opinionChild: true }));
     organization = { ...before, current: { ...current, items: [...items, ...additions] },
-      previous: current, quickUndo: null, undoAvailable: true };
+      previous: before.current, quickUndo: null, undoAvailable: true };
     if (!saveOrganization()) {
       organization = before;
       opinionStatus.textContent = "修改未能保存，可以保留意见并重试。";
@@ -7725,6 +7769,12 @@
     deletionUndo = null;
     opinionDrawer.close();
     renderInspector();
+    if (automatic) {
+      const first = additions[0]?.id || items.find(item => item.parentId === id && picked.has(item.id))?.id;
+      workspace.openStructure(id, scope, first);
+      $("project-surface-status").textContent = `已改写 ${changed} 张下级卡，新增 ${additions.length} 张。`;
+      return;
+    }
     if (additions.length) {
       workspace.enterStructure(additions[0].parentId, additions[0].id);
       $("project-surface-status").textContent = `已加入 ${additions.length} 张下级卡。`;
