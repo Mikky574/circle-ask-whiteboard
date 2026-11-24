@@ -1258,6 +1258,18 @@ async function testRepositoryInitialization() {
         title: "工程介绍",
         summary: "从入口到验证的源码导览。",
         layout: { flow: "horizontal", density: "compact" },
+        projectStructure: {
+          version: 1, rootId: root, title: "从打开工程到验证",
+          zones: [
+            { id: "entry", title: "用途", role: "entry", size: "medium", lane: 0, nodes: [
+              { id: "overview", cardId: root, label: "认识工程" }, { id: "purpose", cardId: purpose, label: "了解输入输出" },
+            ] },
+            { id: "execution", title: "运行与验收", role: "capability", size: "large", lane: 1, nodes: [
+              { id: "flow", cardId: flow, label: "运行入口" }, { id: "tests", cardId: tests, label: "核对结果" },
+            ] },
+          ],
+          links: [{ from: "flow", to: "tests", label: "复核输出", kind: "main", evidence: testDetail }],
+        },
         items: [
           item(root, null, "样例工程", "`README.md` 描述工程面向谁。"),
           item(purpose, root, "工程用途", "`README.md` 描述输入和输出。"),
@@ -1310,6 +1322,11 @@ async function testRepositoryInitialization() {
 
     await run();
     await initialize.waitFor({ state: "hidden" });
+    await page.locator(".research-structure").getByRole("heading", { name: "从打开工程到验证", exact: true }).waitFor();
+    assert.equal(await page.locator(".research-structure .research-edge").count(), 1);
+    const legacyCanvas = new URL(page.url());
+    legacyCanvas.searchParams.set("presentation", "cards");
+    await page.goto(legacyCanvas.href, { waitUntil: "networkidle" });
     assert.equal(requests.length, 2, "Initialization must go directly to the generation request");
     for (const request of requests) {
       assert.equal(request.backend, "zcode");
@@ -1331,6 +1348,9 @@ async function testRepositoryInitialization() {
       ...reserved.slice(0, 9).map((id, index) => [id, [purpose, flow, tests][Math.floor(index / 3)]]),
       [source, detail], [testSource, testDetail]];
     assert.deepEqual((await organization()).current.items.map(({ id, parentId }) => [id, parentId]), parentRelations);
+    const diagram = (await organization()).current.projectStructure;
+    assert.equal(diagram.rootId, root);
+    assert.deepEqual(diagram.links, [{ from: "flow", to: "tests", label: "复核输出", kind: "main", evidence: testDetail }]);
     const branch = card(flow).locator(".branch-toggle");
     assert.equal(await branch.getAttribute("aria-expanded"), "false");
     assert.equal(await card(detail).isVisible(), false);
@@ -1353,6 +1373,7 @@ async function testRepositoryInitialization() {
     await page.reload({ waitUntil: "networkidle" });
     await card(detail).waitFor();
     assert.equal(await code.innerText(), "def run():\n    return 61");
+    assert.deepEqual((await organization()).current.projectStructure, diagram);
     assert.deepEqual((await organization()).current.items.map(({ id, parentId }) => [id, parentId]), parentRelations);
     await page.locator("#undo-organization").click();
     await initialize.waitFor();

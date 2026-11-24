@@ -15,7 +15,7 @@ from unittest.mock import patch
 import server
 import zcode_backend
 from zcode_workspace import call_tool
-from test_capability_intro import capability
+from test_capability_intro import capability, overview_fixture
 
 
 def cli_request(**fields):
@@ -237,11 +237,14 @@ class RepositoryBindingTests(unittest.TestCase):
             return server.structured_candidate(json.dumps(plan), request.context,
                                                repository_scope=True, repository=request.repository_path)
 
+        plan["projectStructure"] = overview_fixture(plan["items"])
         expected = {**plan, "items": [{**item, "repositoryFiles": ["src/main.py"]} for item in plan["items"]]}
         self.assertEqual(candidate(), ("map", {"map": expected}))
         plan["items"][-1]["parentId"] = "E04"
+        plan["projectStructure"] = overview_fixture(plan["items"])
         self.assertEqual(len(candidate()[1]["map"]["items"]), 5, "No artificial depth is required")
         plan["items"][-1]["parentId"] = "E05"
+        plan["projectStructure"] = overview_fixture(plan["items"])
         for invalid in ("`src/missing.py`", "`../outside.py`", "`.env`", "src/main.py"):
             plan["items"][-1]["summary"] = invalid
             with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "缺少可读取"):
@@ -287,6 +290,7 @@ class RepositoryBindingTests(unittest.TestCase):
             return server.structured_candidate(json.dumps(plan), request.context,
                                                repository_scope=True, repository=request.repository_path)[1]["map"]
 
+        plan["projectStructure"] = overview_fixture(plan["items"])
         generated = candidate()["items"]
         self.assertEqual([item["id"] for item in generated[:5]], [item["id"] for item in plan["items"]])
         self.assertEqual([(item["id"], item["parentId"], item["codePreview"]["path"]) for item in generated[5:]], [
@@ -321,6 +325,7 @@ class RepositoryBindingTests(unittest.TestCase):
             return server.structured_candidate(json.dumps(plan), request.context,
                                                repository_scope=True, repository=request.repository_path)[1]["map"]
 
+        plan["projectStructure"] = overview_fixture(plan["items"])
         generated = candidate()["items"]
         self.assertEqual(len(generated), 14)
         self.assertEqual(generated[-1]["parentId"], "E08")

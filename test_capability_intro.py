@@ -14,6 +14,18 @@ def capability():
             "verification": "用已知图片和低置信样例核对可见结果；尚未运行"}
 
 
+def overview_fixture(items):
+    root = next(item["id"] for item in items if item["parentId"] is None)
+    direct = [item for item in items if item["parentId"] == root]
+    return {"version": 1, "rootId": root, "title": "从使用到验收", "zones": [
+        {"id": "goal", "title": "用途", "role": "entry", "size": "medium", "lane": 0,
+         "nodes": [{"id": "root", "cardId": root, "label": "查看项目", "note": ""}]},
+        {"id": "outcome", "title": "可观察结果", "role": "capability", "size": "large", "lane": 1,
+         "nodes": [{"id": f"step-{i}", "cardId": item["id"], "label": item["title"], "note": ""}
+                   for i, item in enumerate(direct)]},
+    ], "links": []}
+
+
 class CapabilityIntroTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -30,6 +42,7 @@ class CapabilityIntroTests(unittest.TestCase):
              "summary": "无法可靠判断时，保留图片并提示复核。", "sources": [],
              "repositoryFiles": ["predict.py#predict"], "capability": capability()},
         ]}
+        self.plan["projectStructure"] = overview_fixture(self.plan["items"])
 
     def generate(self, plan=None):
         return server.structured_candidate(json.dumps(plan or self.plan),
@@ -42,6 +55,38 @@ class CapabilityIntroTests(unittest.TestCase):
         self.assertEqual(result["items"][1]["summary"], self.plan["items"][1]["summary"])
         self.assertEqual(result["items"][1]["repositoryFiles"], ["predict.py"])
         self.assertEqual(result["items"][0]["capability"], capability())
+        self.assertEqual(result["projectStructure"], self.plan["projectStructure"])
+
+    def test_both_cli_schemas_require_the_same_diagram(self):
+        for zcode in (False, True):
+            schema_path = server.write_map_schema(self.board, repository_scope=True, zcode=zcode, repository_intro=True)
+            try:
+                schema = json.loads(schema_path.read_text(encoding="utf-8"))
+            finally:
+                schema_path.unlink()
+            self.assertIn("projectStructure", schema["required"])
+            self.assertEqual(schema["properties"]["projectStructure"]["required"],
+                             ["version", "rootId", "title", "zones", "links"])
+        prompt = server.build_prompt("ask", "初始化", {"boardIntent": "repository_init", "board": self.board},
+                                     repository_scope=True)
+        self.assertIn(server.GUIDE_PATH.read_text(encoding="utf-8"), prompt)
+
+    def test_diagram_requires_outer_cards_and_evidenced_links(self):
+        link = {"from": "root", "to": "step-0", "label": "打开可复核结果", "kind": "main", "evidence": "E05"}
+        self.plan["projectStructure"]["links"] = [link]
+        self.assertEqual(self.generate()["projectStructure"]["links"], [link])
+        for mutate in (
+            lambda plan: plan.pop("projectStructure"),
+            lambda plan: plan["projectStructure"].update(rootId="E05"),
+            lambda plan: plan["projectStructure"]["zones"].pop(),
+            lambda plan: plan["projectStructure"]["zones"][1]["nodes"][0].update(cardId="E04"),
+            lambda plan: plan["projectStructure"]["links"][0].update(evidence="E08"),
+            lambda plan: plan["projectStructure"]["links"][0].update(to="E05"),
+        ):
+            with self.subTest(mutate=mutate), self.assertRaisesRegex(ValueError, "模块图无效"):
+                plan = copy.deepcopy(self.plan)
+                mutate(plan)
+                self.generate(plan)
 
     def test_outer_cards_require_a_user_outcome_and_separate_valid_evidence(self):
         for mutate in (
@@ -72,6 +117,7 @@ class CapabilityIntroTests(unittest.TestCase):
 
     def test_existing_board_reorganization_can_return_function_records_and_checks_evidence(self):
         context = {"scope": "organize", "board": {"nodes": [{"id": "E04"}, {"id": "E05"}], "newIds": []}}
+        self.plan.pop("projectStructure")
         result = server.structured_candidate(json.dumps(self.plan), context, repository_scope=True,
                                              repository=self.repository)[1]["map"]
         self.assertEqual(result["items"][1]["capability"], capability())

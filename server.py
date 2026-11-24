@@ -27,6 +27,7 @@ from board_store import BoardStoreError, MAX_STORE_REQUEST_BYTES, board_store_re
 from backends import FACTORY, BackendRequest, CancellationToken
 from card_search import search_cards
 from local_projects import ProjectCatalogError, project_activity_request, project_catalog_request
+from project_diagram import GUIDE_PATH, diagram_schema, validate_overview
 from repo_index import RepositoryIndex, RepoIndexError
 
 from attachments import MAX_ATTACHMENT_BYTES, load_attachments, read_attachment, save_attachment, stage_attachments
@@ -66,6 +67,7 @@ STATIC = {
 GUIDE_FILES = {
     "/guide": ("guide.html", "text/html; charset=utf-8"),
     "/guide/": ("guide.html", "text/html; charset=utf-8"),
+    "/guide/module-diagram-pattern": (GUIDE_PATH.relative_to(ROOT).as_posix(), "text/plain; charset=utf-8"),
 }
 for _skill in ("whiteboard-local-setup", "whiteboard-project-analysis", "whiteboard-content-handoff", "whiteboard-service"):
     GUIDE_FILES[f"/guide/skills/{_skill}"] = (f".agents/skills/{_skill}/SKILL.md", "text/plain; charset=utf-8")
@@ -370,6 +372,9 @@ def write_map_schema(board, *, repository_scope=False, zcode=False, repository_i
         "required": ["title", "summary", "layout", "items"],
         "additionalProperties": False,
     }
+    if repository_intro:
+        schema["properties"]["projectStructure"] = diagram_schema(ids, zcode=zcode)
+        schema["required"].append("projectStructure")
     return write_result_schema(schema, "whiteboard-map-")
 
 
@@ -1092,12 +1097,16 @@ def structured_candidate(answer, context, *, attachments=False, repository_scope
         return "branch", {"branch": branch}
     if not isinstance(value, dict) or "layout" not in value:
         raise ValueError("整板整理结果缺少 layout 排布字段。")
+    repository_intro = context.get("boardIntent") == REPOSITORY_INIT_INTENT
+    diagram = value.pop("projectStructure", None) if repository_intro else None
     plan = validate_map(value, context["board"], contextual_new=(
         context.get("boardIntent") == "main" or attachments or repository_scope), repository_scope=repository_scope)
-    if context.get("boardIntent") == REPOSITORY_INIT_INTENT:
+    if repository_intro:
         if repository is None:
             raise ValueError("初始化项目介绍需要可读的项目目录。")
         validate_repository_intro(plan, repository, context["board"])
+        root_id = next(item["id"] for item in plan["items"] if item["parentId"] is None)
+        plan["projectStructure"] = validate_overview(diagram, root_id, plan["items"])
     elif repository_scope and repository is not None:
         verified = {}
         for item in plan["items"]:
@@ -1631,6 +1640,12 @@ def build_prompt(mode, question, context, *, source_access=True, repository_scop
             "Omit the tool-only repository/ prefix and leave every sources array empty. Cite actual entry and test source "
             "files where relevant. Use only the IDs in board.newIds. Use compact horizontal "
             "or vertical layout and preserve the logical reading order of chapters."
+        )
+        format_hint += (
+            "\n\nFollow the shared diagram guide below when filling projectStructure. Keep every node tied to "
+            "an item returned in this map. Supply arrays even when there are no supported links. Use an empty "
+            "node note when the label says enough. Use at most six zones and 24 links.\n\n"
+            + GUIDE_PATH.read_text(encoding="utf-8") + "\n"
         )
     elif context.get("scope") == "organize" and not source_access:
         format_hint = (

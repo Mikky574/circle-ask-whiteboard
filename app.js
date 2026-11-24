@@ -5769,7 +5769,7 @@
       const candidateIds = new Set(candidate?.items.map((item) => item.id));
       const existingIds = new Set(nodes.map((node) => node.id));
       const additions = candidate?.items.filter((item) => !existingIds.has(item.id)) || [];
-      if (errorText || !completed || !candidate || (initialize && candidate.items.length < 2) ||
+      if (errorText || !completed || !candidate || (initialize && (candidate.items.length < 2 || !candidate.projectStructure)) ||
           nodes.some((item) => !candidateIds.has(item.id)) ||
           additions.some((item) => !newIds.includes(item.id) || item.category === "archive" ||
             (!initialize && target.backend !== "api" && !target.repositoryPath && !main && !attachments.length && !item.sources?.length))) {
@@ -5909,13 +5909,16 @@
         const old = previousItems.get(item.id);
         return item.title !== old?.title || item.summary !== old?.summary || item.category !== old?.category;
       }).length;
-      result.textContent = (initialize ? "功能地图已生成，可从项目阅读查看功能、输入输出与边界。" : moved ? "已重排白板。" : "整理完成，卡片位置与上次相同。") +
+      result.textContent = (initialize ? "功能卡片和项目模块图已生成，可从项目白板查看。" : moved ? "已重排白板。" : "整理完成，卡片位置与上次相同。") +
         `${organizationEngine.quickLayouts[quickMode] || describeLayout(candidate.layout)}。` +
         (additions.length ? `新增 ${additions.length} 个模块。` : "") +
         (updated ? `更新 ${updated} 项内容。` : "") +
         (folded ? `已收起 ${folded} 项。` : "") +
         (stored ? "" : " 浏览器存储不可用，本次整理保留在当前页面。");
-      if (initialize) $("organization-status").textContent = result.textContent;
+      if (initialize) {
+        $("organization-status").textContent = result.textContent;
+        if (stored) workspace.enterStructure(candidate.projectStructure.rootId);
+      }
       if (submission) status(result.textContent);
       return true;
     } catch (error) {

@@ -37,6 +37,7 @@ from agent_trace import DETAIL_LIMIT
 from backends import BackendRequest, CodexAdapter, FACTORY
 from board_tools import BoardTools
 from fixtures import TEST_ONLY_KEY, api_settings, board_snapshot, response, tool_call
+from test_capability_intro import overview_fixture
 
 
 LOOPBACK_PORTS = []
@@ -977,6 +978,7 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
                 )
             ],
         }
+        intro["projectStructure"] = overview_fixture(intro["items"])
         invalid_intro = copy.deepcopy(intro)
         invalid_intro["items"][-1]["repositoryFiles"] = ["src/missing.py"]
         child_fields = DecompositionAcceptanceTests.request_body()
