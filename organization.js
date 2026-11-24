@@ -139,6 +139,7 @@
         ...(capability ? { capability } : {}),
         ...(flowSteps.length >= 2 ? { flowSteps } : {}),
         ...(item.draft === true ? { draft: true } : {}),
+        ...(item.opinionChild === true ? { opinionChild: true } : {}),
         ...(item.explicitParent === true ? { explicitParent: true } : {}),
         ...(item.nativeFace === true ? { nativeFace: true } : {}),
         ...(item.localContent === true && (item.nativeFace === true || id.startsWith("A")) ? { localContent: true } : {}),

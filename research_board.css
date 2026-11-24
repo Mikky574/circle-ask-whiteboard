@@ -427,13 +427,18 @@ body.research-view {
 .research-structure-legend [data-kind="back"] i { border-top: 2px dotted var(--edge-back); }
 /* The graph is the focus: the one framed surface on the page, hairline and a very light lift. */
 .research-structure-scroll {
-  overflow-x: auto; border: 1px solid #d3ddd3; border-radius: 14px; background: #fbfcfa;
+  box-sizing: border-box; overflow: auto; border: 1px solid #d3ddd3; border-radius: 14px; background: #fbfcfa;
   box-shadow: 0 1px 2px rgb(36 58 49 / 5%), 0 10px 24px -18px rgb(36 58 49 / 35%);
-  scrollbar-width: thin; scrollbar-color: #b6c9b9 transparent;
+  scrollbar-width: none; overflow-anchor: none; cursor: grab;
 }
+.research-structure-scroll.is-panning { cursor: grabbing; user-select: none; }
+.research-camera-world { position: relative; overflow: clip; }
+.research-camera-tools { display: inline-flex; gap: 2px; align-items: center; }
+.research-camera-tools > button { min-width: 32px; padding-inline: 8px; font-variant-numeric: tabular-nums; }
 .research-structure-scroll:focus-visible { outline: 2px solid var(--research-green); outline-offset: 2px; }
 .research-structure-stage {
-  position: relative;
+  position: absolute;
+  transform-origin: top left;
   box-sizing: border-box;
   padding: var(--structure-top, 28px) 107px var(--structure-bottom, 28px) 24px;
   min-width: calc(var(--structure-lanes, 3) * 185px + (var(--structure-lanes, 3) - 1) * 112px + 131px);

@@ -6603,7 +6603,7 @@
     const target = byId.get(targetId);
     const parent = byId.get(target?.parentId);
     let strategy = requestedStrategy === "auto" ? null : requestedStrategy;
-    if (!strategy && isCanvasWorkbench() && target && !draftRoot) {
+    if (!strategy && (isCanvasWorkbench() || research.active) && target && !draftRoot) {
       if (/项目功能|核心能力|功能地图|功能结构/u.test(focus)) strategy = "capabilities";
       else if (/使用场景|怎么用|操作流程/u.test(focus)) strategy = "scenarios";
       else if (/源码|怎么实现|参数|函数|验收|测试|验证/u.test(focus) || target.codePreview || target.spec?.kind === "case") strategy = "evidence";
@@ -6634,6 +6634,26 @@
       }
     }
     return result;
+  }
+
+  function expansionAdditions(children, targetId, items, nodes, strategy) {
+    if (!Array.isArray(children) || children.length > 6) throw new Error("服务没有返回完整的下级卡片。");
+    const titleKey = value => value.trim().normalize("NFKC").toLowerCase();
+    const currentTitles = new Map(nodes.map(({ id, title }) => [id, title]));
+    const titles = new Set(items.filter(item => item.id === targetId || item.parentId === targetId)
+      .map(item => titleKey(currentTitles.get(item.id) || item.title)));
+    const ids = availableModuleIds(nodes, children.length);
+    return children.map((child, index) => {
+      const title = typeof child?.title === "string" ? child.title.trim() : "";
+      const summary = typeof child?.summary === "string" ? child.summary.trim() : "";
+      const capability = window.CapabilityData?.clean(child?.capability);
+      if (!title || Array.from(title).length > 32 || !summary || Array.from(summary).length > maxExpansionSummaryLength ||
+          titles.has(titleKey(title)) || (strategy === "capabilities" && !capability)) {
+        throw new Error("下级卡片含重复标题或无效正文，请调整意见后重试。");
+      }
+      titles.add(titleKey(title));
+      return { id: ids[index], parentId: targetId, category: "reference", title, summary, ...(capability ? { capability } : {}) };
+    });
   }
 
   function chooseSplitCards(additions, title, strategy) {
@@ -6721,26 +6741,11 @@
         report("当前资料未支持新的独立子卡。可以换一个方向，或补充资料后再试。");
         return;
       }
-      const titleKey = (value) => value.trim().normalize("NFKC").toLowerCase();
-      const currentTitles = new Map(nodes.map(({ id, title }) => [id, title]));
-      const titles = new Set(items.filter((item) => item.id === targetId || item.parentId === targetId)
-        .map((item) => titleKey(currentTitles.get(item.id) || item.title)));
-      const ids = availableModuleIds(nodes, children.length);
-      let additions = children.map((child, index) => {
-        const title = typeof child?.title === "string" ? child.title.trim() : "";
-        const summary = typeof child?.summary === "string" ? child.summary.trim() : "";
-        const capability = window.CapabilityData?.clean(child?.capability);
-        if (!title || Array.from(title).length > 32 || !summary || Array.from(summary).length > maxExpansionSummaryLength ||
-            titles.has(titleKey(title)) || (strategy === "capabilities" && !capability)) {
-          throw new Error("下级卡片含重复标题或无效正文，请调整问题后重试。");
-        }
-        titles.add(titleKey(title));
-        return { id: ids[index], parentId: targetId, category: "reference", title, summary, ...(capability ? { capability } : {}) };
-      });
+      let additions = expansionAdditions(children, targetId, items, nodes, strategy);
       const review = Boolean(strategy) || (isCanvasWorkbench() && !mindmap?.active);
       const preservePositions = review && !mindmap?.active;
       if (review) {
-        additions = await chooseSplitCards(additions, currentTitles.get(targetId) || targetId, strategy);
+        additions = await chooseSplitCards(additions, nodes.find(node => node.id === targetId)?.title || targetId, strategy);
         if (!acceptsRunEvent(run)) return;
         if (!additions.length) {
           report("已取消加入子卡。");
@@ -7439,6 +7444,7 @@
   const opinionPreview = $("structure-opinion-preview");
   const opinionApply = $("structure-opinion-apply");
   const opinionGenerate = $("structure-opinion-generate");
+  const opinionScope = opinionForm.elements.namedItem("opinion-scope");
   let cardOpinion = null;
 
   function clearOpinionPreview() {
@@ -7447,11 +7453,21 @@
     opinionPreview.hidden = opinionApply.hidden = true;
   }
 
-  function openCardOpinion(id) {
+  function updateOpinionMode() {
+    const extending = opinionScope.value === "children";
+    opinionGenerate.textContent = extending ? "生成下级卡预览" : "生成修改预览";
+    opinionApply.textContent = extending ? "加入勾选的下级卡" : "应用勾选的修改";
+    opinionText.placeholder = extending ? "例如，按现有资料补出两张卡，分别说明使用步骤和验收方法。"
+      : "例如，面向使用者重写这张卡，保留事实并说清操作步骤。";
+  }
+
+  function openCardOpinion(id, mode = "card") {
     const card = editableCard(id);
     if (!card || opinionDrawer.open || projectCardDrawer.open || !finishEditingFirst()) return;
     cardOpinion = { id, run: null, proposal: null };
     opinionForm.reset();
+    opinionScope.value = mode;
+    updateOpinionMode();
     clearOpinionPreview();
     $("structure-opinion-target").textContent = card.title;
     opinionStatus.textContent = "";
@@ -7505,9 +7521,74 @@
     opinionStatus.textContent = `建议修改 ${changes.size} 张卡片。勾选要保存的改动。`;
   }
 
+  function showNewCardPreview(additions, revision) {
+    if (!additions.length) {
+      opinionStatus.textContent = "现有资料不足以形成新的独立下级卡。可以补充资料或换个方向。";
+      return;
+    }
+    cardOpinion.proposal = { additions, revision };
+    for (const item of additions) {
+      const row = appendText(opinionPreview, "article", "research-opinion-change", "");
+      const label = appendText(row, "label", "", "");
+      const pick = document.createElement("input");
+      pick.type = "checkbox";
+      pick.value = item.id;
+      pick.checked = true;
+      label.append(pick, ` ${item.title}`);
+      appendText(row, "p", "", item.summary);
+    }
+    opinionPreview.hidden = opinionApply.hidden = false;
+    opinionStatus.textContent = `建议新增 ${additions.length} 张下级卡。确认后会打开当前卡片的模块图。`;
+  }
+
+  function opinionRequest(id, mode, instruction) {
+    const live = organization.current.items.filter(item => item.category !== "archive" && !deletedIds.has(item.id));
+    if (mode === "children") {
+      const nodes = boardForOrganization();
+      const project = cardExpansionContext(id, live, nodes, "auto", instruction);
+      const files = inheritedAttachments([id]);
+      if (attachmentCount(files) > attachmentLimit) throw new Error("关联附件超过本轮上限。");
+      if (!project.expansion.path.length) throw new Error("当前卡片已移除。");
+      const card = live.find(item => item.id === id);
+      const repositoryFiles = connection.backend === "api" ? [] : card.repositoryFiles || [];
+      return {
+        expected: "children",
+        payload: { scope: "expandCard", project,
+          anchor: { elementIds: [id], wholeCardIds: [id], quote: "", repositoryFiles },
+          ...(files.length ? { attachments: files } : {}) },
+        preview: (value, revision) => showNewCardPreview(
+          expansionAdditions(value, id, live, nodes, project.expansion.strategy), revision),
+      };
+    }
+    const byId = new Map(live.map(item => [item.id, item]));
+    const ids = mode === "branch" ? subtreeIds(live, id) : new Set([id]);
+    const originals = new Map(live.filter(item => ids.has(item.id) && !item.nativeFace).map(item => [item.id, item]));
+    if (!originals.has(id) || originals.size > 64) throw new Error("一次最多预览 64 张卡片。请缩小修改范围。");
+    const nodeTextLimit = Math.min(2800, Math.floor(18000 / originals.size));
+    const nodes = [...originals.values()].map(item => {
+      let parent = item.id === id ? null : item.parentId;
+      const visited = new Set([item.id]);
+      while (parent && !originals.has(parent) && !visited.has(parent)) {
+        visited.add(parent);
+        parent = byId.get(parent)?.parentId;
+      }
+      return { id: item.id, title: excerpt(item.title, 160), kind: replies.get(item.id)?.kind || "card",
+        text: excerpt(item.taskDetails?.task || item.summary || "", nodeTextLimit),
+        layoutParentId: parent || null, parentIds: parent ? [parent] : [], box: { x: 0, y: 0, width: 0, height: 0 } };
+    });
+    return {
+      expected: "branch",
+      payload: { scope: "organizeBranch", branchIntent: "revise", branchRootId: id, board: { nodes },
+        project: projectContext([id]), branch: { parent: byId.get(byId.get(id).parentId)?.title || "",
+          children: live.filter(item => item.parentId === id).slice(0, 24).map(item => ({ id: item.id, title: item.title })) } },
+      preview: (value, revision) => showOpinionPreview(value, originals, revision),
+    };
+  }
+
   opinionForm.addEventListener("input", event => {
     if (event.target === opinionText || event.target.name === "opinion-scope") {
       clearOpinionPreview();
+      if (event.target.name === "opinion-scope") updateOpinionMode();
       opinionStatus.textContent = "";
     }
   });
@@ -7528,42 +7609,24 @@
       opinionStatus.textContent = "当前无法连接 AI 或白板正在更新。请检查连接后重试。";
       return;
     }
-    const stored = organization.current.items;
-    const live = stored.filter(item => item.category !== "archive" && !deletedIds.has(item.id));
-    const byId = new Map(live.map(item => [item.id, item]));
-    const ids = new FormData(opinionForm).get("opinion-scope") === "branch" ? subtreeIds(live, id) : new Set([id]);
-    const originals = new Map(live.filter(item => ids.has(item.id) && !item.nativeFace).map(item => [item.id, item]));
-    if (!originals.has(id) || originals.size > 64) {
-      opinionStatus.textContent = "一次最多预览 64 张卡片。请选择更具体的卡片或缩小修改范围。";
+    let task;
+    try { task = opinionRequest(id, opinionScope.value, instruction); }
+    catch (error) {
+      opinionStatus.textContent = error.message;
       return;
     }
-    const nodeTextLimit = Math.min(2800, Math.floor(18000 / originals.size));
-    const nodes = [...originals.values()].map(item => {
-      let parent = item.id === id ? null : item.parentId;
-      const visited = new Set([item.id]);
-      while (parent && !originals.has(parent) && !visited.has(parent)) {
-        visited.add(parent);
-        parent = byId.get(parent)?.parentId;
-      }
-      return { id: item.id, title: excerpt(item.title, 160), kind: replies.get(item.id)?.kind || "card",
-        text: excerpt(item.taskDetails?.task || item.summary || "", nodeTextLimit),
-        layoutParentId: parent || null, parentIds: parent ? [parent] : [], box: { x: 0, y: 0, width: 0, height: 0 } };
-    });
     const target = connectionTarget();
     const revision = captureBoardRevision();
     const run = { controller: new AbortController(), mode: "opinion", target, requestId: newRequestId(), stopping: false };
-    const request = { ...target, mode: "ask", scope: "organizeBranch", branchIntent: "revise",
-      boardId, branchRootId: id, requestId: run.requestId, question: instruction, board: { nodes },
+    const request = { ...target, ...task.payload, mode: "ask",
+      boardId, requestId: run.requestId, question: instruction,
       baseRevision: revisionToken(`${revision.organization}\n${JSON.stringify(revision.storage)}`),
-      project: projectContext([id]),
-      branch: { parent: byId.get(byId.get(id).parentId)?.title || "",
-        children: live.filter(item => item.parentId === id).slice(0, 24).map(item => ({ id: item.id, title: item.title })) },
     };
     cardOpinion.run = activeRun = run;
     opinionGenerate.disabled = opinionText.disabled = opinionForm.querySelector("fieldset").disabled = true;
     $("structure-opinion-close").disabled = true;
     $("structure-opinion-stop").hidden = false;
-    opinionStatus.textContent = "AI 正在阅读所选范围并生成修改预览…";
+    opinionStatus.textContent = task.expected === "children" ? "AI 正在按意见生成下级卡片…" : "AI 正在阅读所选范围并生成修改预览…";
     renderInspector();
     let result, completed = false, errorText = "";
     try {
@@ -7571,16 +7634,16 @@
         if (!acceptsRunEvent(run) || (message.requestId != null && message.requestId !== request.requestId) ||
             (message.baseRevision != null && message.baseRevision !== request.baseRevision)) return;
         if (message.type === "status" && typeof message.text === "string") opinionStatus.textContent = message.text;
-        else if (message.type === "branch") {
-          if (result) throw new Error("服务重复返回了修改方案。");
-          result = message.branch;
+        else if (message.type === task.expected) {
+          if (result !== undefined) throw new Error("服务重复返回了方案。");
+          result = message[task.expected] ?? null;
         } else if (message.type === "done") completed = !message.changedFiles?.length;
         else if (message.type === "error") errorText = message.text;
       });
       if (!acceptsRunEvent(run)) return;
       if (!completed || !result || errorText) throw new Error(errorText || "AI 没有返回完整的修改预览。");
       if (!sameBoardRevision(revision)) throw new Error("生成期间白板已变化，请刷新后重新生成。");
-      showOpinionPreview(result, originals, revision);
+      task.preview(result, revision);
     } catch (error) {
       if (acceptsRunEvent(run)) opinionStatus.textContent = error.message;
     } finally {
@@ -7605,8 +7668,8 @@
     const before = organization;
     const current = before.current;
     const items = current.items.map(item => {
-      if (!picked.has(item.id)) return item;
-      const change = proposal.changes.get(item.id);
+      const change = picked.has(item.id) && proposal.changes?.get(item.id);
+      if (!change) return item;
       const next = { ...item, ...change };
       if (replies.has(item.id)) next.localContent = true;
       if (Object.hasOwn(change, "summary")) {
@@ -7616,7 +7679,9 @@
       if (item.spec) next.spec = specAfterContentChange(item, next);
       return next;
     });
-    organization = { ...before, current: { ...current, items }, previous: current, quickUndo: null, undoAvailable: true };
+    const additions = (proposal.additions || []).filter(item => picked.has(item.id)).map(item => ({ ...item, opinionChild: true }));
+    organization = { ...before, current: { ...current, items: [...items, ...additions] },
+      previous: current, quickUndo: null, undoAvailable: true };
     if (!saveOrganization()) {
       organization = before;
       opinionStatus.textContent = "修改未能保存，可以保留意见并重试。";
@@ -7626,6 +7691,11 @@
     deletionUndo = null;
     opinionDrawer.close();
     renderInspector();
+    if (additions.length) {
+      workspace.enterStructure(additions[0].parentId, additions[0].id);
+      $("project-surface-status").textContent = `已加入 ${additions.length} 张下级卡。`;
+      return;
+    }
     $("project-surface-status").textContent = `已应用 ${picked.size} 张卡片的修改。`;
     const updated = $("research-workspace").querySelector('.research-snode[aria-pressed="true"]');
     (updated || $("project-surface-opinion")).focus({ preventScroll: true });

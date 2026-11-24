@@ -101,6 +101,7 @@
   function enterStructure(id, card) {
     if (!move({ type: "enterReading", root: id, panel: "structure", card })) return false;
     reader.focusHeading();
+    if (card) reader.revealDiagramCard(card);
     return true;
   }
   function panel(id) { move({ type: "setPanel", panel: id }); }

@@ -794,9 +794,10 @@
       <label for="structure-opinion-text">你希望改成什么样？</label>
       <textarea id="structure-opinion-text" rows="4" maxlength="1800" required placeholder="例如，把这张卡改成面向使用者的说明。保留已有证据，把操作步骤说清楚。"></textarea>
       <fieldset>
-        <legend>允许修改的范围</legend>
+        <legend>本次调整</legend>
         <label><input type="radio" name="opinion-scope" value="card" checked> 仅当前卡</label>
         <label><input type="radio" name="opinion-scope" value="branch"> 当前卡及下级</label>
+        <label><input type="radio" name="opinion-scope" value="children"> 新增下级</label>
       </fieldset>
       <p id="structure-opinion-status" role="status"></p>
       <section id="structure-opinion-preview" aria-label="修改预览" hidden></section>

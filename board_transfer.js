@@ -143,7 +143,7 @@
       if (steps.includes(result.id) || new Set(steps).size !== steps.length) fail("流程卡片必须互异且不能引用自身。");
       result.flowSteps = steps;
     }
-    for (const key of ["draft", "explicitParent", "nativeFace", "localContent", "folded"]) optionalBoolean(value, result, key);
+    for (const key of ["draft", "opinionChild", "explicitParent", "nativeFace", "localContent", "folded"]) optionalBoolean(value, result, key);
     if (owns(value, "side")) {
       if (!["auto", "left", "right"].includes(value.side)) fail("卡片展开方向无效。");
       result.side = value.side;

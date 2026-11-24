@@ -74,7 +74,8 @@ async function relay(req, res) {
   }
   if (url.pathname === "/api/codex") {
     const payload = await body(req);
-    (payload.branchIntent === "revise" ? opinionRequests : requests).push(payload);
+    const extendModule = payload.scope === "expandCard" && payload.project?.expansion?.targetId === "E41";
+    (payload.branchIntent === "revise" || extendModule ? opinionRequests : requests).push(payload);
     let event;
     if (payload.scope === "plan") {
       if (heldPlan) await heldPlan;
@@ -88,6 +89,10 @@ async function relay(req, res) {
         }));
       event = { type: "branch", branch: { items }, requestId: payload.requestId, baseRevision: payload.baseRevision };
     }
+    else if (extendModule) event = { type: "children", requestId: payload.requestId, baseRevision: payload.baseRevision, children: [
+      { title: "异常输入的验收", summary: "加入一次空输入检查并核对返回的提示。" },
+      { title: "记录边界用例", summary: "收集需要补充验证的输入。" },
+    ] };
     else if (payload.scope === "expandCard") event = { type: "children", children: [
       { title: "阅读选区的输入边界", summary: "保留用户输入的延伸方向，新增卡片归属 E27。" },
       { title: "阅读选区的验收反馈", summary: "选中原文、完整上下文和新下级应能对应起来。" },
@@ -935,8 +940,30 @@ async function structureWorkspaceEditing() {
       const frame = graph.locator(".research-structure-scroll");
       const geometry = () => frame.evaluate(frame => {
         const { x, y, width, height } = frame.getBoundingClientRect();
-        return { x, y, width, height, left: frame.scrollLeft, page: scrollY };
+        return { x, y, width, height, left: frame.scrollLeft, top: frame.scrollTop, page: scrollY };
       });
+      const camera = graph.getByRole("group", { name: "画布缩放" });
+      const scale = camera.locator("button").filter({ hasText: /%/ });
+      assert.equal(await scale.textContent(), "100%");
+      if (width > 760) {
+        const start = await geometry();
+        await page.mouse.move(start.x + 12, start.y + 12);
+        await page.mouse.down();
+        await page.mouse.move(start.x + 66, start.y + 46, { steps: 5 });
+        await page.mouse.up();
+        const panned = await geometry();
+        assert.ok(panned.left < start.left - 40 && panned.top < start.top - 25, "Dragging empty space pans both axes");
+        assert.equal(panned.page, start.page, "Panning moves only the graph");
+        await scale.click();
+      }
+      const initialWidth = (await entry.boundingBox()).width;
+      await camera.getByRole("button", { name: "放大画布" }).click();
+      assert.equal(await scale.textContent(), "120%");
+      assert.ok((await entry.boundingBox()).width > initialWidth * 1.15, "Zoom scales the contents");
+      assert.equal(await graph.locator(".research-edge[data-from]").count(), 2);
+      await camera.getByRole("button", { name: "适应" }).click();
+      if (width <= 760) assert.ok(parseFloat(await scale.textContent()) < 100, "The narrow graph can zoom out to fit");
+      await scale.click();
       await entry.scrollIntoViewIfNeeded();
       const beforeSelection = await geometry();
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
@@ -1079,6 +1106,40 @@ async function structureWorkspaceEditing() {
         item.id === "E41" ? { ...item, title: "来自意见的标题" } : item));
       assert.deepEqual(afterOpinion.projectStructure, beforeOpinion.projectStructure);
       assert.deepEqual(afterOpinion.moduleDiagrams, beforeOpinion.moduleDiagrams);
+      await entry.click({ button: "right" });
+      await menu.getByRole("menuitem", { name: "AI 向下延伸" }).click();
+      await opinion.waitFor();
+      assert.equal(await opinion.getByLabel("新增下级").isChecked(), true);
+      await instruction.fill("在这里加一个子卡，说明异常输入如何验收。");
+      await opinion.getByRole("button", { name: "生成下级卡预览" }).click();
+      await preview.getByText("加入一次空输入检查并核对返回的提示。").waitFor();
+      const extension = opinionRequests.at(-1);
+      assert.deepEqual(extension.anchor.elementIds, ["E41"]);
+      assert.deepEqual(extension.project.expansion.path.map(item => item.id), ["E04", "E40", "E41"]);
+      assert.deepEqual((await state()).organization.current, afterOpinion, "A new card preview never writes to the board");
+      const choices = preview.getByRole("checkbox");
+      assert.equal(await choices.count(), 2);
+      await choices.nth(1).uncheck();
+      await opinion.getByRole("button", { name: "加入勾选的下级卡" }).click();
+      await opinion.waitFor({ state: "hidden" });
+      const afterExtension = (await state()).organization.current;
+      const additions = afterExtension.items.filter(item => !afterOpinion.items.some(previous => previous.id === item.id));
+      assert.equal(additions.length, 1);
+      const [addition] = additions;
+      assert.equal(addition.title, "异常输入的验收");
+      assert.equal(addition.parentId, "E41");
+      assert.equal(addition.opinionChild, true);
+      assert.deepEqual(afterExtension.moduleDiagrams, afterOpinion.moduleDiagrams);
+      assert.equal(await graph.getAttribute("data-diagram-root"), "E41");
+      assert.equal(new URL(page.url()).searchParams.get("focusCard"), addition.id);
+      await graph.locator(".research-zone").filter({ hasText: "AI 补充" }).getByText(addition.title, { exact: true }).waitFor();
+      assert.equal(await node(addition.id).evaluate(element => document.activeElement === element), true);
+      await page.reload();
+      await node(addition.id).waitFor();
+      const viewport = await frame.boundingBox();
+      const visibleNewCard = await node(addition.id).boundingBox();
+      assert.ok(visibleNewCard.x >= viewport.x && visibleNewCard.x + visibleNewCard.width <= viewport.x + viewport.width);
+      await page.locator("#project-surface-structure").click();
       if (width > 760) {
         const handle = branch.locator(".research-snode-handle");
         await handle.scrollIntoViewIfNeeded();
