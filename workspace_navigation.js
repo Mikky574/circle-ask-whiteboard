@@ -153,7 +153,7 @@
    *   showCanvas { card? }                  "项目画布" / 在画布定位 / 编辑画布 (old showCanvasAt); context.canvasCard
    *   showStructure                         "项目结构" (old showStructure); context.structureRoot, context.canvasCard
    *   enterReading { root, panel? }         open a reading root (old enter)
-   *   openBranch { branch }                 enter a canvas branch, null = whole board (old showCanvas)
+   *   openBranch { branch, focus? }         enter a canvas branch, optionally select its root
    *   focusCard { card }                    make a card current (a canvas branch not containing it moves to an ancestor)
    *   setPanel { panel }                    research tab
    *   reconcile                             drop ids that no longer exist; context.lastPath, context.availablePanels
@@ -193,7 +193,8 @@
         }
         case "openBranch": {
           const branch = realId(action.branch);
-          return make({ ...from, presentation: "cards", panel: "board", canvasBranch: branch && t.has(branch) ? branch : null, card: null });
+          const canvasBranch = branch && t.has(branch) ? branch : null;
+          return make({ ...from, presentation: "cards", canvasBranch, card: action.focus ? canvasBranch : null });
         }
         case "focusCard": {
           if (action.card == null) return make({ ...from, card: null });

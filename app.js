@@ -7167,7 +7167,7 @@
   let workbenchDraft = null;
   let workbenchFeedbackId = null;
   let refreshCanvasAfterEdit = false;
-  let researchEditFromBar = false;
+  let researchEditOrigin = null;
 
   function editableCard(id) {
     return (organization.current?.items || organization.rawCards || []).find((item) => item.id === id && !item.nativeFace);
@@ -7253,7 +7253,9 @@
     }
     const item = editableCard(id);
     if (!item) return;
-    researchEditFromBar = document.activeElement === $("project-surface-edit");
+    const opener = document.activeElement;
+    const node = opener?.closest(".research-snode-wrap")?.querySelector(".research-snode");
+    researchEditOrigin = { opener, node: node?.dataset.node };
     $("project-surface-status").textContent = "";
     projectCardDrawer.append(workbenchEditor);
     projectCardDrawer.showModal();
@@ -7265,9 +7267,11 @@
     workbenchEditorHome.insertBefore(workbenchEditor, workbenchEditorNext);
     $("project-surface-status").textContent = message;
     renderInspector();
-    const barEdit = $("project-surface-edit");
-    const target = researchEditFromBar && !barEdit.hidden ? barEdit
-      : document.querySelector("#research-workspace .research-edit-card") || $("project-surface-structure");
+    const origin = researchEditOrigin;
+    researchEditOrigin = null;
+    const node = origin?.node && document.querySelector(`.research-snode[data-node="${CSS.escape(origin.node)}"]`);
+    const target = origin?.opener?.isConnected && origin.opener.getClientRects().length ? origin.opener
+      : node || document.querySelector("#research-workspace .research-edit-card") || $("project-surface-structure");
     target.focus({ preventScroll: true });
   }
 
@@ -7413,6 +7417,7 @@
     $("canvas-menu-new").hidden = Boolean(activeRun || element || edge);
     $("canvas-menu-ask-independent").hidden = Boolean(activeRun || element || edge);
     $("canvas-menu-edit").hidden = Boolean(activeRun) || !editableCard(id);
+    $("canvas-menu-open-branch").hidden = Boolean(activeRun || edge || !element);
     for (const command of canvasBranchCommands.keys()) {
       const button = $(command);
       button.hidden = Boolean(activeRun || edge || !element);
@@ -7496,6 +7501,8 @@
         if (mode === "connect" || mode === "pin") setMode("select");
         chooseElement(element);
         openCardEditor(item);
+      } else if (action === "canvas-menu-open-branch") {
+        workspace.openCanvas(element.dataset.elementId, { focus: true });
       } else if (canvasBranchCommands.has(action)) {
         if (mode === "connect" || mode === "pin") setMode("select");
         chooseElement(element);
@@ -8446,6 +8453,7 @@
     },
     onEnter: workspace.enter,
     onLocate: workspace.locate,
+    onOpenBranch: id => workspace.openCanvas(id, { focus: true }),
     onPanel: workspace.panel,
     onFocus: workspace.focus,
     canEditCard: id => Boolean(editableCard(id)),

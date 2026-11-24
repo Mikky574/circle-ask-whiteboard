@@ -30,7 +30,10 @@
     const found = nodes.find(node => node.id === currentCard() && node.id !== "board");
     const label = $("project-surface-card");
     label.hidden = !found;
-    if (found) label.textContent = found.title.replace(/^【[^】]+】\s*/u, "");
+    if (found) {
+      label.textContent = found.title.replace(/^【[^】]+】\s*/u, "");
+      label.title = label.textContent;
+    }
     $("project-surface-edit").hidden = state.presentation !== "research" || !found || !adapters.canEditCard(found.id);
   }
 
@@ -71,8 +74,8 @@
     return true;
   }
 
-  function openCanvas(id) {
-    return move({ type: "openBranch", branch: id }, { remember: true });
+  function openCanvas(id, { focus = false } = {}) {
+    return move({ type: "openBranch", branch: id, focus }, { remember: true });
   }
   function locate(id) {
     return move({ type: "showCanvas", card: id }, { remember: true });

@@ -773,6 +773,96 @@
     button(row, "在画布定位", () => options.onLocate?.(card.id));
     if (card.id !== rootId) button(row, "进入这张卡 ↗", () => enter(card.id), "research-button research-structure-enter");
   }
+  /* One shared node menu. It is appended to <body> with fixed positioning so the scrolling
+     stage cannot clip it, and it always acts on the node it was opened for, never on the
+     current selection. */
+  let menu = null;
+  function closeMenu(restore) {
+    if (!menu) return;
+    const { el, opener, trigger, target, off } = menu;
+    menu = null;
+    off();
+    el.remove();
+    target.classList.remove("is-context-target");
+    trigger?.setAttribute("aria-expanded", "false");
+    if (restore && opener?.isConnected) opener.focus({ preventScroll: true });
+  }
+  function nodeActions(card) {
+    if (!card || card.id === "board") return [];
+    const list = [];
+    if (typeof options.onEditCard === "function" && options.canEditCard?.(card.id)) {
+      list.push(["编辑卡片", () => options.onEditCard(card.id)]);
+    }
+    if (typeof options.onOpenBranch === "function") list.push(["进入分支", () => options.onOpenBranch(card.id)]);
+    if (typeof options.onLocate === "function") list.push(["在画布定位", () => options.onLocate(card.id)]);
+    if (card.id !== rootId && typeof options.onEnter === "function") list.push(["查看卡片", () => enter(card.id)]);
+    return list;
+  }
+  function openMenu(model, id, opener, point) {
+    closeMenu(false);
+    const info = model.info.get(id);
+    const actions = nodeActions(info?.card);
+    if (!actions.length) return;
+    const target = opener.closest(".research-snode-wrap");
+    const trigger = target.querySelector(".research-snode-more");
+    const el = document.createElement("div");
+    el.className = "research-context-menu";
+    el.setAttribute("role", "menu");
+    el.setAttribute("aria-label", `${info.name} 的操作`);
+    const entries = actions.map(([label, run]) => {
+      const item = button(el, label, () => {
+        closeMenu(true);
+        const selected = structureSelection;
+        if (!(selected?.kind === "node" && selected.id === id && !selected.cardId)) model.select({ kind: "node", id });
+        run();
+      }, "research-context-item");
+      item.setAttribute("role", "menuitem");
+      item.tabIndex = -1;
+      return item;
+    });
+    el.addEventListener("keydown", event => {
+      const index = entries.indexOf(document.activeElement);
+      let next = -1;
+      if (event.key === "ArrowDown") next = (index + 1) % entries.length;
+      else if (event.key === "ArrowUp") next = (index - 1 + entries.length) % entries.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = entries.length - 1;
+      else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeMenu(true); return; }
+      else if (event.key === "Tab") { closeMenu(true); return; }
+      else return;
+      event.preventDefault();
+      entries[next].focus({ preventScroll: true });
+    });
+    document.body.append(el);
+    const margin = 8;
+    const box = el.getBoundingClientRect();
+    const view = { w: document.documentElement.clientWidth, h: document.documentElement.clientHeight };
+    el.style.maxHeight = `${view.h - margin * 2}px`;
+    const height = Math.min(box.height, view.h - margin * 2);
+    const left = Math.min(point.x, view.w - box.width - margin);
+    const top = point.y + height + margin > view.h ? point.y - height : point.y;
+    el.style.left = `${Math.max(margin, left)}px`;
+    el.style.top = `${Math.max(margin, Math.min(top, view.h - height - margin))}px`;
+    const outside = event => { if (!el.contains(event.target) && event.target !== trigger) closeMenu(false); };
+    const scrolled = event => { if (!el.contains(event.target)) closeMenu(false); };
+    const away = event => { if (!el.contains(event.target) && event.target !== opener && event.target !== trigger) closeMenu(false); };
+    const dismiss = () => closeMenu(false);
+    document.addEventListener("pointerdown", outside, true);
+    document.addEventListener("scroll", scrolled, true);
+    document.addEventListener("focusin", away, true);
+    window.addEventListener("resize", dismiss);
+    window.addEventListener("blur", dismiss);
+    menu = { el, id, opener, target, trigger, off: () => {
+      document.removeEventListener("pointerdown", outside, true);
+      document.removeEventListener("scroll", scrolled, true);
+      document.removeEventListener("focusin", away, true);
+      window.removeEventListener("resize", dismiss);
+      window.removeEventListener("blur", dismiss);
+    } };
+    target.classList.add("is-context-target");
+    trigger?.setAttribute("aria-expanded", "true");
+    entries[0].focus({ preventScroll: true });
+  }
   function renderStructureDetail(panel, model, nodes) {
     panel.replaceChildren();
     const selection = structureSelection;
@@ -822,6 +912,7 @@
   }
   function renderStructure(parent, nodes, structure) {
     structureObserver?.disconnect();
+    closeMenu(false);
     const model = structureModel(structure, nodes);
     const section = add(parent, "section", "research-structure");
     section.setAttribute("aria-label", structure.title || "项目结构");
@@ -872,7 +963,8 @@
         const list = add(area, "div", "research-zone-nodes");
         for (const entry of zone.nodes) {
           const info = model.info.get(entry.id);
-          const control = button(list, "", () => model.select({ kind: "node", id: entry.id }), "research-snode");
+          const wrap = add(list, "div", "research-snode-wrap");
+          const control = button(wrap, "", () => model.select({ kind: "node", id: entry.id }), "research-snode");
           if (entry.label) control.title = title(info.card);
           add(control, "strong", "", info.name);
           if (entry.note) add(control, "span", "", entry.note);
@@ -881,6 +973,33 @@
           control.setAttribute("aria-label", `${info.name}，${zone.title}，${incoming} 条入线，${out} 条出线`);
           control.dataset.node = entry.id;
           buttons.set(entry.id, control);
+          if (nodeActions(info.card).length) {
+            const more = button(wrap, "⋯", () => {
+              if (menu?.id === entry.id) closeMenu(true);
+              else {
+                const box = more.getBoundingClientRect();
+                openMenu(model, entry.id, more, { x: box.left, y: box.bottom + 4 });
+              }
+            }, "research-snode-more");
+            more.setAttribute("aria-label", `${info.name} 的更多操作`);
+            more.setAttribute("aria-haspopup", "menu");
+            more.setAttribute("aria-expanded", "false");
+            control.setAttribute("aria-keyshortcuts", "Shift+F10");
+            wrap.addEventListener("contextmenu", event => {
+              event.preventDefault();
+              const opener = event.target.closest("button") || control;
+              const box = opener.getBoundingClientRect();
+              const pointer = event.clientX || event.clientY;
+              openMenu(model, entry.id, opener, pointer ? { x: event.clientX, y: event.clientY } : { x: box.left + 12, y: box.bottom - 6 });
+            });
+            wrap.addEventListener("keydown", event => {
+              if (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey)) return;
+              event.preventDefault();
+              const opener = event.target.closest("button") || control;
+              const box = opener.getBoundingClientRect();
+              openMenu(model, entry.id, opener, { x: box.left + 12, y: box.bottom - 6 });
+            });
+          }
           control.addEventListener("mouseenter", () => highlight(entry.id));
           control.addEventListener("focus", () => highlight(entry.id));
           control.addEventListener("mouseleave", () => highlight(null));
@@ -967,6 +1086,7 @@
 
   function render(preferStructure = false) {
     if (!container || !active) return;
+    closeMenu(false);
     structureObserver?.disconnect();
     const nodes = items();
     let node = nodes.find(item => item.id === rootId);
@@ -1120,6 +1240,7 @@
   }
   function hide() {
     active = false;
+    closeMenu(false);
     structureObserver?.disconnect();
   }
   function refresh(nodes) {

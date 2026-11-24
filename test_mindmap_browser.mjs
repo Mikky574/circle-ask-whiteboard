@@ -882,7 +882,7 @@ async function structureWorkspaceHandoff() {
       ], links: [{ from: "start", to: "continue", label: "继续", evidence: "E42" }],
     } };
   for (const width of [1480, 500]) {
-    const isolated = await browser.newContext({ viewport: { width, height: 1000 }, serviceWorkers: "block" });
+    const isolated = await browser.newContext({ viewport: { width, height: 1000 }, hasTouch: width < 760, serviceWorkers: "block" });
     isolated.setDefaultTimeout(12000);
     const caseName = `structure-workspace-${width}`;
     await isolated.addCookies([{ name: "mindmap-case", value: caseName, url: origin }]);
@@ -896,7 +896,38 @@ async function structureWorkspaceHandoff() {
       const body = page.locator("#workbench-card-body");
       const drawer = page.locator("#project-card-drawer");
       const card = identity => page.locator(`#board [data-element-id="${identity}"]`);
-      await page.locator('.research-snode[data-node="continue"]').click();
+      const entry = page.locator('.research-snode[data-node="continue"]');
+      const menu = page.getByRole("menu", { name: "保留同一张卡 的操作" });
+      await page.locator('.research-snode[data-node="start"]').click();
+      await entry.scrollIntoViewIfNeeded();
+      const scroll = await page.evaluate(() => window.scrollY);
+      await entry.click({ button: "right" });
+      await menu.waitFor();
+      const bounds = await menu.boundingBox();
+      assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width && bounds.y >= 0 && bounds.y + bounds.height <= 1000);
+      assert.equal(await page.evaluate(() => window.scrollY), scroll, "Opening a node menu must not scroll to card details");
+      assert.equal(new URL(page.url()).searchParams.get("focusCard"), "E40", "Showing a menu must not change the selected card");
+      await menu.getByRole("menuitem", { name: "编辑卡片" }).click();
+      assert.equal(new URL(page.url()).searchParams.get("focusCard"), "E41", "The menu command acts on the clicked node");
+      assert.equal(await body.inputValue(), "保留同一张卡。");
+      await drawer.getByRole("button", { name: "取消" }).click();
+      assert.equal(await entry.evaluate(node => node === document.activeElement), true);
+      await entry.press("Shift+F10");
+      assert.equal(await menu.isVisible(), true);
+      await page.keyboard.press("ArrowDown");
+      assert.equal(await page.evaluate(() => document.activeElement.textContent), "进入分支");
+      await page.keyboard.press("Escape");
+      assert.equal(await menu.isVisible(), false);
+      assert.equal(await entry.evaluate(node => node === document.activeElement), true);
+      if (width < 760) {
+        const more = page.getByRole("button", { name: "保留同一张卡 的更多操作" });
+        assert.equal(await more.evaluate(node => getComputedStyle(node).opacity), "1");
+        await more.tap();
+        assert.equal(await menu.isVisible(), true);
+        await page.locator('.research-snode[data-node="start"]').tap();
+        assert.equal(await menu.isVisible(), false);
+        await entry.tap();
+      }
       const edit = width > 760 ? page.locator("#project-surface-edit") : detail.getByRole("button", { name: "编辑卡片" });
       await edit.click();
       assert.equal(await drawer.isVisible(), true);
@@ -906,12 +937,14 @@ async function structureWorkspaceHandoff() {
       await body.press("Escape");
       assert.equal(await drawer.isVisible(), true, "Escape must preserve an unsaved editor");
       await drawer.getByRole("button", { name: "取消" }).click();
-      await detail.getByRole("button", { name: "编辑卡片" }).click();
+      await entry.click({ button: "right" });
+      await menu.getByRole("menuitem", { name: "编辑卡片" }).click();
       assert.equal(await body.inputValue(), "保留同一张卡。");
       await body.fill("这是两个视图共享的正文。");
       await drawer.getByRole("button", { name: "保存卡片" }).click();
       await detail.getByText("这是两个视图共享的正文。", { exact: true }).waitFor();
       assert.equal(await drawer.isVisible(), false);
+      assert.equal(await entry.evaluate(node => node === document.activeElement), true, "Saving from the menu restores focus to the rebuilt node");
       assert.equal(new URL(page.url()).searchParams.get("focusCard"), "E41");
       await page.locator("#project-surface-canvas").click();
       await card("E41").waitFor();
@@ -957,12 +990,24 @@ async function structureWorkspaceHandoff() {
       assert.equal(preference, "mindmap", "An explicit cards link must not overwrite the saved default");
       await flush();
       assert.equal(boardCases.get(caseName).get(boardId).revision, savedRevision, "Reading and switching modes don't save the document");
+      await page.locator("#project-surface-structure").click();
+      await entry.click({ button: "right" });
+      await menu.getByRole("menuitem", { name: "进入分支" }).click();
+      assert.equal(new URL(page.url()).searchParams.get("root"), "E41");
+      assert.equal(await card("E41").getAttribute("aria-pressed"), "true");
+      const childTitle = card("E42").locator(".organized-title");
+      await childTitle.click({ button: "right" });
+      await page.locator("#canvas-menu-open-branch").click();
+      assert.equal(new URL(page.url()).searchParams.get("root"), "E42");
+      assert.equal(await card("E42").getAttribute("aria-pressed"), "true");
+      await flush();
+      assert.equal(boardCases.get(caseName).get(boardId).revision, savedRevision, "Menu navigation should not revise the board");
     } finally {
       await isolated.close();
     }
   }
   page = previous;
-  pass("Project structure and canvas share editing, card focus, deep descendants, URL history and saved layout on desktop and narrow screens");
+  pass("Project structure and canvas share editing and branch focus. Node menus stay local and support right-click, keyboard and touch");
 }
 
 try {
