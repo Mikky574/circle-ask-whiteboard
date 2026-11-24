@@ -5818,6 +5818,7 @@
       }
       // An AI reorganization rebuilds the plan from cards; the author's structure record is not its to rewrite.
       if (previous.current?.projectStructure) candidate.projectStructure = previous.current.projectStructure;
+      if (previous.current?.moduleDiagrams) candidate.moduleDiagrams = previous.current.moduleDiagrams;
       if (drafts.size) {
         const draftItems = hierarchyItems(allNodes).filter((item) => drafts.has(item.id));
         candidate.items.push(...draftItems);
@@ -7243,10 +7244,11 @@
     caseOption.disabled = !workbench || !item || !hasWorkbenchRequirement(item);
     workbenchCardKind.value = constraint ? "constraint" : "";
     $("constraint-card-hint").hidden = !constraint;
-    const mapped = projectCardDrawer.open && item ? organization.current?.projectStructure?.zones
+    const mapped = projectCardDrawer.open && item ? getStoredDiagram(researchEditOrigin?.scope)?.zones
       .flatMap(zone => zone.nodes).filter(node => node.cardId === item.id) || [] : [];
     const appearance = mapped.find(node => node.id === researchEditOrigin?.node) || (mapped.length === 1 ? mapped[0] : null);
     workbenchDraft.appearance = appearance;
+    workbenchDraft.appearanceScope = researchEditOrigin?.scope;
     const appearanceFields = $("workbench-card-appearance");
     appearanceFields.hidden = !appearance;
     appearanceFields.open = false;
@@ -7268,15 +7270,42 @@
     if (creatingChild ? !hierarchyItems(boardForOrganization()).some(card => card.id === id && card.category !== "archive") : !item) return;
     const opener = document.activeElement;
     const node = opener?.closest(".research-snode-wrap")?.querySelector(".research-snode");
-    researchEditOrigin = { opener, node: node?.dataset.node, focusKey: opener?.dataset.focusKey };
+    const scope = $("research-workspace").querySelector("[data-diagram-root]")?.dataset.diagramRoot;
+    researchEditOrigin = { opener, scope, node: node?.dataset.node, focusKey: opener?.dataset.focusKey };
     $("project-surface-status").textContent = "";
     projectCardDrawer.append(workbenchEditor);
     projectCardDrawer.showModal();
     openCardEditor(item, undefined, false, creatingChild ? id : null);
   }
 
-  function reorderStructureZone(id, order) {
-    const before = organization.current?.projectStructure;
+  function getStoredDiagram(scope) {
+    const current = organization.current;
+    const module = current?.moduleDiagrams?.find(diagram => diagram.rootId === scope);
+    if (module) return module;
+    const overview = current?.projectStructure;
+    if (overview && scope === (overview.rootId || research.structureRoot(research.items()))) return overview;
+    return null;
+  }
+
+  function withDiagram(plan, scope, diagram) {
+    if (plan.projectStructure && getStoredDiagram(scope) === plan.projectStructure) {
+      return { ...plan, projectStructure: diagram };
+    }
+    return { ...plan, moduleDiagrams: [...(plan.moduleDiagrams || []).filter(record => record.rootId !== scope), diagram] };
+  }
+
+  function saveDiagram(scope, diagram) {
+    const before = organization;
+    const current = before.current;
+    organization = { ...before, current: withDiagram(current, scope, diagram),
+      previous: current, quickUndo: null, undoAvailable: true };
+    if (saveOrganization()) return true;
+    organization = before;
+    return false;
+  }
+
+  function reorderStructureZone(scope, id, order) {
+    const before = getStoredDiagram(scope);
     const zone = before?.zones.find(entry => entry.id === id);
     if (!zone || activeRun || questionRuns.size || deletionPreparing || !finishEditingFirst() || !memory.storageIsCurrent() ||
         (window.BoardSync && !window.BoardSync.writable)) return false;
@@ -7284,12 +7313,10 @@
     if (order.length !== included.size || new Set(order).size !== order.length || order.some(node => !included.has(node))) return false;
     const nodes = order.map(node => included.get(node));
     if (nodes.every((node, position) => node === zone.nodes[position])) return true;
-    organization.current.projectStructure = { ...before, zones: before.zones.map(entry => entry === zone ? { ...zone, nodes } : entry) };
-    if (saveOrganization()) {
+    if (saveDiagram(scope, { ...before, zones: before.zones.map(entry => entry === zone ? { ...zone, nodes } : entry) })) {
       $("project-surface-status").textContent = "分区顺序已保存。";
       return true;
     }
-    organization.current.projectStructure = before;
     return false;
   }
 
@@ -7308,6 +7335,45 @@
   }
 
   const opinionDrawer = $("project-opinion-drawer");
+  const diagramDrawer = $("project-diagram-drawer");
+  const diagramText = $("module-diagram-json");
+  const diagramStatus = $("module-diagram-status");
+  let diagramDraft;
+
+  function configureDiagram(scope, value) {
+    if (!organization.current || activeRun || questionRuns.size || !finishEditingFirst()) return;
+    const card = research.items().find(item => item.id === scope);
+    if (!card) return;
+    diagramDraft = { scope, revision: captureBoardRevision() };
+    $("module-diagram-target").textContent = card.title;
+    diagramStatus.textContent = "";
+    const diagram = window.ProjectStructure.validate({ ...value, rootId: scope });
+    diagramText.value = JSON.stringify(diagram, null, 2);
+    diagramDrawer.showModal();
+  }
+
+  $("module-diagram-close").addEventListener("click", () => diagramDrawer.close());
+  $("module-diagram-form").addEventListener("submit", event => {
+    event.preventDefault();
+    const { scope, revision } = diagramDraft;
+    if (!sameBoardRevision(revision) || (window.BoardSync && !window.BoardSync.writable)) {
+      diagramStatus.textContent = "白板已更新，请复制草稿后刷新。";
+      return;
+    }
+    try {
+      const draft = JSON.parse(diagramText.value);
+      const diagram = window.ProjectStructure.validate(draft);
+      if (diagram.rootId !== scope) throw new Error("根卡编号应与当前模块一致。");
+      const nodes = new Set(research.items().map(item => item.id));
+      if (window.ProjectStructure.cardIds(diagram).some(id => !nodes.has(id))) throw new Error("请使用本白板的有效卡号。");
+      if (!saveDiagram(scope, diagram)) throw new Error("模块图未能保存。");
+      diagramDrawer.close();
+      workspace.refresh();
+      $("project-surface-status").textContent = "模块图已保存。";
+    } catch (error) {
+      diagramStatus.textContent = error instanceof SyntaxError ? "JSON 格式有误，请检查逗号和括号。" : error.message;
+    }
+  });
   const opinionForm = $("structure-opinion-form");
   const opinionText = $("structure-opinion-text");
   const opinionStatus = $("structure-opinion-status");
@@ -7818,7 +7884,8 @@
     const label = diagramTitle.value.trim();
     const note = diagramNote.value.trim();
     const appearanceChanged = Boolean(appearance && (label !== (appearance.label || "") || note !== (appearance.note || "")));
-    let structure = organization.current?.projectStructure;
+    const appearanceScope = workbenchDraft.appearanceScope;
+    let structure = getStoredDiagram(appearanceScope);
     if (appearanceChanged) {
       const live = structure?.zones.flatMap(zone => zone.nodes).find(node => node.id === appearance.id && node.cardId === id);
       if (!live || live.label !== appearance.label || live.note !== appearance.note) {
@@ -7853,7 +7920,7 @@
     const draft = question.value;
     const askWasOpen = !askComposer.hidden;
     organization = previous.current
-      ? { ...previous, current: { ...previous.current, items, positions, ...(appearanceChanged ? { projectStructure: structure } : {}) },
+      ? { ...previous, current: { ...(appearanceChanged ? withDiagram(previous.current, appearanceScope, structure) : previous.current), items, positions },
         previous: previous.current, quickUndo: null, undoAvailable: true }
       : { ...previous, rawCards: items, rawPositions: positions, quickUndo: null,
         ...(parentId ? { rawLinks: { ...previous.rawLinks, [id]: [parentId] } } : {}) };
@@ -7907,8 +7974,8 @@
     }
     if (editingInResearch) {
       if (stored) {
-        if (creating) research.revealChildren?.(parentId);
         closeResearchCardEditor(creating ? "子卡已保存。" : "卡片已保存。");
+        if (creating && parentId) workspace.enterStructure(parentId, id);
       }
     } else {
       const element = boardElements().find((node) => node.dataset.elementId === id && !node.hidden);
@@ -8703,6 +8770,9 @@
     getItems: () => hierarchyItems(boardForOrganization()).filter((item) => !deletedIds.has(item.id)),
     getAttachments: (id) => replies.get(id)?.saved?.payload?.attachments || [],
     getStructure: () => organization.current?.projectStructure || null,
+    getModuleDiagrams: () => organization.current?.moduleDiagrams || [],
+    getStoredDiagram,
+    onConfigureDiagram: configureDiagram,
     canStructure,
     getText: (id) => {
       const item = (organization.current?.items || organization.rawCards || []).find((entry) => entry.id === id);
@@ -8742,9 +8812,11 @@
     },
   });
   workspace.init({
-    defaultPresentation: organization.current?.projectStructure ? "research" : mindmap?.active ? "mindmap" : "cards",
+    defaultPresentation: organization.current?.projectStructure || organization.current?.moduleDiagrams?.length
+      ? "research" : mindmap?.active ? "mindmap" : "cards",
     canStructure,
-    canNavigate: () => !gesture && !connectionDrag && !deletionPreparing && !projectCardDrawer.open && !opinionDrawer.open && finishEditingFirst(),
+    canNavigate: () => !gesture && !connectionDrag && !deletionPreparing && !projectCardDrawer.open && !opinionDrawer.open &&
+      !diagramDrawer.open && finishEditingFirst(),
     canEditCard: id => Boolean(editableCard(id)),
     editCard: editResearchCard,
     opinion: openCardOpinion,

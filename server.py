@@ -47,6 +47,7 @@ STATIC = {
     "experiment_data.js": "text/javascript; charset=utf-8",
     "capability_data.js": "text/javascript; charset=utf-8",
     "project_structure.js": "text/javascript; charset=utf-8",
+    "module_diagram.js": "text/javascript; charset=utf-8",
     "workspace_navigation.js": "text/javascript; charset=utf-8",
     "workspace_controller.js": "text/javascript; charset=utf-8",
     "research_board.js": "text/javascript; charset=utf-8",

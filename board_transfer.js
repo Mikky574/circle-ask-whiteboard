@@ -194,11 +194,12 @@
       result.projectGuide = { rootId: id(guide.rootId, "项目根节点"), x: guide.x, y: guide.y };
     }
     if (owns(value, "branchLayouts")) result.branchLayouts = ids(value.branchLayouts, "分支排布");
-    if (owns(value, "projectStructure")) {
+    if (owns(value, "projectStructure") || owns(value, "moduleDiagrams")) {
       const schema = typeof module === "object" && module.exports
         ? require("./project_structure.js") : window.ProjectStructure;
       if (!schema) fail("缺少项目结构校验器。");
-      result.projectStructure = schema.validate(value.projectStructure);
+      if (owns(value, "projectStructure")) result.projectStructure = schema.validate(value.projectStructure);
+      if (owns(value, "moduleDiagrams")) result.moduleDiagrams = schema.moduleDiagrams(value.moduleDiagrams, true);
     }
     return result;
   }
@@ -374,18 +375,30 @@
     // A structure may outlive a deleted card in storage. Hide stale references here so the
     // exported file never points at cards it does not contain; the count is reported.
     let structureDropped = 0;
-    if (organization.current?.projectStructure) {
+    const plan = organization.current;
+    if (plan?.projectStructure || plan?.moduleDiagrams?.length) {
       const schema = typeof module === "object" && module.exports
         ? require("./project_structure.js") : window.ProjectStructure;
-      const resolved = schema.resolve(organization.current.projectStructure, new Set([...present, "board"]));
-      if (!resolved) {
-        structureDropped = schema.cardIds(organization.current.projectStructure).length;
-        delete organization.current.projectStructure;
-      } else {
+      const live = new Set([...present, "board"]);
+      const cleanDiagram = (diagram, omitMissingRoot = false) => {
+        const resolved = schema.resolve(diagram, live);
+        if (!resolved || (omitMissingRoot && !live.has(diagram.rootId))) {
+          structureDropped += schema.cardIds(diagram).length;
+          return null;
+        }
         const { dropped, ...kept } = resolved;
-        if (kept.rootId && !present.has(kept.rootId) && kept.rootId !== "board") delete kept.rootId;
-        organization.current.projectStructure = kept;
-        structureDropped = dropped;
+        if (kept.rootId && !live.has(kept.rootId)) delete kept.rootId;
+        structureDropped += dropped;
+        return kept;
+      };
+      if (plan.projectStructure) {
+        const kept = cleanDiagram(plan.projectStructure);
+        if (kept) plan.projectStructure = kept;
+        else delete plan.projectStructure;
+      }
+      if (plan.moduleDiagrams?.length) {
+        plan.moduleDiagrams = plan.moduleDiagrams.map(diagram => cleanDiagram(diagram, true)).filter(Boolean);
+        if (!plan.moduleDiagrams.length) delete plan.moduleDiagrams;
       }
     }
     const references = new Map();

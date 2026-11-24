@@ -879,9 +879,10 @@ async function structureWorkspaceEditing() {
   const items = [
     { id: "E04", parentId: null, title: "同一个项目", category: "main" },
     { id: "E40", parentId: "E04", title: "使用入口", category: "reference" },
-    { id: "E41", parentId: "E40", title: "原卡工作", category: "reference" },
+    { id: "E41", parentId: "E40", title: "原卡工作", category: "reference", flowSteps: ["E42", "E44"] },
     { id: "E42", parentId: "E41", title: "原分支中的证据", category: "reference" },
     { id: "E43", parentId: "E42", title: "第五级验收", category: "reference" },
+    { id: "E44", parentId: "E41", title: "局部流程终点", category: "reference" },
     { id: "E50", parentId: "E04", title: "同区另一张卡", category: "reference" },
   ].map(item => ({ ...item, summary: item.title + "。" }));
   const positions = { E04: { x: 80, y: 90, width: 300 } };
@@ -907,43 +908,53 @@ async function structureWorkspaceEditing() {
       page.on("pageerror", error => errors.push(error.message));
       await page.goto(`${origin}/?board=${boardId}&view=canvas`);
       const entry = page.locator('.research-snode[data-node="continue"]');
-      const start = page.locator('.research-snode[data-node="start"]');
       const branch = entry.locator("..");
-      const subcard = id => page.locator(`.research-sub-title[data-card-id="${id}"]`).first();
+      const node = id => page.locator(`.research-snode[data-card-id="${id}"]`).first();
+      const graph = page.locator(".research-structure");
       const menu = page.getByRole("menu");
       const drawer = page.locator("#project-card-drawer");
-      const fold = branch.locator(".research-snode-expand");
       await entry.waitFor();
       assert.equal(new URL(page.url()).searchParams.get("panel"), "structure", "The project opens on its structure whiteboard");
       assert.equal(await page.locator("#project-surface-canvas").count(), 0);
-      await fold.scrollIntoViewIfNeeded();
-      const pose = await entry.boundingBox();
-      const peer = await start.boundingBox();
-      const scroll = await page.evaluate(() => scrollY);
-      await entry.click({ button: "right" });
-      await menu.waitFor();
-      assert.equal(await page.evaluate(() => scrollY), scroll);
-      assert.equal(await menu.getByRole("menuitem", { name: "在画布定位" }).count(), 0);
-      await menu.getByRole("menuitem", { name: "展开下级" }).click();
-      await subcard("E42").waitFor();
-      const nextPose = await entry.boundingBox();
-      const nextPeer = await start.boundingBox();
-      assert.ok(Math.abs(nextPose.y - pose.y) < 1 && Math.abs(nextPeer.y - peer.y) < 1, "Expanding a card keeps the parent and other lane steady");
-      await subcard("E42").locator("..").locator(".research-sub-toggle").click();
-      await subcard("E43").waitFor();
       assert.equal(await page.locator(".research-edge[data-from]").count(), 2);
-      assert.equal(await page.locator("#research-workspace").isVisible(), true);
+      await branch.locator(".research-snode-drill").click();
+      await node("E42").waitFor();
+      assert.equal(await graph.getAttribute("data-diagram-root"), "E41");
+      assert.equal(await graph.locator(".research-subtree").count(), 0);
+      assert.equal(await graph.locator(".research-edge").count(), 1, "An explicit flow supplies one relation in the module");
+      assert.equal(await graph.locator(".research-structure-lines").isVisible(), true, "The graph itself is available on narrow screens");
+      assert.equal(await page.locator("#viewport").isVisible(), false);
       await flush();
-      assert.equal(records.get(boardId).revision, 1, "Expanded branches are a reading preference");
+      assert.equal(records.get(boardId).revision, 1, "Drilling into a module does not write");
+      await graph.getByRole("button", { name: "编辑模块图" }).click();
+      const editGraph = page.locator("#project-diagram-drawer");
+      const json = editGraph.locator("textarea");
+      const scoped = JSON.parse(await json.inputValue());
+      scoped.links[0].label = "结对复核";
+      scoped.links[0].evidence = "E42";
+      await json.fill(JSON.stringify({ ...scoped, rootId: "E50" }));
+      await editGraph.getByRole("button", { name: "保存模块图" }).click();
+      await editGraph.getByText("根卡编号应与当前模块一致。").waitFor();
+      await json.fill(JSON.stringify(scoped));
+      await editGraph.getByRole("button", { name: "保存模块图" }).click();
+      await editGraph.waitFor({ state: "hidden" });
+      await graph.locator(".research-edge-label").getByText("结对复核").click();
+      await graph.locator(".research-structure-detail").getByText("证据卡片", { exact: true }).waitFor();
+      assert.equal((await state()).organization.current.moduleDiagrams[0].rootId, "E41");
       await page.reload();
-      await subcard("E43").waitFor();
-      await subcard("E43").press("Shift+F10");
+      await graph.locator(".research-edge-label").getByText("结对复核").waitFor();
+      await node("E42").locator("..").locator(".research-snode-drill").click();
+      await node("E43").waitFor();
+      assert.equal(await graph.getAttribute("data-diagram-root"), "E42");
+      assert.equal(await graph.locator(".research-edge").count(), 0, "Parentage does not create a workflow relation");
+      await node("E43").press("Shift+F10");
       await menu.getByRole("menuitem", { name: "编辑原卡" }).click();
       assert.equal(await drawer.isVisible(), true);
       await page.locator("#workbench-card-body").fill("在结构白板上改好的第五级正文。");
       await drawer.getByRole("button", { name: "保存卡片" }).click();
       await page.locator(".research-structure-detail").getByText("在结构白板上改好的第五级正文。", { exact: true }).waitFor();
-      assert.equal(await subcard("E43").evaluate(node => node === document.activeElement), true);
+      assert.equal(await node("E43").evaluate(node => node === document.activeElement), true);
+      await page.locator("#project-surface-structure").click();
       await entry.click({ button: "right" });
       await menu.getByRole("menuitem", { name: "编辑原卡" }).click();
       await page.locator("#workbench-card-appearance summary").click();
@@ -957,22 +968,18 @@ async function structureWorkspaceEditing() {
         await drawer.getByRole("button", { name: "保存卡片" }).click();
         const saved = (await state()).organization.current.items.find(item => item.title === title);
         assert.ok(saved);
-        await subcard(saved.id).waitFor();
+        await node(saved.id).waitFor();
         return saved;
       }
-      const child = await addBelow(entry, "直接新建的子卡");
-      assert.equal(child.parentId, "E41");
-      const grandchild = await addBelow(subcard(child.id), "在新卡下继续新建");
+      await branch.locator(".research-snode-drill").click();
+      await node("E42").locator("..").locator(".research-snode-drill").click();
+      const child = await addBelow(node("E43"), "直接新建的子卡");
+      assert.equal(child.parentId, "E43");
+      const grandchild = await addBelow(node(child.id), "在新卡下继续新建");
       assert.equal(grandchild.parentId, child.id);
       assert.notEqual(child.id, grandchild.id);
-      await subcard("E42").click();
-      await page.locator(".research-structure-branch").waitFor();
-      assert.equal(new URL(page.url()).searchParams.get("root"), "E42");
-      assert.equal(await page.locator("#viewport").isVisible(), false);
-      await subcard("E43").waitFor();
-      await page.goBack();
+      await page.locator("#project-surface-structure").click();
       await entry.waitFor();
-      await subcard("E42").waitFor();
       const opinion = page.locator("#project-opinion-drawer");
       const instruction = opinion.getByRole("textbox", { name: "你希望改成什么样？" });
       const generate = opinion.getByRole("button", { name: "生成修改预览" });
@@ -992,7 +999,7 @@ async function structureWorkspaceEditing() {
       const preview = opinion.getByRole("region", { name: "修改预览" });
       await preview.getByText("来自意见的标题", { exact: true }).waitFor();
       assert.deepEqual(new Set(opinionRequests.at(-1).board.nodes.map(node => node.id)),
-        new Set(["E41", "E42", "E43", child.id, grandchild.id]));
+        new Set(["E41", "E42", "E43", "E44", child.id, grandchild.id]));
       assert.deepEqual((await state()).organization.current, beforeOpinion, "Preview never writes to the board");
       for (const input of await preview.getByRole("checkbox").all()) {
         if (!(await input.getAttribute("value") === "E41")) await input.uncheck();
@@ -1003,8 +1010,7 @@ async function structureWorkspaceEditing() {
       assert.deepEqual(afterOpinion.items, beforeOpinion.items.map(item =>
         item.id === "E41" ? { ...item, title: "来自意见的标题" } : item));
       assert.deepEqual(afterOpinion.projectStructure, beforeOpinion.projectStructure);
-      await fold.click();
-      await subcard("E42").waitFor({ state: "hidden" });
+      assert.deepEqual(afterOpinion.moduleDiagrams, beforeOpinion.moduleDiagrams);
       if (width > 760) {
         const handle = branch.locator(".research-snode-handle");
         await handle.scrollIntoViewIfNeeded();
@@ -1034,7 +1040,7 @@ async function structureWorkspaceEditing() {
     } finally { await isolated.close(); }
   }
   page = previous;
-  pass("The structure whiteboard keeps branches, manual edits, scoped opinion previews and drag ordering in one workspace on desktop and touch");
+  pass("The overview and scoped module diagrams share graph navigation, evidence, card edits, opinions and persistent layout on desktop and touch");
 }
 
 try {

@@ -157,5 +157,23 @@
     return [...new Set([...(structure?.zones || []).flatMap((zone) => zone.nodes.map((node) => node.cardId)),
       ...(structure?.links || []).map((link) => link.evidence).filter(Boolean)])];
   }
-  return { VERSION, roles, sizes, kinds, limits, validate, clean, resolve, cardIds };
+  function moduleDiagrams(value, strict = false) {
+    if (!Array.isArray(value)) {
+      if (strict) fail("模块关系图应为列表。");
+      return [];
+    }
+    const seen = new Set();
+    const diagrams = [];
+    for (const raw of value) {
+      const diagram = strict ? validate(raw) : clean(raw);
+      if (!diagram?.rootId || seen.has(diagram.rootId)) {
+        if (strict) fail("每幅模块图都需要不同的根卡编号。");
+        continue;
+      }
+      seen.add(diagram.rootId);
+      diagrams.push(diagram);
+    }
+    return diagrams;
+  }
+  return { VERSION, roles, sizes, kinds, limits, validate, clean, resolve, cardIds, moduleDiagrams };
 });

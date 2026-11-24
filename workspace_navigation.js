@@ -188,7 +188,8 @@
         case "enterReading": {
           const root = cleanId(action.root);
           if (!root || !(root === VIRTUAL ? t.virtual : t.has(root))) return from;
-          return make({ ...from, presentation: "research", panel: action.panel ?? "board", readingRoot: root, card: null,
+          return make({ ...from, presentation: "research", panel: action.panel ?? "board", readingRoot: root,
+            card: t.has(action.card) ? action.card : null,
             returnBranch: research ? from.returnBranch : from.canvasBranch });
         }
         case "openBranch": {

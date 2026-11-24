@@ -97,8 +97,8 @@
     reader.focusHeading();
     return true;
   }
-  function enterStructure(id) {
-    if (!move({ type: "enterReading", root: id, panel: "structure" })) return false;
+  function enterStructure(id, card) {
+    if (!move({ type: "enterReading", root: id, panel: "structure", card })) return false;
     reader.focusHeading();
     return true;
   }

@@ -160,6 +160,7 @@
       ? [...new Set(value.branchLayouts.filter((id) => byId.has(id)))] : [];
     // Optional and read-only for the engine: cards are referenced by id, never copied.
     const projectStructure = window.ProjectStructure?.clean(value.projectStructure);
+    const moduleDiagrams = window.ProjectStructure?.moduleDiagrams(value.moduleDiagrams);
     return {
       title: text(value.title, 120) || "白板整理",
       summary: text(value.summary, 1600),
@@ -170,6 +171,7 @@
         ? [...new Set(value.collapsedBranches.filter(sourceId))] : [],
       ...(projectGuide ? { projectGuide } : {}),
       ...(projectStructure ? { projectStructure } : {}),
+      ...(moduleDiagrams?.length ? { moduleDiagrams } : {}),
       ...(branchLayouts.length ? { branchLayouts } : {}),
     };
   }

@@ -14,6 +14,7 @@
   <script defer src="experiment_data.js"></script>
   <script defer src="capability_data.js"></script>
   <script defer src="project_structure.js"></script>
+  <script defer src="module_diagram.js"></script>
   <script defer src="organization.js"></script>
   <script defer src="board_transfer.js"></script>
   <script defer src="run_gate.js"></script>
@@ -776,6 +777,18 @@
     </main>
   </div>
   <dialog id="project-card-drawer" aria-labelledby="workbench-card-form-title"></dialog>
+  <dialog id="project-diagram-drawer" aria-labelledby="module-diagram-heading">
+    <form id="module-diagram-form">
+      <header><h2 id="module-diagram-heading">编辑模块图</h2><p id="module-diagram-target"></p></header>
+      <label for="module-diagram-json">分区与连线（JSON）</label>
+      <textarea id="module-diagram-json" rows="20" spellcheck="false" required></textarea>
+      <p id="module-diagram-status" role="status"></p>
+      <footer>
+        <button id="module-diagram-close" type="button" class="research-button">取消</button>
+        <button type="submit" class="research-button research-opinion-button">保存模块图</button>
+      </footer>
+    </form>
+  </dialog>
   <dialog id="project-opinion-drawer" aria-labelledby="structure-opinion-heading">
     <form id="structure-opinion-form">
       <header><h2 id="structure-opinion-heading">提意见让 AI 改</h2><p id="structure-opinion-target"></p></header>

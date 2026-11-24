@@ -38,3 +38,16 @@ test("strict validation rejects malformed or duplicate references and view hides
   assert.equal(missingZone.zones.length, 1);
   assert.equal(missingZone.links, undefined);
 });
+
+test("module diagrams retain independently scoped arrows in a portable board", () => {
+  const module = { ...record(), rootId: "E05", title: "模块" };
+  const removed = { ...record(), rootId: "E99", title: "已删除的模块" };
+  assert.throws(() => structure.moduleDiagrams([module, module], true), /不同的根卡/u);
+  const plan = { title: "项目", projectStructure: record(), moduleDiagrams: [module, removed],
+    items: ["E04", "E05", "E06", "E07"].map(id => ({ id, category: "main", title: id, summary: "说明" })) };
+  const doc = transfer.create({ title: "项目", memory: { project: {}, notes: [] }, organization: { current: plan } });
+  const { organization: { current } } = transfer.parse(JSON.stringify(doc));
+  assert.deepEqual(current.projectStructure, structure.validate(plan.projectStructure));
+  assert.deepEqual(current.moduleDiagrams, [structure.validate(module)]);
+  assert.equal(plan.moduleDiagrams.length, 2);
+});
