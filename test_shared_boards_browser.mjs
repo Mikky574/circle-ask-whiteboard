@@ -104,6 +104,10 @@ async function openContext(base = origin, seed) {
     const request = route.request();
     const url = new URL(request.url());
     if (![new URL(base).origin, origin].includes(url.origin)) return route.abort();
+    if (request.resourceType() === "document" && url.pathname === "/") {
+      const response = await route.fetch();
+      return route.fulfill({ response, body: (await response.text()).replace(" data-reading-only", "") });
+    }
     if (url.pathname === "/api/status") return route.fulfill({
       contentType: "application/json", body: JSON.stringify({ available: true, busy: false,
         backends: [{ id: "codex", available: true, installed: true }] }),

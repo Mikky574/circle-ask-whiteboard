@@ -192,7 +192,9 @@ async function relay(req, res) {
   const path = staticPath(url.pathname);
   if (!path || !existsSync(path)) { res.writeHead(404); res.end("not found"); return; }
   try {
-    const content = await readFile(path);
+    const bytes = await readFile(path);
+    const content = basename(path) === "index.html"
+      ? bytes.toString("utf8").replace(" data-reading-only", "") : bytes;
     res.writeHead(200, { "Content-Type": mime[extname(path)] || "application/octet-stream", "Cache-Control": "no-store" });
     res.end(content);
   } catch { res.writeHead(500); res.end("fixture static read failed"); }

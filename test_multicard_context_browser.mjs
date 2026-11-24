@@ -136,6 +136,7 @@ async function relay(req, res) {
     res.writeHead(404); res.end("not found"); return;
   }
   let content = await readFile(target);
+  if (target === resolve(root, "index.html")) content = Buffer.from(content.toString("utf8").replace(" data-reading-only", ""));
   if (baseline && url.pathname === "/app.js") {
     const script = content.toString("utf8");
     const oldPredicate = /const inScope = \(id\) => explicitIds\.has\(id\) \|\| !drafts\.has\(id\) \|\| drafts\.get\(id\) === draftRoot;/;

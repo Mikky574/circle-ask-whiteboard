@@ -11,6 +11,7 @@
 
   function historyUpdate(replace) {
     const href = new URL(navigation.write(location.href, state));
+    if (adapters.readingOnly) href.searchParams.delete("canvasScope");
     if (state.presentation === "research" && trail.length > 1) href.searchParams.set("trail", trail.join("."));
     else href.searchParams.delete("trail");
     if (String(href) !== location.href) history[replace ? "replaceState" : "pushState"](history.state, "", href);
@@ -51,13 +52,26 @@
     $("research-workspace").hidden = !reading;
     document.body.classList.toggle("research-view", reading);
     $("board-workspace").dataset.researchActive = String(reading);
-    for (const mode of ["cards", "mindmap", "research"]) {
+    if (!adapters.readingOnly) for (const mode of ["cards", "mindmap", "research"]) {
       $("presentation-" + mode).setAttribute("aria-pressed", String(state.presentation === mode));
     }
   }
 
+  function readingRoute(next) {
+    if (!adapters.readingOnly) return next;
+    const nodes = reader.items();
+    const root = next.readingRoot || next.canvasBranch || structureRoot(nodes);
+    const panel = next.presentation === "research" && next.readingRoot && next.panel !== "graph" ? next.panel : "structure";
+    const target = root && navigation.transition(next, {
+      type: "enterReading", root, panel, card: next.card,
+    }, { nodes });
+    return target?.presentation === "research" ? target : {
+      ...next, presentation: "research", panel: "structure", readingRoot: null, canvasBranch: null,
+    };
+  }
+
   function apply(next, { historyMode, preferStructure = false, remember = false, focusCanvas = true, path } = {}) {
-    state = next;
+    state = next = readingRoute(next);
     applying = true;
     try {
       setPresentation();
@@ -91,6 +105,21 @@
     return move({ type: "openBranch", branch: id, focus }, { remember: true });
   }
   function locate(id) {
+    if (adapters.readingOnly) {
+      const nodes = reader.items();
+      const card = nodes.find(item => item.id === id);
+      if (!card) return false;
+      const root = card.parentId || card.id;
+      if (state.readingRoot === root && state.card === id && state.panel === "structure") {
+        reader.focusHeading();
+        reader.revealDiagramCard(id);
+        reader.showCard(id);
+        return true;
+      }
+      if (!enterStructure(root, id)) return false;
+      reader.showCard(id);
+      return true;
+    }
     return move({ type: "showCanvas", card: id }, { remember: true });
   }
   function includeCanvasCard(id) {
@@ -129,6 +158,7 @@
     return true;
   }
   function panel(id, scope) {
+    if (adapters.readingOnly && id === "graph") return;
     if (scope && scope !== state.readingRoot) focus(reader.cardAt(scope), scope);
     move({ type: "setPanel", panel: id });
   }
@@ -145,7 +175,7 @@
   }
 
   function restore(navigate = false) {
-    const parsed = navigation.read(location.href, adapters.defaultPresentation);
+    const parsed = navigation.read(location.href, adapters.readingOnly ? "research" : adapters.defaultPresentation);
     const nodes = reader.items();
     let next = navigation.transition(parsed.state, { type: "reconcile" }, { nodes });
     if (!parsed.explicit && next.presentation === "research" && !next.readingRoot) {
@@ -153,20 +183,24 @@
       next = navigation.transition(next, { type: "showStructure" }, { nodes, structureRoot: structureRoot(nodes) });
       if (card) next = navigation.transition(next, { type: "focusCard", card }, { nodes });
     }
-    const requested = (new URLSearchParams(location.search).get("trail") || "").split(".");
+    const params = new URLSearchParams(location.search);
+    if (adapters.readingOnly && !params.has("panel")) next = { ...next, panel: "structure" };
+    const requested = (params.get("trail") || "").split(".");
     const known = new Set(nodes.map(node => node.id));
     const path = requested.includes(next.readingRoot) && new Set(requested).size === requested.length &&
       requested.every(id => known.has(id)) ? requested : [];
-    apply(next, { path, historyMode: next.presentation === "research" || next !== parsed.state ? "replace" : undefined,
+    apply(next, { path, historyMode: adapters.readingOnly || next.presentation === "research" || next !== parsed.state ? "replace" : undefined,
       preferStructure: !new URLSearchParams(location.search).has("panel") });
     if ((navigate || path.length > 1) && next.presentation === "research" && next.panel === "structure") reader.focusHeading();
   }
 
   function init(settings) {
     adapters = settings;
-    $("presentation-research").addEventListener("click", () => move({ type: "setPresentation", presentation: "research" }, { preferStructure: true }));
-    $("presentation-cards").addEventListener("click", () => move({ type: "setPresentation", presentation: "cards" }, { remember: true }));
-    $("presentation-mindmap").addEventListener("click", () => move({ type: "setPresentation", presentation: "mindmap" }, { remember: true }));
+    if (!adapters.readingOnly) {
+      $("presentation-research").addEventListener("click", () => move({ type: "setPresentation", presentation: "research" }, { preferStructure: true }));
+      $("presentation-cards").addEventListener("click", () => move({ type: "setPresentation", presentation: "cards" }, { remember: true }));
+      $("presentation-mindmap").addEventListener("click", () => move({ type: "setPresentation", presentation: "mindmap" }, { remember: true }));
+    }
     $("project-surface-structure").addEventListener("click", () => {
       const root = structureRoot(reader.items());
       if (state.presentation === "research" && trail.length > 1 && trail.includes(root)) { jumpStructure(root); return; }

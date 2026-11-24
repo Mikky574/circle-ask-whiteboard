@@ -83,7 +83,8 @@
   const draftAttachments = [];
   const memory = window.BoardMemory;
   const organizationEngine = window.BoardOrganization;
-  const mindmap = window.BoardMindmap;
+  const readingOnly = $("board-workspace").hasAttribute("data-reading-only");
+  const mindmap = readingOnly ? null : window.BoardMindmap;
   const research = window.BoardResearch;
   const workspace = window.BoardWorkspace;
   let mindmapPositions = mindmap?.positions || {};
@@ -1773,6 +1774,14 @@
   }
 
   function showAsk(expanded = false) {
+    if (readingOnly) {
+      const dialog = $("reading-question");
+      const open = expanded && Boolean(askAt);
+      askPopover.hidden = askComposer.hidden = !open;
+      if (open && !dialog.open) dialog.showModal();
+      else if (!open && dialog.open) dialog.close();
+      return;
+    }
     askPopover.hidden = !askAt || mode === "connect" || (mode === "pan" && !expanded);
     askOpen.hidden = expanded;
     askOpen.setAttribute("aria-expanded", String(expanded));
@@ -4667,12 +4676,11 @@
       parentIds: reply.payload.anchor.elementIds.filter((parent) => parent !== "board"), box: reply.rect,
     }));
     const plan = new Map((organization.current?.items || organization.rawCards || []).map((item) => [item.id, item]));
-    const generatedNodes = [...board.querySelectorAll("[data-generated-module]")].map((element) => {
-      const id = element.dataset.elementId;
-      const item = plan.get(id);
-      return { id, kind: "card", title: item.title, text: organization.current ? "" : item.summary, parentIds: [],
-        box: { x: 0, y: 0, width: 0, height: 0 } };
-    });
+    const existing = new Set([...cardNodes, ...replyNodes].map(node => node.id));
+    const generatedNodes = [...plan.values()].filter(item => !existing.has(item.id)).map(item => ({
+      id: item.id, kind: "card", title: item.title, text: organization.current ? "" : item.summary, parentIds: [],
+      box: { x: 0, y: 0, width: 0, height: 0 },
+    }));
     const nodes = [...cardNodes, ...replyNodes, ...generatedNodes].filter((node) => !deletedIds.has(node.id));
     const ids = new Set(nodes.map((node) => node.id));
     const excerptLength = Math.min(2400, Math.floor(10000 / Math.max(1, nodes.length)));
@@ -4917,6 +4925,11 @@
     if (!node || node.category === "archive" || replies.get(id)?.saved?.archived) {
       renderCardSearch();
       return false;
+    }
+    if (readingOnly) {
+      if (!workspace.locate(id)) return false;
+      cardSearch.open = false;
+      return true;
     }
     if (!mindmap?.active && canvasBranchRoot && !workspace.includeCanvasCard(id)) return false;
     const previous = [...searchOpenBranches];
@@ -7333,8 +7346,9 @@
       $("project-surface-status").textContent = "白板正在更新，请稍后再编辑。";
       return;
     }
-    const item = creatingChild ? null : editableCard(id);
-    if (creatingChild ? !hierarchyItems(boardForOrganization()).some(card => card.id === id && card.category !== "archive") : !item) return;
+    const starter = readingOnly && id == null && !boardForOrganization().length;
+    const item = creatingChild || starter ? null : editableCard(id);
+    if (!starter && (creatingChild ? !hierarchyItems(boardForOrganization()).some(card => card.id === id && card.category !== "archive") : !item)) return;
     const opener = document.activeElement;
     const node = opener?.closest(".research-snode-wrap")?.querySelector(".research-snode");
     const scope = opener?.closest("[data-diagram-root]")?.dataset.diagramRoot ||
@@ -7343,7 +7357,7 @@
     $("project-surface-status").textContent = "";
     projectCardDrawer.append(workbenchEditor);
     projectCardDrawer.showModal();
-    openCardEditor(item, undefined, false, creatingChild ? id : null);
+    openCardEditor(item, undefined, starter, creatingChild ? id : null);
   }
 
   function getStoredDiagram(scope) {
@@ -7715,6 +7729,7 @@
   });
 
   function startNewCard(starter = false) {
+    if (readingOnly && starter) { editResearchCard(null); return; }
     if (!newCard.disabled && !gesture && memory.storageIsCurrent()) openCardEditor(null, undefined, starter);
   }
 
@@ -8457,6 +8472,10 @@
     showAsk();
     askOpen.focus();
   });
+  $("reading-question").addEventListener("cancel", event => {
+    event.preventDefault();
+    showAsk();
+  });
   askPopover.addEventListener("keydown", (event) => {
     if (event.key !== "Escape" || askComposer.hidden) return;
     event.preventDefault();
@@ -8766,6 +8785,11 @@
     }
     if (ownsComposer()) reply.note.focus({ preventScroll: true });
     const answered = await runCodex(reply, payload, action === "edit" ? "edit" : "ask", branch, target, ownsComposer);
+    if (readingOnly && answered) {
+      const answer = $("reading-answer");
+      answer.hidden = false;
+      answer.onclick = () => workspace.locate(reply.note.dataset.elementId);
+    }
     if (!answered && ownsComposer()) showQuestionDraft(selection, draft, entries, reply.saved?.deliveryMessage || "本轮问答未完成。");
     if (independent && answered && ownsComposer() && visibleRect(reply.note.dataset.elementId)) {
       applySelection([describe(reply.note)]);
@@ -8899,10 +8923,20 @@
     }
   }
   appendPublishedGuide();
-  const canStructure = () => Boolean(organization.current?.items.length);
+  const canStructure = () => readingOnly ? research.items().length > 0 : Boolean(organization.current?.items.length);
+  if (readingOnly) {
+    $("reading-start").append($("empty-canvas-start"));
+    $("reading-search").append(cardSearch, cardSearchNav);
+    $("reading-question").append(askPopover);
+    question.placeholder = "你想了解这张卡的哪一点？";
+    $("reading-run-area").append($("stop-ai"), $("undo-organization"), $("reload-board"), $("running-questions"),
+      $("organization-status"), $("execution-trace"));
+    for (const panel of document.querySelectorAll("#board-workspace > :is(.canvas-panel, .context-panel)")) panel.inert = true;
+  }
   research.init({
     title: memory.activeBoardInfo.title,
     compactWorkspace: () => projectCanvas,
+    readingOnly,
     projectTools: projectCanvas ? $("project-context-views") : null,
     getItems: () => hierarchyItems(boardForOrganization()).filter((item) => !deletedIds.has(item.id)),
     getAttachments: (id) => replies.get(id)?.saved?.payload?.attachments || [],
@@ -8947,10 +8981,23 @@
       return "流程未能保存。";
     },
     onAsk: (id) => {
+      if (readingOnly) {
+        const node = boardForOrganization().find(item => item.id === id && item.category !== "archive");
+        if (!node) return;
+        const draft = question.value;
+        applySelection([{ id: node.id, title: node.title, quote: node.summary || node.text,
+          box: node.box, highlights: [], formulaFragments: [] }]);
+        $("ask-title").textContent = "问这张卡";
+        question.value = draft;
+        askOpen.click();
+        renderInspector();
+        return;
+      }
       if (workspace.locate(id)) askOpen.click();
     },
   });
   workspace.init({
+    readingOnly,
     defaultPresentation: organization.current?.projectStructure || organization.current?.moduleDiagrams?.length
       ? "research" : mindmap?.active ? "mindmap" : "cards",
     canStructure,

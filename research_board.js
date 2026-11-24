@@ -919,6 +919,7 @@
   function structureCardActions(parent, card, scope) {
     if (!card || card.id === "board") return;
     const row = add(parent, "div", "research-structure-actions");
+    if (options.readingOnly && options.onAsk) button(row, "问这张卡", () => options.onAsk(card.id));
     if (options.canEditCard?.(card.id)) {
       button(row, "提意见让 AI 改", () => options.onOpinion?.(card.id), "research-button research-opinion-button");
       button(row, "编辑原卡", () => options.onEditCard?.(card.id), "research-button research-edit-card");
@@ -1717,6 +1718,10 @@
       }
     }
     model.select = (value, emphasize, openDetails) => selectOn(surface, value, emphasize, openDetails);
+    mounted.showCard = id => {
+      const mapped = [...model.info.values()].find(info => info.card.id === id);
+      model.select({ kind: "node", id: mapped?.node.id, cardId: id });
+    };
     const linkedSelection = structureSelection?.kind === "link" && structureSelection.scope === scope && model.links.find(link =>
       link.from === structureSelection.from && link.to === structureSelection.to && (link.evidence || null) === mounted.card);
     const selectedCard = nodes.find(node => node.id === (mounted.card || (compact ? scope : null)) && node.id !== "board");
@@ -1814,6 +1819,7 @@
     if (previousScope && mounted.camera) diagramViews.set(previousScope, mounted.camera.read());
     mounted.camera = null;
     mounted.closeSheet = null;
+    mounted.showCard = null;
     savedY = previousScope === rootId ? window.scrollY : null;
     restoreKey = mounted.pendingFocus || (previousScope === rootId && container.contains(document.activeElement)
       ? document.activeElement.dataset?.focusKey || null : null);
@@ -1861,9 +1867,11 @@
       if (mounted.panel === "structure") options.onStructureNavigate?.(path.at(-2).id);
       else enter(path.at(-2).id);
     });
-    if (view !== "structure" && !options.getStructure?.()) button(controls, "编辑画布", () => options.onLocate?.(node?.id));
+    if (!options.readingOnly && view !== "structure" && !options.getStructure?.()) {
+      button(controls, "编辑画布", () => options.onLocate?.(node?.id));
+    }
     if (!node) {
-      add(container, "p", "research-description", "画布还没有卡片，先在编辑画布中写下第一张卡片。");
+      if (!options.readingOnly) add(container, "p", "research-description", "画布还没有卡片，先在编辑画布中写下第一张卡片。");
       return;
     }
     if (compact) {
@@ -1882,7 +1890,8 @@
     }
     const labels = { structure: "模块关系图", board: mode ? boardLabels[mode.kind] : feature ? "功能概览" : comparisons.length ? "实验板" : "主题概览",
       flow: "流程与分组", graph: "关系导图", comparison: "对比结果", evidence: "证据图片" };
-    const available = views.filter(id => id === "board" || (id === "structure" && structure) || (id === "graph" && (!mode || direct.length)) ||
+    const available = views.filter(id => id === "board" || (id === "structure" && structure) ||
+      (id === "graph" && !options.readingOnly && (!mode || direct.length)) ||
       (id === "flow" && (direct.length || node.flowSteps?.length)) ||
       (id === "comparison" && comparisons.length) || (id === "evidence" && hasPictures));
     if (!available.includes(view)) view = "board";
@@ -1946,7 +1955,7 @@
       for (const item of members) for (const file of images(item)) figure(gallery, item, file);
     }
     if (!mode) add(container, "footer", "research-footer", `${node.id === "board" ? "整张白板" : `卡号 ${node.id}`} · ` +
-      `${members.length - 1} 张下级卡 · 与项目画布共享同一份内容`);
+      `${members.length - 1} 张下级卡`);
     signature = contentSignature(nodes);
   }
   function init(settings) {
@@ -2086,6 +2095,6 @@
     if (focus) button.focus({ preventScroll: true });
   }
   window.BoardResearch = { init, show, hide, refresh, items, focusHeading, revealDiagramCard, structureRoot, activate,
-    cardAt: id => entries.get(id)?.card, openPath,
+    cardAt: id => entries.get(id)?.card, showCard: id => currentEntry?.showCard?.(id), openPath,
     get active() { return active; } };
 })();

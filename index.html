@@ -113,7 +113,7 @@
         <div class="board-repository-field">
           <label for="project-register-path">本机目录</label>
           <input id="project-register-path" type="text" maxlength="1024" placeholder="C:\Projects\my-repo" autocomplete="off" spellcheck="false" aria-describedby="project-register-hint" required>
-          <p id="project-register-hint" class="board-field-hint">填写已有项目的绝对路径，添加后可进入对应的项目画布。</p>
+          <p id="project-register-hint" class="board-field-hint">填写已有项目的绝对路径，添加后可打开项目白板。</p>
         </div>
         <div class="board-repository-field">
           <label for="project-register-description">项目简介（可选）</label>
@@ -237,7 +237,7 @@
       <header class="project-home-header">
         <div>
           <h2 id="local-projects-heading">项目</h2>
-          <p>打开本机项目，在项目画布中写下想法、读代码或继续讨论。</p>
+          <p>打开本机项目，阅读结构图、源码依据和讨论。</p>
         </div>
         <button id="home-add-project" class="submit-button" type="button" aria-haspopup="dialog" aria-controls="project-register-dialog">添加项目</button>
       </header>
@@ -332,7 +332,7 @@
         </div>
       </section>
     </dialog>
-    <main id="board-workspace" class="workspace">
+    <main id="board-workspace" class="workspace" data-reading-only>
       <nav id="project-surface-nav" aria-label="项目工作区" hidden>
         <div class="project-surface-switch" role="group" aria-label="项目视图">
           <button id="project-surface-structure" type="button" aria-pressed="false">结构白板</button>
@@ -340,6 +340,8 @@
         <span id="project-surface-card" hidden></span>
         <button id="project-surface-opinion" type="button" class="research-button research-opinion-button" hidden>提意见让 AI 改</button>
         <button id="project-surface-edit" type="button" class="research-button research-edit-card" hidden>编辑当前卡片</button>
+        <button id="reading-answer" type="button" class="research-button" hidden>查看回答</button>
+        <div id="reading-search"></div>
         <span id="project-surface-status" role="status"></span>
       </nav>
       <dialog id="canvas-split-review" class="canvas-split-review" aria-labelledby="canvas-split-title">
@@ -354,6 +356,9 @@
         </form>
       </dialog>
       <section id="research-workspace" aria-label="资料阅读" hidden></section>
+      <div id="reading-start"></div>
+      <div id="reading-run-area" aria-label="AI 任务"></div>
+      <!-- Archived presentation markup supports old records and isolated renderer tests. -->
       <section class="canvas-panel" aria-label="白板实现说明">
         <header class="canvas-bar">
           <div class="canvas-name">
@@ -776,6 +781,7 @@
     </main>
   </div>
   <dialog id="project-card-drawer" aria-labelledby="workbench-card-form-title"></dialog>
+  <dialog id="reading-question" aria-labelledby="ask-title"></dialog>
   <dialog id="project-diagram-drawer" aria-labelledby="module-diagram-heading">
     <form id="module-diagram-form">
       <header><h2 id="module-diagram-heading">编辑模块图</h2><p id="module-diagram-target"></p></header>

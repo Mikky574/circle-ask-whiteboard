@@ -81,6 +81,19 @@ async function relay(req, res) {
       if (heldPlan) await heldPlan;
       event = { type: "answer", text: '{"action":"ask"}' };
     }
+    else if (payload.boardIntent === "repository_init") {
+      const [root, feature] = payload.board.newIds;
+      event = { type: "map", map: {
+        title: "初始化示例", summary: "初始化白板并打开资料。", layout: { flow: "horizontal", density: "compact" },
+        items: [
+          { id: root, parentId: null, category: "main", title: "初始化示例", summary: "项目入口。" },
+          { id: feature, parentId: root, category: "reference", title: "阅读工程说明", summary: "从功能图开始。" },
+        ],
+        projectStructure: { version: 1, rootId: root, title: "工程说明结构图", zones: [
+          { id: "entry", title: "项目", nodes: [{ id: "root", cardId: root }, { id: "feature", cardId: feature }] },
+        ] },
+      } };
+    }
     else if (payload.branchIntent === "revise") {
       const items = payload.question === "测试越界" ? [{ id: "E50", title: "不该改", summary: null }]
         : payload.board.nodes.map(node => ({
@@ -119,7 +132,11 @@ async function relay(req, res) {
     res.writeHead(404); res.end("not found"); return;
   }
   res.writeHead(200, { "content-type": mime[extname(target)] || "application/octet-stream", "cache-control": "no-store" });
-  res.end(await readFile(target));
+  const file = await readFile(target);
+  const readingCase = req.headers.cookie?.includes("mindmap-case=structure-workspace-");
+  // Keep the archived renderer's characterization cases off the production presentation route.
+  res.end(target === resolve(root, "index.html") && !readingCase
+    ? file.toString("utf8").replace(" data-reading-only", "") : file);
 }
 async function ready(id = "E27") {
   await page.waitForFunction(cardId => Boolean(window.BoardMemory && window.BoardOrganization &&
@@ -1238,8 +1255,51 @@ async function structureWorkspaceEditing() {
       assert.deepEqual(saved.collapsedBranches, ["E40"]);
       assert.equal(new URL(page.url()).searchParams.get("panel"), "structure");
       await page.goto(`${origin}/?board=${boardId}&view=canvas&presentation=cards&root=E41#E42`);
-      await page.waitForFunction(() => document.querySelector('#board [data-element-id="E42"]')?.getAttribute("aria-pressed") === "true");
-      assert.equal(await page.locator("#viewport").isVisible(), true, "An explicit legacy canvas link still opens its card");
+      await graph.locator('.research-snode[data-card-id="E42"][aria-pressed="true"]').waitFor();
+      assert.equal(await page.locator("#viewport").isVisible(), false);
+      assert.equal(new URL(page.url()).searchParams.get("presentation"), "research");
+      await page.goto(`${origin}/?board=${boardId}&view=canvas&presentation=mindmap&root=E42&focusCard=E43`);
+      await graph.locator('.research-snode[data-card-id="E43"][aria-pressed="true"]').waitFor();
+      assert.equal(await page.getByRole("button", { name: "导图阅读" }).count(), 0);
+      assert.equal(await page.getByRole("tab", { name: "关系导图" }).count(), 0);
+      await page.locator("#reading-search #card-search-toggle").click();
+      await page.locator("#card-search-input").fill("来自意见的标题");
+      await page.locator("#card-search-results").getByRole("button", { name: /来自意见的标题/ }).click();
+      await inspector.getByRole("heading", { name: "来自意见的标题", exact: true }).waitFor();
+      if (width > 760) {
+        const newBoard = `board-${"d".repeat(32)}`;
+        records.set(newBoard, { id: newBoard, title: "空白阅读验收", revision: 1,
+          updatedAt: new Date().toISOString(), storage: {} });
+        await page.goto(`${origin}/?board=${newBoard}`);
+        await page.locator("#reading-start").getByRole("button", { name: "初始化工程介绍" }).waitFor();
+        await page.getByRole("button", { name: "写第一张卡片" }).click();
+        await drawer.locator("#workbench-card-title").fill("阅读区的第一张卡");
+        await drawer.locator("#workbench-card-body").fill("从阅读区填写一张初始卡并提问。");
+        await drawer.getByRole("button", { name: "保存卡片" }).click();
+        const starter = graph.locator(".research-snode").filter({ hasText: "阅读区的第一张卡" });
+        const cardId = await starter.getAttribute("data-card-id");
+        await starter.click();
+        await inspector.getByRole("button", { name: "问这张卡" }).click();
+        const ask = page.locator("#reading-question");
+        await ask.getByRole("textbox", { name: "你的问题" }).fill("这张卡要交付什么？");
+        const requestCount = requests.length;
+        await ask.getByRole("button", { name: "发送" }).click();
+        await page.waitForFunction(() => BoardMemory.load().notes.some(note => note.payload.question === "这张卡要交付什么？"));
+        const newQuestion = requests.slice(requestCount).find(item => item.scope !== "plan");
+        assert.deepEqual(newQuestion.anchor.elementIds, [cardId]);
+        await page.getByRole("button", { name: "查看回答" }).click();
+        await inspector.getByText("完整回答末尾验收标记。", { exact: false }).waitFor();
+        requests.splice(requestCount);
+        assert.equal(await page.locator("#viewport").isVisible(), false);
+        const initBoard = `board-${"e".repeat(32)}`;
+        records.set(initBoard, { id: initBoard, title: "阅读区初始化验收", revision: 1,
+          updatedAt: new Date().toISOString(), storage: {} });
+        await page.goto(`${origin}/?board=${initBoard}`);
+        await page.locator("#reading-start #initialize-repository").click();
+        await graph.getByRole("heading", { name: "工程说明结构图" }).waitFor();
+        assert.equal(await page.locator("#viewport").isVisible(), false);
+        requests.splice(requestCount);
+      }
     } finally { await isolated.close(); }
   }
   page = previous;
