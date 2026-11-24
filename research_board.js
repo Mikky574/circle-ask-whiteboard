@@ -660,10 +660,10 @@
     }
     return { zones, lanes, info, links: structure.links || [], dropped: structure.dropped };
   }
-  function labelLines(value) {
+  function labelLines(value, width = 7) {
     const chars = Array.from(value);
     const lines = [];
-    for (let index = 0; index < chars.length; index += 7) lines.push(chars.slice(index, index + 7).join(""));
+    for (let index = 0; index < chars.length; index += width) lines.push(chars.slice(index, index + width).join(""));
     return lines;
   }
   const textWidth = value => Array.from(value).reduce((sum, char) => sum + (/[\u0000-ÿ]/.test(char) ? 6.4 : 12), 0);
@@ -688,6 +688,7 @@
   }
   /* Draws every stored link as routed SVG: forward links through the gutter, links that skip a
      lane over the top, links that return to an earlier lane or stay in one lane around the side. */
+  let arrowSequence = 0;
   function drawStructure(stage, layer, model, buttons, scale) {
     const base = stage.getBoundingClientRect();
     const rect = element => {
@@ -703,14 +704,16 @@
     layer.setAttribute("width", width);
     layer.setAttribute("height", height);
     const defs = svgNode(layer, "defs");
+    const markerPrefix = layer.dataset.markerPrefix ||= `research-arrow-${++arrowSequence}`;
     for (const kind of Object.keys(kindNames)) {
-      const marker = svgNode(defs, "marker", { id: `research-arrow-${kind}`, viewBox: "0 0 10 10", refX: 9, refY: 5,
+      const marker = svgNode(defs, "marker", { id: `${markerPrefix}-${kind}`, viewBox: "0 0 10 10", refX: 9, refY: 5,
         markerWidth: 7, markerHeight: 7, orient: "auto" });
       svgNode(marker, "path", { d: "M1 1L9 5L1 9z", class: `research-arrow research-arrow-${kind}` });
     }
     const laneRects = model.laneEls.map(rect);
     const count = laneRects.length;
-    const gutter = index => index < count - 1 ? (laneRects[index].r + laneRects[index + 1].l) / 2 : laneRects[count - 1].r + 53;
+    const gutter = index => index < count - 1 ? (laneRects[index].r + laneRects[index + 1].l) / 2
+      : laneRects[count - 1].r + (model.inline ? 33 : 53);
     const edges = model.links.map(link => {
       const from = model.info.get(link.from);
       const to = model.info.get(link.to);
@@ -778,7 +781,7 @@
       }
       const attributes = { "data-from": edge.link.from, "data-to": edge.link.to, "data-kind": edge.link.kind };
       svgNode(lines, "path", { ...attributes, class: `research-edge research-edge-${edge.link.kind}`,
-        d: roundedPath(points), "marker-end": `url(#research-arrow-${edge.link.kind})` });
+        d: roundedPath(points), "marker-end": `url(#${markerPrefix}-${edge.link.kind})` });
       let longest = [points[0], points[1]];
       points.slice(1).forEach((point, index) => {
         const length = Math.hypot(point.x - points[index].x, point.y - points[index].y);
@@ -789,7 +792,7 @@
     const placed = [];
     const labelLayer = svgNode(layer, "g", { class: "research-edge-labels" });
     for (const { edge, attributes, longest } of labels) {
-      const rows = edge.internal ? [edge.link.label] : labelLines(edge.link.label);
+      const rows = model.inline ? labelLines(edge.link.label, 4) : edge.internal ? [edge.link.label] : labelLines(edge.link.label);
       const boxWidth = Math.max(...rows.map(textWidth)) + 12;
       const boxHeight = rows.length * 14 + 6;
       const vertical = longest[0].x === longest[1].x;
@@ -930,6 +933,7 @@
   let sheetScope = null;
   let paneEffects = null;
   const diagramViews = new Map();
+  const expandedDiagrams = new Map();
   let currentCamera = null;
 
   function structureCamera(frame, world, stage, tools, scope) {
@@ -946,7 +950,7 @@
       scale = clamp(view.scale);
       marginX = frame.clientWidth;
       marginY = frame.clientHeight;
-      world.style.width = `${Math.ceil(stage.offsetWidth * scale) + 2 * marginX}px`;
+      world.style.width = `${Math.ceil(stage.scrollWidth * scale) + 2 * marginX}px`;
       world.style.height = `${Math.ceil(stage.offsetHeight * scale) + 2 * marginY}px`;
       stage.style.left = `${marginX}px`;
       stage.style.top = `${marginY}px`;
@@ -970,8 +974,8 @@
     const larger = button(controls, "+", () => zoom(scale * 1.2), "research-button");
     larger.setAttribute("aria-label", "放大画布");
     button(controls, "适应", () => {
-      const fitted = clamp(Math.min(frame.clientWidth / stage.offsetWidth, frame.clientHeight / stage.offsetHeight, 1));
-      sync({ scale: fitted, x: (stage.offsetWidth - frame.clientWidth / fitted) / 2,
+      const fitted = clamp(Math.min(frame.clientWidth / stage.scrollWidth, frame.clientHeight / stage.offsetHeight, 1));
+      sync({ scale: fitted, x: (stage.scrollWidth - frame.clientWidth / fitted) / 2,
         y: (stage.offsetHeight - frame.clientHeight / fitted) / 2 });
     }, "research-button").title = "显示整张图";
 
@@ -1000,8 +1004,8 @@
     const measure = (view = read()) => {
       if (frame.clientWidth !== marginX) stage.style.width = `${frame.clientWidth}px`;
       if (frame.clientWidth === marginX && frame.clientHeight === marginY &&
-          stage.offsetWidth === stageWidth && stage.offsetHeight === stageHeight) return;
-      stageWidth = stage.offsetWidth;
+          stage.scrollWidth === stageWidth && stage.offsetHeight === stageHeight) return;
+      stageWidth = stage.scrollWidth;
       stageHeight = stage.offsetHeight;
       frame.style.height = `${Math.min(720, Math.max(178, stageHeight + 2))}px`;
       sync(view);
@@ -1054,7 +1058,7 @@
         closeMenu(true);
         const selected = structureSelection;
         const want = spec.selection;
-        if (!(selected?.kind === "node" && selected.id === want.id && (selected.cardId || null) === (want.cardId || null) &&
+        if (!(selected?.kind === "node" && selected.scope === model.key && selected.id === want.id && (selected.cardId || null) === (want.cardId || null) &&
           !(want.cardId == null && selected.cardId))) model.select(want, true, false);
         run();
       }, "research-context-item");
@@ -1164,6 +1168,56 @@
       }
     }
   }
+  function chartSurface(host, model) {
+    const chart = add(host, "div", "research-structure-chart");
+    chart.classList.toggle("has-links", Boolean(model.links.length));
+    chart.classList.toggle("is-single-lane", model.lanes.length === 1);
+    chart.classList.toggle("research-inline-chart", Boolean(model.inline));
+    const layer = svgNode(chart, "svg", { class: "research-structure-lines", "aria-hidden": "true", focusable: "false" });
+    const top = model.links.filter(link => model.info.get(link.to).lane - model.info.get(link.from).lane >= 2).length;
+    const bottom = model.links.filter(link => model.info.get(link.from).lane - model.info.get(link.to).lane >= 2).length;
+    const room = model.inline ? 14 : 28;
+    chart.style.setProperty("--structure-top", `${room + top * 14}px`);
+    chart.style.setProperty("--structure-bottom", `${room + bottom * 14}px`);
+    chart.style.setProperty("--structure-lanes", model.lanes.length);
+    const grid = add(chart, "div", "research-structure-grid");
+    const weight = { small: 1, medium: 1.3, large: 1.7 };
+    const tracks = model.lanes.map(lane => `minmax(0, ${Math.max(
+      ...model.zones.filter(zone => zone.lane === lane).map(zone => weight[zone.size])
+    )}fr)`).join(" ");
+    grid.style.gridTemplateColumns = tracks;
+    return { chart, grid, layer, model, tracks, buttons: new Map(), expanded: new Map() };
+  }
+
+  function measureExpandedChart(surface) {
+    const { chart, grid, model, tracks, expanded, original } = surface;
+    const style = getComputedStyle(chart);
+    const gap = parseFloat(getComputedStyle(grid).columnGap);
+    const padding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+    if (!expanded.size) {
+      chart.style.width = "";
+      grid.style.gridTemplateColumns = tracks;
+      for (const column of model.laneEls) {
+        column.style.paddingTop = "";
+        column.style.justifyContent = "";
+      }
+      surface.original = null;
+      return padding + gap * (model.lanes.length - 1) + 136 * model.lanes.length;
+    }
+    const widths = original.map(lane => lane.width);
+    for (const { child, lane, inset } of expanded.values()) {
+      widths[lane] = Math.max(widths[lane], measureExpandedChart(child) + inset);
+    }
+    grid.style.gridTemplateColumns = widths.map(width => `${width}px`).join(" ");
+    for (const [i, column] of model.laneEls.entries()) {
+      column.style.justifyContent = "flex-start";
+      column.style.paddingTop = `${original[i].top}px`;
+    }
+    const width = Math.ceil(padding + gap * (widths.length - 1) + widths.reduce((sum, track) => sum + track, 0));
+    chart.style.width = `${width}px`;
+    return width;
+  }
+
   function renderStructure(parent, nodes, { diagram: structure, base, authored }) {
     structureObserver?.disconnect();
     closeMenu(false);
@@ -1220,20 +1274,14 @@
     scroller.setAttribute("role", "group");
     const world = add(scroller, "div", "research-camera-world");
     const stage = add(world, "div", "research-structure-stage");
-    const layer = svgNode(stage, "svg", { class: "research-structure-lines", "aria-hidden": "true", focusable: "false" });
-    const topCount = model.links.filter(link => model.info.get(link.to).lane - model.info.get(link.from).lane >= 2).length;
-    const bottomCount = model.links.filter(link => model.info.get(link.to).lane - model.info.get(link.from).lane <= -2).length;
-    stage.style.setProperty("--structure-top", `${28 + topCount * 14}px`);
-    stage.style.setProperty("--structure-bottom", `${28 + bottomCount * 14}px`);
-    stage.style.setProperty("--structure-lanes", model.lanes.length);
-    const grid = add(stage, "div", "research-structure-grid");
-    const weight = { small: 1, medium: 1.3, large: 1.7 };
-    grid.style.gridTemplateColumns = model.lanes.map(lane => `minmax(0, ${Math.max(
-      ...model.zones.filter(zone => zone.lane === lane).map(zone => weight[zone.size])
-    )}fr)`).join(" ");
-    const buttons = new Map();
+    const surface = chartSurface(stage, model);
+    const { grid, buttons } = surface;
     const wraps = new Map();
     const scope = rootId;
+    model.key = scope;
+    const remembered = expandedDiagrams.get(scope) || new Set();
+    expandedDiagrams.set(scope, remembered);
+    const restoreExpansions = [];
     const focusByKey = (root, key) => [...root.querySelectorAll("[data-focus-key]")].find(element => element.dataset.focusKey === key);
     let frame = 0;
     const soon = () => {
@@ -1253,12 +1301,12 @@
         return ok;
       });
     }
-    function makeMore(parent, spec) {
+    function makeMore(parent, spec, target = model) {
       const more = button(parent, "⋯", () => {
         if (menu?.id === spec.key) closeMenu(true);
         else {
           const box = more.getBoundingClientRect();
-          openMenu(model, spec, more, { x: box.left, y: box.bottom + 4 });
+          openMenu(target, spec, more, { x: box.left, y: box.bottom + 4 });
         }
       }, "research-snode-more");
       more.dataset.focusKey = `m:${spec.key}`;
@@ -1268,12 +1316,13 @@
       spec.trigger = more;
       return more;
     }
-    function attachMenu(area, fallback, spec) {
+    function attachMenu(area, fallback, spec, target = model) {
       const open = (event, point) => {
+        if (event.target.closest(".research-snode-wrap") !== area) return;
         event.preventDefault();
         const opener = event.target.closest("button") || fallback;
         const box = opener.getBoundingClientRect();
-        openMenu(model, spec, opener, point || { x: box.left + 12, y: box.bottom - 6 });
+        openMenu(target, spec, opener, point || { x: box.left + 12, y: box.bottom - 6 });
         return true;
       };
       area.addEventListener("contextmenu", event => {
@@ -1283,6 +1332,125 @@
         if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) open(event, null);
       });
     }
+
+    function saveColumnAnchors(target, scale) {
+      if (target.original) return;
+      target.original = target.model.laneEls.map(column => {
+        const box = column.getBoundingClientRect();
+        return { width: box.width / scale, top: (column.firstElementChild.getBoundingClientRect().top - box.top) / scale };
+      });
+    }
+
+    function inlineToggle(target, wrap, info, path, ancestors, restores = restoreExpansions) {
+      const toggle = button(wrap, "+", () => change(!target.expanded.has(path)), "research-snode-expand");
+      toggle.dataset.focusKey = `expand:${path}`;
+      toggle.setAttribute("aria-expanded", "false");
+      toggle.title = `展开「${info.name}」的下级`;
+      toggle.setAttribute("aria-label", toggle.title);
+      if (remembered.has(path)) restores.push(() => change(true, true));
+
+      function change(open, restoring = false) {
+        const origin = target.buttons.get(info.node.id);
+        const anchor = origin.getBoundingClientRect();
+        const scale = camera.scale();
+        const previous = target.expanded.get(path);
+        if (open) {
+          const next = diagramFor(info.card.id, nodes);
+          if (!next) return;
+          // A visible branch frame already identifies the parent. Keep its card only when a line uses it.
+          const endpoints = new Set((next.diagram.links || []).flatMap(link => [link.from, link.to]));
+          const zones = next.diagram.zones.map(zone => ({ ...zone,
+            nodes: zone.nodes.filter(entry => entry.cardId !== info.card.id || endpoints.has(entry.id)) })).filter(zone => zone.nodes.length);
+          if (!zones.length) return;
+          saveColumnAnchors(target, scale);
+          const group = add(wrap, "section", "research-inline-module");
+          group.dataset.diagramRoot = info.card.id;
+          group.setAttribute("aria-label", `${info.name} 的下级模块`);
+          add(group, "h5", "research-inline-heading", `${info.name} · 下级`);
+          const lower = structureModel({ ...next.diagram, zones }, nodes);
+          lower.inline = true;
+          lower.authored = next.authored;
+          lower.key = scope + path;
+          const child = chartSurface(group, lower);
+          if (!lower.links.length && options.onConfigureDiagram && zones.flatMap(zone => zone.nodes).length > 1) {
+            const footer = add(group, "div", "research-inline-relations");
+            add(footer, "span", "research-muted", "按卡片归属展开");
+            button(footer, "登记连线", () => options.onConfigureDiagram(info.card.id, next.base), "research-path-button");
+          }
+          const pending = [];
+          const branchAncestors = new Set([...ancestors, info.card.id]);
+          populateInline(child, path, branchAncestors, pending);
+          const zoneStyle = getComputedStyle(wrap.closest(".research-zone"));
+          const groupStyle = getComputedStyle(group);
+          const inset = ["paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth"].reduce(
+            (sum, key) => sum + parseFloat(zoneStyle[key]) + parseFloat(groupStyle[key]), 0);
+          target.expanded.set(path, { child, lane: info.lane, inset, group });
+          remembered.add(path);
+          measureExpandedChart(surface);
+          for (const restore of pending) restore();
+        } else if (previous) {
+          if (previous.group.contains(document.activeElement)) toggle.focus({ preventScroll: true });
+          const hiddenSelection = previous.group.contains(selectedSurface?.chart);
+          previous.group.remove();
+          target.expanded.delete(path);
+          remembered.delete(path);
+          if (hiddenSelection) target.model.select({ kind: "node", id: info.node.id }, true, false);
+        }
+        toggle.textContent = open ? "−" : "+";
+        toggle.setAttribute("aria-expanded", String(open));
+        toggle.title = `${open ? "收起" : "展开"}「${info.name}」的下级`;
+        toggle.setAttribute("aria-label", toggle.title);
+        redraw();
+        if (!restoring) {
+          const moved = origin.getBoundingClientRect();
+          scroller.scrollLeft += moved.left - anchor.left;
+          scroller.scrollTop += moved.top - anchor.top;
+          announce(open ? `已展开 ${info.name} 的下级。` : `已收起 ${info.name} 的下级。`);
+        }
+      }
+    }
+
+    function populateInline(target, path, ancestors, pending) {
+      const { model: lower, grid, buttons } = target;
+      lower.select = (value, emphasize, openDetails) => selectOn(target, value, emphasize, openDetails);
+      lower.laneEls = lower.lanes.map(lane => {
+        const column = add(grid, "div", "research-structure-lane");
+        for (const zone of lower.zones.filter(entry => entry.lane === lane)) {
+          const area = add(column, "section", "research-zone");
+          area.dataset.role = zone.role;
+          area.dataset.size = zone.size;
+          add(add(area, "header"), "h4", "", zone.title);
+          const list = add(area, "div", "research-zone-nodes");
+          for (const entry of zone.nodes) {
+            const info = lower.info.get(entry.id);
+            const wrap = add(list, "div", "research-snode-wrap");
+            const value = { kind: "node", id: entry.id };
+            const card = button(wrap, "", () => lower.select(value), "research-snode");
+            add(card, "strong", "", info.name);
+            if (entry.note) add(card, "span", "", entry.note);
+            card.dataset.node = entry.id;
+            card.dataset.cardId = info.card.id;
+            card.dataset.focusKey = `n:${path}/${entry.id}`;
+            card.setAttribute("aria-pressed", "false");
+            buttons.set(entry.id, card);
+            const spec = { key: `node:${path}/${entry.id}`, name: info.name, target: wrap,
+              selection: value, actions: () => cardActions(info.card, null) };
+            if (spec.actions().length) {
+              makeMore(add(wrap, "div", "research-snode-tools"), spec, lower);
+              card.setAttribute("aria-keyshortcuts", "Shift+F10");
+              attachMenu(wrap, card, spec, lower);
+            }
+            if (!ancestors.has(info.card.id) && (children(info.card.id, nodes).length || options.getStoredDiagram?.(info.card.id))) {
+              const drill = button(wrap, "打开模块图 ↗", () => options.onStructureBranch?.(info.card.id), "research-snode-drill");
+              drill.setAttribute("aria-label", `打开「${info.name}」的模块图`);
+              inlineToggle(target, wrap, info, `${path}/${entry.id}`, ancestors, pending);
+            }
+          }
+        }
+        return column;
+      });
+    }
+
     model.laneEls = model.lanes.map(lane => {
       const column = add(grid, "div", "research-structure-lane");
       for (const zone of model.zones.filter(entry => entry.lane === lane)) {
@@ -1420,11 +1588,12 @@
             const open = button(wrap, "打开模块图 ↗", () => options.onStructureBranch?.(info.card.id), "research-snode-drill");
             open.setAttribute("aria-label", `打开「${info.name}」的模块图`);
             open.dataset.focusKey = `d:${entry.id}`;
+            inlineToggle(surface, wrap, info, `/${entry.id}`, new Set([scope]));
           }
-          control.addEventListener("mouseenter", () => highlight(entry.id));
-          control.addEventListener("focus", () => highlight(entry.id));
-          control.addEventListener("mouseleave", () => highlight(null));
-          control.addEventListener("blur", () => highlight(null));
+          control.addEventListener("mouseenter", () => highlight(surface, entry.id));
+          control.addEventListener("focus", () => highlight(surface, entry.id));
+          control.addEventListener("mouseleave", () => highlight(surface));
+          control.addEventListener("blur", () => highlight(surface));
           control.addEventListener("keydown", event => {
             const arrows = ["ArrowRight", "ArrowLeft", "ArrowUp", "ArrowDown"];
             if (!arrows.includes(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
@@ -1432,7 +1601,8 @@
             if (event.key === "ArrowRight") target = model.links.find(link => link.from === entry.id)?.to;
             else if (event.key === "ArrowLeft") target = model.links.find(link => link.to === entry.id)?.from;
             else {
-              const siblings = [...column.querySelectorAll(".research-snode")];
+              const siblings = [...column.querySelectorAll(".research-snode")].filter(node =>
+                node.closest(".research-structure-chart") === surface.chart);
               target = siblings[siblings.indexOf(control) + (event.key === "ArrowDown" ? 1 : -1)]?.dataset.node;
             }
             if (!target) return;
@@ -1487,24 +1657,31 @@
     };
     document.addEventListener("keydown", onSheetKey, { signal });
     let showSelection = false;
+    let selectedSurface = surface;
     /* Hover or focus lights a node's links; otherwise the current selection stays lit. */
-    function highlight(id) {
-      const selected = showSelection && structureSelection;
+    function highlight(target, id) {
+      const selected = showSelection && selectedSurface === target && structureSelection;
       const lit = id ? element => element.dataset.from === id || element.dataset.to === id
         : selected?.kind === "node" ? element => element.dataset.from === selected.id || element.dataset.to === selected.id
           : selected?.kind === "link" ? element => element.dataset.from === selected.from && element.dataset.to === selected.to
             : () => false;
       let any = false;
-      for (const element of layer.querySelectorAll("[data-from]")) {
+      for (const element of target.layer.querySelectorAll("[data-from]")) {
         const on = lit(element);
         any ||= on;
         element.classList.toggle("is-lit", on);
       }
-      section.classList.toggle("has-focus", any);
+      target.chart.classList.toggle("has-focus", any);
     }
-    model.select = (value, emphasize = true, openDetails = emphasize) => {
+    function selectOn(target, value, emphasize = true, openDetails = emphasize) {
+      const { model, buttons } = target;
+      const previousSurface = selectedSurface;
+      if (previousSurface !== target) {
+        for (const control of previousSurface.buttons.values()) control.setAttribute("aria-pressed", "false");
+      }
+      selectedSurface = target;
       showSelection = emphasize;
-      structureSelection = value;
+      structureSelection = { ...value, scope: model.key };
       handoffCard = value.kind === "link" ? model.links.find(link => link.from === value.from && link.to === value.to)?.evidence || null
         : value.cardId || model.info.get(value.id)?.card.id || null;
       for (const [id, control] of buttons) {
@@ -1522,10 +1699,12 @@
         setSheet(true);
       }
       aside.scrollTop = 0;
-      highlight(null);
+      highlight(previousSurface);
+      if (target !== previousSurface) highlight(target);
       if (emphasize) options.onFocus?.(handoffCard);
-    };
-    const linkedSelection = structureSelection?.kind === "link" && model.links.find(link =>
+    }
+    model.select = (value, emphasize, openDetails) => selectOn(surface, value, emphasize, openDetails);
+    const linkedSelection = structureSelection?.kind === "link" && structureSelection.scope === scope && model.links.find(link =>
       link.from === structureSelection.from && link.to === structureSelection.to && (link.evidence || null) === handoffCard);
     const selectedCard = nodes.find(node => node.id === (handoffCard || (compact ? scope : null)) && node.id !== "board");
     const ancestors = selectedCard ? pathFor(selectedCard.id, nodes).reverse() : [];
@@ -1565,8 +1744,19 @@
     }
     const camera = structureCamera(scroller, world, stage, controls, scope);
     currentCamera = camera;
-    const redraw = () => { camera.measure(); drawStructure(stage, layer, model, buttons, camera.scale()); highlight(null); fitPane(); };
+    const paint = target => {
+      drawStructure(target.chart, target.layer, target.model, target.buttons, camera.scale());
+      highlight(target);
+      for (const { child } of target.expanded.values()) paint(child);
+    };
+    const redraw = () => {
+      measureExpandedChart(surface);
+      camera.measure();
+      paint(surface);
+      fitPane();
+    };
     redraw();
+    for (const restore of restoreExpansions) restore();
     if (!diagramViews.has(scope) && handoffCard && selectedCard?.opinionChild && mapped?.card.id === handoffCard) {
       revealDiagramCard(handoffCard, false);
     }

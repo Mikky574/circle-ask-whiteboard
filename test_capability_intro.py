@@ -65,6 +65,7 @@ class CapabilityIntroTests(unittest.TestCase):
             finally:
                 schema_path.unlink()
             self.assertIn("projectStructure", schema["required"])
+            self.assertIn("moduleDiagrams", schema["required"])
             self.assertEqual(schema["properties"]["projectStructure"]["required"],
                              ["version", "rootId", "title", "zones", "links"])
         prompt = server.build_prompt("ask", "初始化", {"boardIntent": "repository_init", "board": self.board},
@@ -87,6 +88,18 @@ class CapabilityIntroTests(unittest.TestCase):
                 plan = copy.deepcopy(self.plan)
                 mutate(plan)
                 self.generate(plan)
+
+    def test_child_diagram_checks_scope_and_preserves_registered_relationships(self):
+        feature = self.plan["items"][1]
+        leaf = {**feature, "id": "E06", "parentId": "E05", "title": "复核低置信结果"}
+        self.plan["items"].append(leaf)
+        module = overview_fixture([{**feature, "parentId": None}, leaf])
+        module["links"] = [{"from": "root", "to": "step-0", "label": "转交复核", "kind": "main", "evidence": "E06"}]
+        self.plan["moduleDiagrams"] = [module]
+        self.assertEqual(self.generate()["moduleDiagrams"], [module])
+        module["links"][0]["evidence"] = "E04"
+        with self.assertRaisesRegex(ValueError, "证据卡无效"):
+            self.generate()
 
     def test_outer_cards_require_a_user_outcome_and_separate_valid_evidence(self):
         for mutate in (

@@ -13,6 +13,7 @@ CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff]")
 MAX_ZONES = 6
 MAX_ZONE_NODES = 7
 MAX_LINKS = 24
+MAX_MODULE_DIAGRAMS = 6
 LANES = tuple(range(6))
 
 
@@ -100,3 +101,23 @@ def validate_overview(value, root_id, items):
             fail("连线端点、类型或证据卡无效")
         pairs.add((source, target))
     return value
+
+
+def validate_module_diagrams(values, project_root, items):
+    if not isinstance(values, list) or len(values) > MAX_MODULE_DIAGRAMS:
+        raise ValueError(f"下级模块图应为列表，最多 {MAX_MODULE_DIAGRAMS} 张。")
+    by_id = {item["id"]: item for item in items}
+    children = {}
+    for item in items:
+        children.setdefault(item["parentId"], []).append(item["id"])
+    used = {project_root}
+    for diagram in values:
+        root = diagram.get("rootId") if isinstance(diagram, dict) else None
+        if not isinstance(root, str) or root in used or root not in children:
+            raise ValueError("下级模块图需要唯一且有子卡的范围。")
+        used.add(root)
+        scope = [root]
+        for identity in scope:
+            scope.extend(children.get(identity, ()))
+        validate_overview(diagram, root, [by_id[identity] for identity in scope])
+    return values

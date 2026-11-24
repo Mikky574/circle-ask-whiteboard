@@ -27,7 +27,7 @@ from board_store import BoardStoreError, MAX_STORE_REQUEST_BYTES, board_store_re
 from backends import FACTORY, BackendRequest, CancellationToken
 from card_search import search_cards
 from local_projects import ProjectCatalogError, project_activity_request, project_catalog_request
-from project_diagram import GUIDE_PATH, diagram_schema, validate_overview
+from project_diagram import GUIDE_PATH, MAX_MODULE_DIAGRAMS, diagram_schema, validate_module_diagrams, validate_overview
 from repo_index import RepositoryIndex, RepoIndexError
 
 from attachments import MAX_ATTACHMENT_BYTES, load_attachments, read_attachment, save_attachment, stage_attachments
@@ -373,8 +373,11 @@ def write_map_schema(board, *, repository_scope=False, zcode=False, repository_i
         "additionalProperties": False,
     }
     if repository_intro:
-        schema["properties"]["projectStructure"] = diagram_schema(ids, zcode=zcode)
-        schema["required"].append("projectStructure")
+        diagram = diagram_schema(ids, zcode=zcode)
+        schema["properties"].update(projectStructure=diagram, moduleDiagrams={
+            "type": "array", "items": diagram, **({"maxItems": MAX_MODULE_DIAGRAMS} if zcode else {}),
+        })
+        schema["required"].extend(("projectStructure", "moduleDiagrams"))
     return write_result_schema(schema, "whiteboard-map-")
 
 
@@ -1099,14 +1102,19 @@ def structured_candidate(answer, context, *, attachments=False, repository_scope
         raise ValueError("整板整理结果缺少 layout 排布字段。")
     repository_intro = context.get("boardIntent") == REPOSITORY_INIT_INTENT
     diagram = value.pop("projectStructure", None) if repository_intro else None
+    module_diagrams = value.pop("moduleDiagrams", []) if repository_intro else []
     plan = validate_map(value, context["board"], contextual_new=(
         context.get("boardIntent") == "main" or attachments or repository_scope), repository_scope=repository_scope)
     if repository_intro:
         if repository is None:
             raise ValueError("初始化项目介绍需要可读的项目目录。")
+        model_items = plan["items"][:]
         validate_repository_intro(plan, repository, context["board"])
-        root_id = next(item["id"] for item in plan["items"] if item["parentId"] is None)
-        plan["projectStructure"] = validate_overview(diagram, root_id, plan["items"])
+        root_id = next(item["id"] for item in model_items if item["parentId"] is None)
+        plan["projectStructure"] = validate_overview(diagram, root_id, model_items)
+        modules = validate_module_diagrams(module_diagrams, root_id, model_items)
+        if modules:
+            plan["moduleDiagrams"] = modules
     elif repository_scope and repository is not None:
         verified = {}
         for item in plan["items"]:
@@ -1644,7 +1652,11 @@ def build_prompt(mode, question, context, *, source_access=True, repository_scop
         format_hint += (
             "\n\nFollow the shared diagram guide below when filling projectStructure. Keep every node tied to "
             "an item returned in this map. Supply arrays even when there are no supported links. Use an empty "
-            "node note when the label says enough. Use at most six zones and 24 links.\n\n"
+            "node note when the label says enough. Use at most six zones and 24 links per diagram. "
+            f"Return up to {MAX_MODULE_DIAGRAMS} same-format submodule diagrams in moduleDiagrams. "
+            "Prioritize modules with real decisions, dependencies or verification between their steps. "
+            "Each submodule diagram includes only its own root and all of that root's immediate children. "
+            "Cite relationship evidence from within the module subtree. Use [] if no submodule has supported relationships.\n\n"
             + GUIDE_PATH.read_text(encoding="utf-8") + "\n"
         )
     elif context.get("scope") == "organize" and not source_access:
