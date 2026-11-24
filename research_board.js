@@ -127,6 +127,9 @@
     return { kind: "detail", home, feature, scene };
   }
   const enter = id => options.onEnter?.(id);
+  function placeProjectTools(host = document.getElementById("project-context")) {
+    if (options.projectTools && host) host.append(options.projectTools);
+  }
   function showImage(file) {
     const dialog = document.getElementById("research-image-dialog");
     const image = dialog.querySelector("img");
@@ -355,7 +358,7 @@
       const error = options.onSaveFlow(node.id, [...order], previous);
       if (error) { message.textContent = error; return; }
       render();
-      container.querySelector(".research-flow-edit")?.focus();
+      container.querySelector(".research-diagram-tools > summary, .research-flow-edit")?.focus();
     });
     button(actions, "取消", () => { editor.remove(); trigger.hidden = false; trigger.focus(); });
     function update() {
@@ -431,7 +434,7 @@
   }
 
   /* ---- Functional reading: overview → feature → scene → detail / evidence ---- */
-  function renderRecord(parent, node, lead) {
+  function renderRecord(parent, node, lead, compact = false) {
     const record = experiment(node);
     if (record.question && !same(record.question, lead)) add(parent, "p", "research-question", `实验问题：${record.question}`);
     if (record.metricSummary) add(parent, "p", "research-inline-metric", record.metricSummary);
@@ -440,7 +443,9 @@
     renderComparison(parent, node);
     const pictures = images(node);
     if (pictures.length) {
-      const gallery = add(parent, "div", "research-evidence");
+      const host = compact ? add(parent, "details", "research-sources research-proof") : parent;
+      if (compact) add(host, "summary", "", `证据图片 · ${pictures.length} 张`);
+      const gallery = add(host, "div", "research-evidence");
       for (const file of pictures) figure(gallery, node, file);
     }
     renderAttachments(parent, node);
@@ -793,7 +798,7 @@
     if (lead) add(parent, "p", "research-lead", lead);
     if (text && !same(text, lead)) add(parent, "p", "research-description", text);
     if (feature) factRows(add(parent, "section", "research-facts"), feature, factKeys);
-    renderRecord(parent, card, lead);
+    renderRecord(parent, card, lead, options.compactWorkspace?.());
     renderEvidence(parent, card, children(card.id, nodes).filter(item => item.codePreview));
   }
   function structureCardActions(parent, card) {
@@ -803,7 +808,7 @@
       button(row, "提意见让 AI 改", () => options.onOpinion?.(card.id), "research-button research-opinion-button");
       button(row, "编辑原卡", () => options.onEditCard?.(card.id), "research-button research-edit-card");
     }
-    if (typeof options.onAddChild === "function") {
+    if (!options.compactWorkspace?.() && typeof options.onAddChild === "function") {
       button(row, "手动新建子卡", () => options.onAddChild(card.id));
     }
     if (card.id !== rootId) button(row, "打开模块图", () => options.onStructureBranch?.(card.id), "research-button research-structure-enter");
@@ -971,6 +976,7 @@
     closeMenu(false);
     const model = structureModel(structure, nodes);
     model.authored = authored;
+    const compact = options.compactWorkspace?.();
     const section = add(parent, "section", "research-structure");
     section.dataset.diagramRoot = rootId;
     section.classList.toggle("has-links", Boolean(model.links.length));
@@ -995,7 +1001,20 @@
       }
     }
     if (options.onConfigureDiagram) {
-      button(controls, "编辑模块图", () => options.onConfigureDiagram(rootId, structure), "research-button");
+      const settings = compact ? add(controls, "details", "research-diagram-tools") : controls;
+      if (compact) add(settings, "summary", "research-button", "图设置");
+      const actions = compact ? add(settings, "div", "project-tools-menu") : settings;
+      button(actions, "编辑模块图", () => options.onConfigureDiagram(rootId, structure), "research-button");
+      const node = nodes.find(item => item.id === rootId);
+      const direct = children(rootId, nodes);
+      if (compact && !authored && options.canEditFlow?.(rootId) && (direct.length >= 2 || node?.flowSteps?.length)) {
+        const editor = add(section, "div");
+        const edit = button(actions, "设置流程", () => {
+          settings.open = false;
+          editFlow(editor, node, direct, settings.querySelector("summary"));
+        }, "research-button research-flow-edit");
+        edit.setAttribute("aria-label", "设置模块流程");
+      }
     }
     if (model.dropped) add(section, "p", "research-caveat",
       `结构中有 ${model.dropped} 项引用的卡片已不存在，已暂时隐藏；卡片恢复后会再次出现。`);
@@ -1078,7 +1097,7 @@
         area.dataset.size = zone.size;
         area.setAttribute("aria-label", `${zone.title}（${roleNames[zone.role]}）`);
         const head = add(area, "header");
-        add(head, "span", "research-zone-role", roleNames[zone.role]);
+        if (!compact) add(head, "span", "research-zone-role", roleNames[zone.role]);
         add(head, "h4", "", zone.title);
         if (zone.note) add(head, "p", "research-muted research-small", zone.note);
         const list = add(area, "div", "research-zone-nodes");
@@ -1088,7 +1107,7 @@
           wrap.dataset.nodeId = entry.id;
           wraps.set(entry.id, wrap);
           const control = button(wrap, "", () => model.select({ kind: "node", id: entry.id }), "research-snode");
-          if (entry.label) control.title = title(info.card);
+          control.title = entry.label ? `${info.name} · ${title(info.card)}` : info.name;
           add(control, "strong", "", info.name);
           if (entry.note) add(control, "span", "", entry.note);
           const out = model.links.filter(link => link.from === entry.id).length;
@@ -1262,7 +1281,7 @@
     };
     const linkedSelection = structureSelection?.kind === "link" && model.links.find(link =>
       link.from === structureSelection.from && link.to === structureSelection.to && (link.evidence || null) === handoffCard);
-    const selectedCard = handoffCard && nodes.find(node => node.id === handoffCard && node.id !== "board");
+    const selectedCard = nodes.find(node => node.id === (handoffCard || (compact ? scope : null)) && node.id !== "board");
     const ancestors = selectedCard ? pathFor(selectedCard.id, nodes).reverse() : [];
     const mapped = ancestors.map(ancestor => [...model.info.values()].find(info => info.card.id === ancestor.id)).find(Boolean);
     const relations = model.links.length && add(section, "details", "research-sources research-proof research-structure-relations");
@@ -1332,11 +1351,16 @@
     container.replaceChildren();
     const path = node ? pathFor(node.id, nodes) : [];
     lastPath = path.map(item => item.id);
+    const structure = node ? diagramFor(node.id, nodes) : null;
+    const compact = Boolean(structure && options.compactWorkspace?.());
+    container.classList.toggle("research-compact", compact);
+    if (compact) view = "structure";
     /* The path starts at the real or virtual root, so a single root is never listed twice. */
     if (path.length > 1) {
       const breadcrumb = add(container, "nav", "research-breadcrumb");
       breadcrumb.setAttribute("aria-label", "阅读路径");
-      path.forEach((item, index) => {
+      const trail = !compact ? path : path.length > 3 ? [path[0], path.at(-2)] : path.slice(0, -1);
+      trail.forEach((item, index) => {
         if (index) add(breadcrumb, "span", "research-muted", "›").setAttribute("aria-hidden", "true");
         const link = button(breadcrumb, title(item), () => {
           if (view === "structure") options.onStructureBranch?.(item.id);
@@ -1352,19 +1376,20 @@
     const lead = feature?.outcome || record.question || (mode ? "" : node?.summary || "");
     const heading = add(container, "header", "research-heading");
     const intro = add(heading, "div");
-    if (mode) add(intro, "span", "research-kicker", kickers[mode.kind]);
+    if (mode && !compact) add(intro, "span", "research-kicker", kickers[mode.kind]);
     const name = add(intro, "h2");
     if (node) labelled(name, node);
     else name.textContent = options.title || "白板";
     name.tabIndex = -1;
     if (lead) add(intro, "p", mode ? "research-lead" : "research-muted", lead);
-    if (mode && feature) add(intro, "p", "research-muted research-small", `适合：${feature.audience}`);
+    if (mode && feature && !compact) add(intro, "p", "research-muted research-small", `适合：${feature.audience}`);
     const controls = add(heading, "div", "research-heading-actions");
+    placeProjectTools(compact ? controls : undefined);
     if (view !== "structure" && mode && typeof options.onAsk === "function" && (mode.kind === "feature" || mode.kind === "scene")) {
       button(controls, mode.kind === "feature" ? "问这项功能" : "问这个场景",
         () => options.onAsk(node.id), "research-button research-ask");
     }
-    if (path.length > 1) button(controls, "返回上一级", () => {
+    if (path.length > 1 && !compact) button(controls, "返回上一级", () => {
       if (view === "structure") options.onStructureBranch?.(path.at(-2).id);
       else enter(path.at(-2).id);
     });
@@ -1373,12 +1398,16 @@
       add(container, "p", "research-description", "画布还没有卡片，先在编辑画布中写下第一张卡片。");
       return;
     }
+    if (compact) {
+      renderStructure(add(container, "div", "research-content-plain"), nodes, structure);
+      signature = contentSignature(nodes);
+      return;
+    }
     const members = scope(node.id, nodes);
     const comparisons = members.filter(item => experiment(item).comparison);
     const hasPictures = members.some(item => images(item).length);
     const direct = children(node.id, nodes);
     // The structure belongs to one card (default: the project root). Only that card offers it.
-    const structure = diagramFor(node.id, nodes);
     if (structure?.authored && !autoOpened.has(node.id)) {
       autoOpened.add(node.id);
       if (view === "board" && preferStructure) view = "structure";
@@ -1479,6 +1508,7 @@
   function hide() {
     active = false;
     closeMenu(false);
+    placeProjectTools();
     structureObserver?.disconnect();
   }
   function refresh(nodes) {

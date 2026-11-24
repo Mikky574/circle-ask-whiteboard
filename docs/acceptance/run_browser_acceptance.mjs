@@ -5966,7 +5966,7 @@ async function testProjectHomeWorkflow() {
     await page.waitForURL(onProjectCanvas(parentProject.id));
     await canvas.waitFor();
     await waitProjectName(parentProject.name);
-    assert.equal(await tab("canvas").getAttribute("aria-current"), "page");
+    assert.equal(await tab("canvas").count(), 0, "The workspace is the project page");
 
     const cardTitle = "接口版本写作提纲";
     await page.locator("#empty-canvas-write").click();
@@ -5985,13 +5985,22 @@ async function testProjectHomeWorkflow() {
     const writtenCard = page.locator('#board [data-organized-category="main"]').getByText(cardTitle, { exact: true });
     await writtenCard.waitFor();
 
-    await tab("graph").click();
-    await page.locator('[data-activity="graph"]').getByText(cardTitle, { exact: true }).waitFor();
-    assert.equal(await tab("graph").getAttribute("aria-current"), "page");
-    await tab("actions").click();
+    const legacy = new URL(page.url());
+    legacy.searchParams.set("board", "project-workbench");
+    legacy.searchParams.set("view", "graph");
+    await page.goto(legacy.href);
+    await page.waitForURL(onProjectCanvas(parentProject.id));
+    await writtenCard.waitFor();
+    assert.equal(await tab("graph").count(), 0);
+    legacy.searchParams.set("view", "actions");
+    await page.goto(legacy.href);
     await page.locator('[data-activity="timeline"]').getByText("该项目暂无 AI 动作记录。").waitFor();
-    assert.equal(await tab("actions").getAttribute("aria-current"), "page");
+    assert.ok(onProjectCanvas(parentProject.id)(new URL(page.url())));
+    assert.equal(await canvas.isVisible(), true);
+    await page.locator("#project-info-close").click();
+    await page.locator("#project-context-views summary").click();
     await tab("projects").click();
+    await page.getByRole("dialog", { name: "子项目" }).waitFor();
     await projectLink("#project-children-cards", childProject).click();
     await page.waitForURL(onProjectCanvas(childProject.id));
     await canvas.waitFor();
@@ -6043,7 +6052,7 @@ async function testProjectHomeWorkflow() {
     await home.waitFor();
     const localBoard = page.locator(`#home-board-list a[href*="board=${independent.get("board")}"]`);
     await localBoard.click();
-    await canvas.waitFor();
+    await page.waitForFunction(title => document.querySelector("#canvas-title")?.textContent.trim() === title, note);
     assert.equal((await page.locator("#canvas-title").textContent()).trim(), note);
     assertNoJsErrors(jsErrors.filter((message) => !/^Failed to load resource:.*\b422\b/.test(message)));
     record("U62", "PASS", "The homepage opens registered project canvases first, guards a card draft before closing, preserves saved cards through reopen, and separates project registration from independent boards.");

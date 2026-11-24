@@ -28,6 +28,7 @@
     if (bar.hidden) return;
     const structureButton = $("project-surface-structure");
     const showingStructure = state.presentation === "research" && state.panel === "structure";
+    bar.classList.toggle("project-compact-navigation", showingStructure && adapters.compactWorkspace?.());
     structureButton.textContent = showingStructure && state.readingRoot !== root ? "返回结构总览" : "结构白板";
     structureButton.setAttribute("aria-pressed", String(showingStructure && state.readingRoot === root));
     const found = nodes.find(node => node.id === currentCard() && node.id !== "board");

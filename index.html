@@ -291,48 +291,47 @@
         </ol>
       </nav>
       <h2 id="project-context-title"></h2>
-      <code id="project-context-directory"></code>
-      <nav id="project-context-views" class="activity-nav" aria-label="当前项目视图" hidden>
-        <a class="tool-button activity-canvas-link" data-project-view="canvas">项目画布</a>
-        <a class="tool-button activity-canvas-link" data-project-view="projects" hidden>子项目</a>
-        <a class="tool-button activity-canvas-link" data-project-view="graph">活动关系</a>
-        <a class="tool-button activity-canvas-link" data-project-view="actions">AI 动作</a>
-      </nav>
+      <details id="project-context-views" class="project-tools" hidden>
+        <summary class="research-button">项目资料</summary>
+        <div class="project-tools-menu">
+          <button class="research-button" type="button" data-project-view="projects" hidden>子项目</button>
+          <button class="research-button" type="button" data-project-view="actions" hidden>AI 动作</button>
+          <button class="research-button" type="button" data-project-view="directory">项目目录</button>
+        </div>
+      </details>
       <p id="project-context-error" role="alert" hidden></p>
     </section>
-    <main id="project-children" aria-labelledby="project-children-heading" hidden>
-      <p id="project-children-description"></p>
-      <h3 id="project-children-heading">子项目</h3>
-      <div id="project-children-cards" class="local-project-cards"></div>
-    </main>
-    <main id="workbench-activity" aria-labelledby="project-context-title" hidden>
-      <header class="activity-header">
-        <div><p class="activity-muted" data-activity="category"></p><h2 id="activity-title" data-activity="title"></h2></div>
-        <div class="activity-run"><strong data-activity="status"></strong><span data-activity="summary"></span></div>
+    <dialog id="project-info-drawer" aria-labelledby="project-info-title">
+      <header class="project-info-header">
+        <h2 id="project-info-title"></h2>
+        <button id="project-info-close" type="button" class="research-button" aria-label="关闭项目资料">关闭</button>
       </header>
-      <p class="activity-muted activity-captured" data-activity="captured"></p>
-      <div class="activity-layout">
-        <section data-activity="actions" aria-labelledby="activity-list-title">
-          <div class="activity-list-heading"><h3 id="activity-list-title" data-activity="list-title">动作记录</h3><button type="button" class="tool-button" data-activity="clear-filter" hidden>查看全部</button></div>
+      <section id="project-directory-info" hidden>
+        <code id="project-context-directory"></code>
+        <button type="button" class="research-button" id="project-info-open-folder">打开文件夹</button>
+        <p id="project-info-folder-status" role="status"></p>
+      </section>
+      <section id="project-children" aria-label="子项目" hidden>
+        <div id="project-children-cards"></div>
+      </section>
+      <section id="workbench-activity" aria-label="AI 动作" hidden>
+        <p class="activity-muted" data-activity="captured"></p>
+        <div class="activity-layout">
           <div class="activity-timeline" data-activity="timeline" role="group" aria-label="选择动作"></div>
-        </section>
-        <section class="activity-graph" data-activity="graph" aria-label="活动关系" hidden>
-          <strong class="activity-root" data-activity="root"></strong>
-          <div class="activity-branches" data-activity="branches" role="group" aria-label="选择项目卡片"></div>
-        </section>
-        <div class="activity-side">
-          <article class="activity-panel" data-activity="detail" aria-label="卡片详情" aria-live="polite"></article>
-          <section class="activity-panel" data-activity="guidance" aria-labelledby="activity-guidance-title" hidden>
-            <h3 id="activity-guidance-title">下一步由你指导</h3>
-            <div class="activity-options" data-activity="options" role="group" aria-label="指导建议"></div>
-            <label class="activity-editor" for="activity-instruction">给 AI 的指导草稿
-              <textarea id="activity-instruction" data-activity="instruction" rows="3" maxlength="2000"></textarea>
-            </label>
-            <div class="activity-footer"><button type="button" class="submit-button" data-activity="save">保存指导草稿</button><span data-activity="save-status" class="activity-muted" role="status"></span></div>
-          </section>
+          <div class="activity-side">
+            <article class="activity-panel" data-activity="detail" aria-label="动作详情" aria-live="polite"></article>
+            <section class="activity-panel" data-activity="guidance" aria-labelledby="activity-guidance-title" hidden>
+              <h3 id="activity-guidance-title">指导下一步</h3>
+              <div class="activity-options" data-activity="options" role="group" aria-label="指导建议"></div>
+              <label class="activity-editor" for="activity-instruction">给 AI 的指导草稿
+                <textarea id="activity-instruction" data-activity="instruction" rows="3" maxlength="2000"></textarea>
+              </label>
+              <div class="activity-footer"><button type="button" class="research-button" data-activity="save">保存指导草稿</button><span data-activity="save-status" class="activity-muted" role="status"></span></div>
+            </section>
+          </div>
         </div>
-      </div>
-    </main>
+      </section>
+    </dialog>
     <main id="board-workspace" class="workspace">
       <nav id="project-surface-nav" aria-label="项目工作区" hidden>
         <div class="project-surface-switch" role="group" aria-label="项目视图">

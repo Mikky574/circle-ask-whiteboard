@@ -106,7 +106,8 @@
   }
   const projectViews = pageParams.has("project") &&
     (!requestedBoard || requestedBoard === "project-workbench" || requestedBoard === registeredBoard);
-  const projectView = ["actions", "graph", "projects"].includes(requestedView) ? requestedView : "canvas";
+  const projectPane = ["actions", "projects", "directory"].find(pane =>
+    pane === pageParams.get("projectPanel") || pane === requestedView);
   const projectCanvas = projectViews && requestedView === "canvas" && requestedBoard === registeredBoard &&
     memory.activeBoard === registeredBoard;
   const projectDirectory = !projectViews && (memory.activeBoard === memory.localProjectsBoard ||
@@ -119,51 +120,35 @@
     return;
   }
   let registeredProject = null;
+  let projectDetails = null;
+  let projectActivity = null;
+  let mountedActivity = null;
   let initialActivity = null;
   let cardRequirements = new Map();
   let projectCardAdditions = [];
   if (projectViews) {
     try {
       if (!registeredBoard) throw new Error("这个项目链接无效。");
-      const details = await localProjectRequest({ action: "get", id: projectId });
-      registeredProject = details.project;
-      if (projectView === "canvas") {
-        const canvasUrl = projectCanvasUrl(registeredProject);
-        if (canvasUrl === registeredProject.boardUrl) {
-          location.replace(canvasUrl);
-          return;
-        }
-        const path = await validateRepositoryPath(registeredProject.path);
-        await memory.openLocalProject(projectId, registeredProject.name, path);
-        if (!projectCanvas || path !== repositoryPath || registeredProject.name.slice(0, 80).trim() !== memory.activeBoardInfo.title) {
-          location.replace(projectUrl(projectId, "canvas"));
-          return;
-        }
-        showProjectContext(details, "canvas");
-        const activity = await window.WorkbenchActivity.load(projectId);
-        cardRequirements = readCardRequirements(activity?.cardRequirements);
-        if (Array.isArray(activity?.cardAdditions)) projectCardAdditions = activity.cardAdditions.slice(0, 12);
-        if (isEmptyProjectCanvas(organizationEngine.load(), memory.load())) {
-          const untouched = Object.values(memory.storageKeys).every((key) => localStorage.getItem(key) === null);
-          if (activity?.initialBoard || untouched) initialActivity = activity;
-        }
-      } else {
-        showProjectContext(details, projectView);
-        if (projectView === "projects") {
-          $("project-children-description").textContent = registeredProject.description;
-          $("project-children-cards").replaceChildren(...details.children.map((project) => createLocalProjectCard(project, 4)));
-          $("project-children").hidden = false;
-          boardControls.setBusy(false);
-          return;
-        }
-        const setView = (next) => {
-          showProjectContext(details, next);
-          history.replaceState(history.state, "", projectUrl(projectId, next));
-        };
-        const activity = await window.WorkbenchActivity.open($("workbench-activity"), registeredProject, projectView, setView);
-        allowWorkspaceNavigation = () => !activity.hasUnsavedGuidance() || window.confirm("指导草稿尚未保存，确定离开？");
-        boardControls.setBusy(false);
+      projectDetails = await localProjectRequest({ action: "get", id: projectId });
+      registeredProject = projectDetails.project;
+      const canvasUrl = projectCanvasUrl(registeredProject);
+      if (!projectPane && canvasUrl === registeredProject.boardUrl) {
+        location.replace(canvasUrl);
         return;
+      }
+      const path = await validateRepositoryPath(registeredProject.path);
+      await memory.openLocalProject(projectId, registeredProject.name, path);
+      if (!projectCanvas || path !== repositoryPath || registeredProject.name.slice(0, 80).trim() !== memory.activeBoardInfo.title) {
+        location.replace(projectUrl(projectId, projectPane));
+        return;
+      }
+      projectActivity = await window.WorkbenchActivity.load(projectId);
+      showProjectContext(projectDetails, projectActivity);
+      cardRequirements = readCardRequirements(projectActivity?.cardRequirements);
+      if (Array.isArray(projectActivity?.cardAdditions)) projectCardAdditions = projectActivity.cardAdditions.slice(0, 12);
+      if (isEmptyProjectCanvas(organizationEngine.load(), memory.load())) {
+        const untouched = Object.values(memory.storageKeys).every((key) => localStorage.getItem(key) === null);
+        if (projectActivity?.initialBoard || untouched) initialActivity = projectActivity;
       }
     } catch (error) {
       $("project-context").hidden = false;
@@ -295,9 +280,10 @@
     $("status").textContent = message;
   }
 
-  function projectUrl(id, view = "canvas") {
-    const board = view === "canvas" ? `board-${id}` : "project-workbench";
-    return `?${new URLSearchParams({ board, project: id, view })}`;
+  function projectUrl(id, pane) {
+    const params = new URLSearchParams({ board: `board-${id}`, project: id, view: "canvas" });
+    if (pane) params.set("projectPanel", pane);
+    return `?${params}`;
   }
 
   function projectCanvasUrl(project) {
@@ -401,7 +387,7 @@
     if (organizationEngine.save(next)) organization = next;
   }
 
-  function showProjectContext({ project, ancestors, children }, view) {
+  function showProjectContext({ project, ancestors, children }, activity) {
     const breadcrumb = $("project-context-ancestors");
     breadcrumb.replaceChildren(breadcrumb.firstElementChild, ...ancestors.map((ancestor) => {
       const item = document.createElement("li");
@@ -413,17 +399,90 @@
     }));
     $("project-context-title").textContent = project.name;
     $("project-context-directory").textContent = project.path;
-    const tabs = $("project-context-views");
-    tabs.hidden = false;
-    for (const tab of tabs.querySelectorAll("[data-project-view]")) {
-      const target = tab.dataset.projectView;
-      tab.hidden = target === "projects" && !children.length;
-      tab.href = target === "canvas" ? projectCanvasUrl(project) : projectUrl(project.id, target);
-      if (target === view) tab.setAttribute("aria-current", "page");
-      else tab.removeAttribute("aria-current");
-    }
+    const tools = $("project-context-views");
+    tools.hidden = false;
+    tools.querySelector('[data-project-view="projects"]').hidden = !children.length;
+    tools.querySelector('[data-project-view="actions"]').hidden = !activity?.events.length && !activity?.guidance;
     document.title = `${project.name} · 圈问白板`;
     $("project-context").hidden = false;
+  }
+
+  function initProjectPanels({ project, children }, activity) {
+    const drawer = $("project-info-drawer");
+    const menu = $("project-context-views");
+    const panels = {
+      projects: [$("project-children"), "子项目"],
+      actions: [$("workbench-activity"), "AI 动作"],
+      directory: [$("project-directory-info"), "项目目录"],
+    };
+    let openCardAfterClose = null;
+    const allowClose = () => !mountedActivity?.hasUnsavedGuidance() || window.confirm("指导草稿尚未保存，确定关闭？");
+    const setPane = pane => {
+      const url = new URL(location.href);
+      if (pane) url.searchParams.set("projectPanel", pane);
+      else url.searchParams.delete("projectPanel");
+      history.replaceState(history.state, "", url);
+    };
+    const list = $("project-children-cards");
+    for (const child of children) {
+      const entry = appendText(list, "article", "project-child-link", "");
+      const link = appendText(entry, "a", "", child.name);
+      link.href = projectCanvasUrl(child);
+      if (child.description) appendText(entry, "p", "", child.description);
+    }
+    if (!children.length) appendText(list, "p", "", "这个项目暂无子项目。");
+    const open = pane => {
+      const [panel, label] = panels[pane];
+      if (pane === "actions" && !mountedActivity) {
+        mountedActivity = window.WorkbenchActivity.mount(panel, activity, {
+          getCards: research.items,
+          onOpenCard: id => {
+            if (!allowClose()) return;
+            openCardAfterClose = id;
+            drawer.close();
+          },
+        });
+      }
+      for (const [element] of Object.values(panels)) element.hidden = element !== panel;
+      $("project-info-title").textContent = label;
+      menu.open = false;
+      drawer.showModal();
+      setPane(pane);
+    };
+    menu.addEventListener("click", event => {
+      const control = event.target.closest("button[data-project-view]");
+      if (control) open(control.dataset.projectView);
+    });
+    document.addEventListener("pointerdown", event => {
+      if (menu.open && !menu.contains(event.target)) menu.open = false;
+    });
+    menu.addEventListener("keydown", event => {
+      if (event.key === "Escape" && menu.open) {
+        menu.open = false;
+        menu.querySelector("summary").focus();
+      }
+    });
+    drawer.addEventListener("cancel", event => { if (!allowClose()) event.preventDefault(); });
+    drawer.addEventListener("close", () => {
+      if (drawer.open) return;
+      setPane(null);
+      const card = openCardAfterClose;
+      openCardAfterClose = null;
+      if (!card || !workspace.enterStructure(card)) menu.querySelector("summary").focus();
+    });
+    $("project-info-close").addEventListener("click", () => { if (allowClose()) drawer.close(); });
+    $("project-info-open-folder").addEventListener("click", async event => {
+      const control = event.currentTarget;
+      const feedback = $("project-info-folder-status");
+      control.disabled = true;
+      feedback.textContent = "";
+      try {
+        await localProjectRequest({ action: "open", id: project.id });
+        feedback.textContent = "已在资源管理器打开。";
+      } catch (error) { feedback.textContent = error.message; }
+      finally { control.disabled = false; }
+    });
+    if (projectPane) open(projectPane);
   }
 
   function initBoardControls() {
@@ -723,7 +782,7 @@
     $("home-create-board").addEventListener("click", (event) => openCreate(event.currentTarget));
     document.addEventListener("click", (event) => {
       if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
-      const link = event.target.closest("#local-project-link, #close-project, #project-context a, #project-children a, a.activity-canvas-link");
+      const link = event.target.closest("#local-project-link, #close-project, #project-context a, #project-children a");
       if (link?.href) {
         event.preventDefault();
         if (link.href !== location.href) void navigateWorkspace(link.href);
@@ -7568,7 +7627,8 @@
     opinionDrawer.close();
     renderInspector();
     $("project-surface-status").textContent = `已应用 ${picked.size} 张卡片的修改。`;
-    $("project-surface-opinion").focus({ preventScroll: true });
+    const updated = $("research-workspace").querySelector('.research-snode[aria-pressed="true"]');
+    (updated || $("project-surface-opinion")).focus({ preventScroll: true });
   });
 
   projectCardDrawer.addEventListener("cancel", event => {
@@ -7672,7 +7732,7 @@
     }
     const unsent = question.value.trim() || draftAttachments.length;
     const editing = workbenchDraft && cardEditorFields().some((value, index) => value !== workbenchDraft.originalFields[index]);
-    if (unsent || editing || autosaveFailures.size || storageStale) {
+    if (unsent || editing || mountedActivity?.hasUnsavedGuidance() || autosaveFailures.size || storageStale) {
       return window.confirm("当前有可能尚未保存的内容。确定离开？");
     }
     return true;
@@ -8767,6 +8827,8 @@
   const canStructure = () => Boolean(organization.current?.items.length);
   research.init({
     title: memory.activeBoardInfo.title,
+    compactWorkspace: () => projectCanvas,
+    projectTools: projectCanvas ? $("project-context-views") : null,
     getItems: () => hierarchyItems(boardForOrganization()).filter((item) => !deletedIds.has(item.id)),
     getAttachments: (id) => replies.get(id)?.saved?.payload?.attachments || [],
     getStructure: () => organization.current?.projectStructure || null,
@@ -8815,6 +8877,7 @@
     defaultPresentation: organization.current?.projectStructure || organization.current?.moduleDiagrams?.length
       ? "research" : mindmap?.active ? "mindmap" : "cards",
     canStructure,
+    compactWorkspace: () => projectCanvas,
     canNavigate: () => !gesture && !connectionDrag && !deletionPreparing && !projectCardDrawer.open && !opinionDrawer.open &&
       !diagramDrawer.open && finishEditingFirst(),
     canEditCard: id => Boolean(editableCard(id)),
@@ -8838,6 +8901,7 @@
       renderInspector();
     },
   });
+  if (projectCanvas && projectDetails) initProjectPanels(projectDetails, projectActivity);
   if (rebuiltProject) $("organization-status").textContent = rebuiltProject;
   if (projectBoardMessage) $("organization-status").textContent = projectBoardMessage;
   if (recoveredReset) status(`已恢复重置前的 ${saved.notes.length} 条批注和白板排布。`);
