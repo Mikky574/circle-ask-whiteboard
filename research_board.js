@@ -1,7 +1,7 @@
 /* Focused, read-only projections of the same board and card identities. */
 (() => {
   "use strict";
-  const views = ["structure", "board", "flow", "graph", "comparison", "evidence"];
+  const views = window.WorkspaceNavigation.PANELS;
   const format = value => value == null ? "—" : value.toLocaleString("zh-CN", { maximumFractionDigits: 3, minimumFractionDigits: 3 });
   const title = node => node.id === "board" ? node.title : node.title.replace(/^【[^】]+】\s*/u, "");
   const status = node => node.id === "board" ? null : node.title.match(/^【([^】]+)】/u)?.[1] || null;
@@ -14,7 +14,6 @@
   let rootId = null;
   let view = "board";
   let handoffCard = null;
-  let canvasScope;
   let lastPath = [];
   let signature = "";
   let initialized = false;
@@ -127,98 +126,7 @@
     if (depth === 2 && !scene.codePreview) return { kind: "scene", home, feature, scene };
     return { kind: "detail", home, feature, scene };
   }
-  function writeRoute(replace = false) {
-    const url = new URL(location.href);
-    url.searchParams.set("presentation", active ? "research" : window.BoardMindmap?.active ? "mindmap" : "cards");
-    if (rootId) url.searchParams.set("root", rootId);
-    else url.searchParams.delete("root");
-    if (active && view !== "board") url.searchParams.set("panel", view);
-    else url.searchParams.delete("panel");
-    if (handoffCard) url.searchParams.set("focusCard", handoffCard);
-    else url.searchParams.delete("focusCard");
-    if (active && canvasScope !== undefined) url.searchParams.set("canvasScope", canvasScope || "board");
-    else url.searchParams.delete("canvasScope");
-    url.hash = "";
-    if (url.href !== location.href) history[replace ? "replaceState" : "pushState"](history.state, "", url);
-  }
-  function setActive(value, replace = false) {
-    active = Boolean(value);
-    container.hidden = !active;
-    document.body.classList.toggle("research-view", active);
-    document.getElementById("board-workspace").dataset.researchActive = String(active);
-    document.getElementById("presentation-research").setAttribute("aria-pressed", String(active));
-    if (active) {
-      options.onChange?.(true, rootId);
-      render();
-    } else {
-      structureObserver?.disconnect();
-      options.onChange?.(false, rootId);
-    }
-    writeRoute(replace);
-    renderSurfaceNavigation();
-  }
-  function showCanvas(id) {
-    rootId = id || null;
-    view = "board";
-    handoffCard = null;
-    setActive(false);
-  }
-  function showCanvasAt(id) {
-    if (options.canNavigate && !options.canNavigate()) return;
-    if (window.BoardMindmap?.active && !window.BoardMindmap.setActive(false)) return;
-    const nodes = items();
-    handoffCard = nodes.some(node => node.id === id && node.id !== "board") ? id : null;
-    const ancestors = handoffCard ? pathFor(handoffCard, nodes) : [];
-    const inScope = candidate => candidate !== "board" && (!handoffCard || ancestors.some(node => node.id === candidate));
-    if (canvasScope !== undefined && (canvasScope === null || inScope(canvasScope))) rootId = canvasScope;
-    else if (!inScope(rootId)) rootId = null;
-    canvasScope = undefined;
-    setActive(false);
-    if (handoffCard) options.onShowCard?.(handoffCard);
-    if (!document.getElementById("project-surface-nav").hidden) {
-      document.getElementById("project-surface-canvas").focus({ preventScroll: true });
-    }
-  }
-  function showStructure() {
-    if (options.canNavigate && !options.canNavigate()) return;
-    const nodes = items();
-    const structure = structureFor(nodes);
-    if (!structure) return;
-    if (active && view === "structure") return;
-    if (!active) canvasScope = rootId;
-    handoffCard = active ? rootId : options.getCanvasCard?.() || handoffCard;
-    rootId = structure.rootId;
-    view = "structure";
-    setActive(true);
-    document.getElementById("project-surface-structure").focus({ preventScroll: true });
-  }
-  function renderSurfaceNavigation(nodes) {
-    const bar = document.getElementById("project-surface-nav");
-    if (!bar) return;
-    const structure = options.getStructure?.() && structureFor(nodes || (nodes = items()));
-    bar.hidden = !structure;
-    if (!structure) return;
-    document.getElementById("project-surface-structure").setAttribute("aria-pressed", String(active && view === "structure"));
-    document.getElementById("project-surface-canvas").setAttribute("aria-pressed", String(!active && !window.BoardMindmap?.active));
-    const cardId = active ? (view === "structure" ? handoffCard : rootId) : options.getCanvasCard?.();
-    const card = nodes.find(item => item.id === cardId && item.id !== "board");
-    const label = document.getElementById("project-surface-card");
-    label.hidden = !card;
-    if (card && label.textContent !== title(card)) label.textContent = title(card);
-    const edit = document.getElementById("project-surface-edit");
-    edit.hidden = !active || !card || !options.canEditCard?.(card.id);
-  }
-  function enter(id, replace = false) {
-    if (!items().some(node => node.id === id)) return false;
-    if (options.canNavigate && !options.canNavigate()) return false;
-    rootId = id;
-    view = "board";
-    handoffCard = null;
-    setActive(true, replace);
-    container.querySelector("h2")?.focus({ preventScroll: true });
-    container.scrollIntoView({ block: "start", behavior: "instant" });
-    return true;
-  }
+  const enter = id => options.onEnter?.(id);
   function showImage(file) {
     const dialog = document.getElementById("research-image-dialog");
     const image = dialog.querySelector("img");
@@ -862,7 +770,7 @@
     if (options.canEditCard?.(card.id)) {
       button(row, "编辑卡片", () => options.onEditCard?.(card.id), "research-button research-edit-card");
     }
-    button(row, "在画布定位", () => showCanvasAt(card.id));
+    button(row, "在画布定位", () => options.onLocate?.(card.id));
     if (card.id !== rootId) button(row, "进入这张卡 ↗", () => enter(card.id), "research-button research-structure-enter");
   }
   function renderStructureDetail(panel, model, nodes) {
@@ -1021,10 +929,7 @@
       for (const [id, control] of buttons) control.setAttribute("aria-pressed", String(value.kind === "node" && value.id === id));
       renderStructureDetail(detail, model, nodes);
       highlight(null);
-      if (emphasize) {
-        writeRoute(true);
-        renderSurfaceNavigation(nodes);
-      }
+      if (emphasize) options.onFocus?.(handoffCard);
     };
     const linkedSelection = structureSelection?.kind === "link" && model.links.find(link =>
       link.from === structureSelection.from && link.to === structureSelection.to && (link.evidence || null) === handoffCard);
@@ -1060,7 +965,7 @@
   }
   narrowQuery?.addEventListener?.("change", () => { if (active && view === "structure") render(); });
 
-  function render() {
+  function render(preferStructure = false) {
     if (!container || !active) return;
     structureObserver?.disconnect();
     const nodes = items();
@@ -1071,7 +976,6 @@
       node = [...lastPath].reverse().map(id => nodes.find(item => item.id === id)).find(Boolean) ||
         nodes.find(item => !nodes.some(parent => parent.id === item.parentId)) || nodes[0];
       rootId = node?.id || null;
-      writeRoute(true);
     }
     container.replaceChildren();
     const path = node ? pathFor(node.id, nodes) : [];
@@ -1106,7 +1010,7 @@
         () => options.onAsk(node.id), "research-button research-ask");
     }
     if (path.length > 1) button(controls, "返回上一级", () => enter(path.at(-2).id));
-    if (!options.getStructure?.()) button(controls, "编辑画布", () => showCanvasAt(node?.id));
+    if (!options.getStructure?.()) button(controls, "编辑画布", () => options.onLocate?.(node?.id));
     if (!node) {
       add(container, "p", "research-description", "画布还没有卡片，先在编辑画布中写下第一张卡片。");
       return;
@@ -1120,7 +1024,7 @@
     const hasStructure = Boolean(structure && node.id === structure.rootId);
     if (hasStructure && !autoOpened.has(node.id)) {
       autoOpened.add(node.id);
-      if (view === "board" && !new URLSearchParams(location.search).has("panel")) { view = "structure"; writeRoute(true); }
+      if (view === "board" && preferStructure) view = "structure";
     }
     const labels = { structure: "项目结构", board: mode ? boardLabels[mode.kind] : feature ? "功能概览" : comparisons.length ? "实验板" : "主题概览",
       flow: "流程与分组", graph: "关系导图", comparison: "对比结果", evidence: "证据图片" };
@@ -1133,7 +1037,7 @@
     tabs?.setAttribute("role", "tablist");
     for (const id of tabs ? available : []) {
       const tab = button(tabs, labels[id], () => {
-        view = id; render(); writeRoute();
+        options.onPanel?.(id);
         container.querySelector('[aria-selected="true"]')?.focus({ preventScroll: true });
       }, "research-tab");
       tab.id = `research-tab-${id}`;
@@ -1190,44 +1094,11 @@
       `${members.length - 1} 张下级卡 · 与项目画布共享同一份内容`);
     signature = JSON.stringify([nodes, options.getStructure?.() || null]);
   }
-  function readRoute() {
-    if (options.canNavigate && !options.canNavigate()) { writeRoute(true); return; }
-    const params = new URLSearchParams(location.search);
-    rootId = params.get("root");
-    handoffCard = params.get("focusCard");
-    canvasScope = params.has("canvasScope") ? (params.get("canvasScope") === "board" ? null : params.get("canvasScope")) : undefined;
-    view = views.includes(params.get("panel")) ? params.get("panel") : "board";
-    active = params.get("presentation") === "research";
-    container.hidden = !active;
-    document.body.classList.toggle("research-view", active);
-    document.getElementById("board-workspace").dataset.researchActive = String(active);
-    document.getElementById("presentation-research").setAttribute("aria-pressed", String(active));
-    if (!active) window.BoardMindmap?.setActive(params.get("presentation") === "mindmap");
-    options.onChange?.(active, rootId);
-    if (active) render();
-    else if (handoffCard) options.onShowCard?.(handoffCard);
-    renderSurfaceNavigation();
-  }
   function init(settings) {
     options = settings;
     container = document.getElementById("research-workspace");
     if (!container) return;
     if (!initialized) {
-      document.getElementById("presentation-research").addEventListener("click", () => {
-        if (!options.canNavigate || options.canNavigate()) setActive(true);
-      });
-      document.getElementById("project-surface-structure").addEventListener("click", showStructure);
-      document.getElementById("project-surface-edit").addEventListener("click", () => {
-        const id = view === "structure" ? handoffCard : rootId;
-        if (active && id) options.onEditCard?.(id);
-      });
-      document.getElementById("project-surface-canvas").addEventListener("click", () => {
-        if (active || window.BoardMindmap?.active) showCanvasAt(active ? (view === "structure" ? handoffCard : rootId) : options.getCanvasCard?.());
-      });
-      window.addEventListener("popstate", readRoute);
-      for (const id of ["presentation-cards", "presentation-mindmap"]) {
-        document.getElementById(id).addEventListener("click", () => setActive(false));
-      }
       const dialog = add(document.body, "dialog", "research-image-dialog");
       dialog.id = "research-image-dialog";
       const heading = add(dialog, "header");
@@ -1237,21 +1108,30 @@
       dialog.addEventListener("click", event => { if (event.target === dialog) dialog.close(); });
       initialized = true;
     }
-    const params = new URLSearchParams(location.search);
-    rootId = params.get("root") || location.hash.match(/^#([EA]\d+)$/)?.[1] || null;
-    handoffCard = params.get("focusCard");
-    canvasScope = params.has("canvasScope") ? (params.get("canvasScope") === "board" ? null : params.get("canvasScope")) : undefined;
-    view = views.includes(params.get("panel")) ? params.get("panel") : "board";
-    if (params.get("presentation") === "research" || (options.defaultActive && !params.has("presentation") && items().length)) {
-      setActive(true, true);
-    } else if (handoffCard && params.get("presentation") === "cards") readRoute();
-    else renderSurfaceNavigation();
   }
-  window.BoardResearch = { init, enter, showCanvas, setActive, get active() { return active; },
-    refresh() {
-      if (!container) return;
-      const nodes = active || options.getStructure?.() ? items() : null;
-      if (active && JSON.stringify([nodes, options.getStructure?.() || null]) !== signature) render();
-      renderSurfaceNavigation(nodes);
-    } };
+  const projection = () => ({ readingRoot: rootId, panel: view, card: handoffCard });
+  function show(reader, preferStructure) {
+    active = true;
+    rootId = reader.readingRoot;
+    view = views.includes(reader.panel) ? reader.panel : "board";
+    handoffCard = reader.card;
+    render(preferStructure);
+    return projection();
+  }
+  function hide() {
+    active = false;
+    structureObserver?.disconnect();
+  }
+  function refresh(nodes) {
+    if (active && JSON.stringify([nodes, options.getStructure?.() || null]) !== signature) {
+      render();
+      return projection();
+    }
+  }
+  function focusHeading() {
+    container.querySelector("h2")?.focus({ preventScroll: true });
+    container.scrollIntoView({ block: "start", behavior: "instant" });
+  }
+  window.BoardResearch = { init, show, hide, refresh, items, focusHeading, structureFor,
+    get active() { return active; } };
 })();

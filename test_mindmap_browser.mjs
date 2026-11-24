@@ -946,6 +946,17 @@ async function structureWorkspaceHandoff() {
       await page.locator("#project-surface-canvas").click();
       assert.equal(new URL(page.url()).searchParams.get("root"), "E40", "Returning keeps the originating canvas branch");
       assert.equal(await card("E42").getAttribute("aria-pressed"), "true");
+      await flush();
+      const savedRevision = boardCases.get(caseName).get(boardId).revision;
+      await page.locator("#presentation-mindmap").click();
+      assert.equal(new URL(page.url()).searchParams.get("presentation"), "mindmap");
+      await page.goto(`${origin}/?board=${boardId}&view=canvas&presentation=cards&root=E40#E42`);
+      await page.waitForFunction(() => document.querySelector('#board [data-element-id="E42"]')?.getAttribute("aria-pressed") === "true");
+      assert.equal(await page.locator("#project-surface-canvas").getAttribute("aria-pressed"), "true");
+      const preference = await page.evaluate(id => localStorage.getItem(`whiteboard.presentation.${id}.v1`), boardId);
+      assert.equal(preference, "mindmap", "An explicit cards link must not overwrite the saved default");
+      await flush();
+      assert.equal(boardCases.get(caseName).get(boardId).revision, savedRevision, "Reading and switching modes don't save the document");
     } finally {
       await isolated.close();
     }

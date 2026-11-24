@@ -20,7 +20,9 @@
   <script defer src="project_finder.js"></script>
   <script defer src="workbench_activity.js"></script>
   <script defer src="mindmap.js"></script>
+  <script defer src="workspace_navigation.js"></script>
   <script defer src="research_board.js"></script>
+  <script defer src="workspace_controller.js"></script>
   <script defer src="app.js"></script>
   <script defer src="board_versions.js"></script>
 </head>
@@ -292,7 +294,7 @@
       <nav id="project-context-views" class="activity-nav" aria-label="当前项目视图" hidden>
         <a class="tool-button activity-canvas-link" data-project-view="canvas">项目画布</a>
         <a class="tool-button activity-canvas-link" data-project-view="projects" hidden>子项目</a>
-        <a class="tool-button activity-canvas-link" data-project-view="graph">项目图</a>
+        <a class="tool-button activity-canvas-link" data-project-view="graph">活动关系</a>
         <a class="tool-button activity-canvas-link" data-project-view="actions">AI 动作</a>
       </nav>
       <p id="project-context-error" role="alert" hidden></p>
@@ -313,7 +315,7 @@
           <div class="activity-list-heading"><h3 id="activity-list-title" data-activity="list-title">动作记录</h3><button type="button" class="tool-button" data-activity="clear-filter" hidden>查看全部</button></div>
           <div class="activity-timeline" data-activity="timeline" role="group" aria-label="选择动作"></div>
         </section>
-        <section class="activity-graph" data-activity="graph" aria-label="项目图" hidden>
+        <section class="activity-graph" data-activity="graph" aria-label="活动关系" hidden>
           <strong class="activity-root" data-activity="root"></strong>
           <div class="activity-branches" data-activity="branches" role="group" aria-label="选择项目卡片"></div>
         </section>

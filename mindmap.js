@@ -160,14 +160,16 @@
     if (inspector) inspector.hidden = !mode;
   }
 
-  function setActive(value) {
+  function setActive(value, { remember = true } = {}) {
     const next = Boolean(value);
     if (mode === next || isBusy()) return false;
     clearQuoteSelection(true);
     readingPointer = false;
     mode = next;
-    try { localStorage.setItem(storageKey(), mode ? "mindmap" : "cards"); }
-    catch { /* The current view still works when browser storage is unavailable. */ }
+    if (remember) {
+      try { localStorage.setItem(storageKey(), mode ? "mindmap" : "cards"); }
+      catch { /* The current view still works when browser storage is unavailable. */ }
+    }
     syncMode();
     callbacks.onChange?.(mode);
     inspect(selectedIds, lastItems, lastElements);
@@ -180,8 +182,6 @@
     callbacks = options;
     mode = savedMode();
     if (!initialized) {
-      byId("presentation-cards")?.addEventListener("click", () => setActive(false));
-      byId("presentation-mindmap")?.addEventListener("click", () => setActive(true));
       byId("mindmap-overview")?.addEventListener("click", () => callbacks.onOverview?.());
       byId("mindmap-expand-all")?.addEventListener("click", () => callbacks.onExpandAll?.());
       document.addEventListener("selectionchange", captureReaderSelection);

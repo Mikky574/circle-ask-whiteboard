@@ -85,6 +85,7 @@
   const organizationEngine = window.BoardOrganization;
   const mindmap = window.BoardMindmap;
   const research = window.BoardResearch;
+  const workspace = window.BoardWorkspace;
   let mindmapPositions = mindmap?.positions || {};
   let mindmapUndo = null;
   const mindmapBranchSides = new Map();
@@ -2227,7 +2228,7 @@
       : repositoryPath ? "读取绑定目录，生成可逐级展开的工程手册。" : "未绑定目录，将读取白板项目的源码。";
     const selectedIds = selected.map(({ id }) => id);
     mindmap?.inspect(selectedIds, hierarchyItems(nodes), new Map(boardElements().map((element) => [element.dataset.elementId, element])));
-    research?.refresh();
+    workspace.refresh();
     const drafts = draftMembership(nodes);
     const draftRoot = selectedDraftRoot(selectedIds, drafts);
     renderDraftBadges(drafts);
@@ -3698,7 +3699,7 @@
       }
       const enterBoard = appendText(actions, "button", "tool-button research-enter-node", isCanvasWorkbench() ? "进入分支 ↗" : "进入子白板 ↗");
       enterBoard.type = "button";
-      enterBoard.addEventListener("click", () => isCanvasWorkbench() ? openCanvasBranch(item.id) : research?.enter(item.id));
+      enterBoard.addEventListener("click", () => isCanvasWorkbench() ? openCanvasBranch(item.id) : workspace.enter(item.id));
       if (body.children.length) {
         const fold = appendText(heading, "button", "module-fold", "");
         fold.type = "button";
@@ -4857,13 +4858,7 @@
       renderCardSearch();
       return false;
     }
-    if (!mindmap?.active && canvasBranchRoot) {
-      const path = cardSearchPath(id, nodes);
-      if (!path.some(item => item.id === canvasBranchRoot)) {
-        openCanvasBranch(null);
-        if (canvasBranchRoot) return false;
-      }
-    }
+    if (!mindmap?.active && canvasBranchRoot && !workspace.includeCanvasCard(id)) return false;
     const previous = [...searchOpenBranches];
     const collapsed = new Set(savedCollapsedBranches());
     searchOpenBranches.clear();
@@ -4889,19 +4884,6 @@
     chooseElement(element);
     if (!ranked) askOpen.focus({ preventScroll: true });
     return true;
-  }
-
-  function locateLinkedCard() {
-    const match = location.hash.match(/^#([EA]\d+)$/);
-    if (!match) return;
-    const id = match[1];
-    if (activeRun || deletionPreparing || gesture || connectionDrag || question.value.trim() ||
-        draftAttachments.length || workbenchDraft || document.querySelector("dialog[open]")) {
-      status(`暂未跳转到 ${id}，请先完成当前操作或保留提问、附件及卡片编辑草稿，再打开链接。`);
-      return;
-    }
-    if (locateCard(id, true)) status(`已定位 ${id}。查看后可点「回到总览」。`);
-    else status(`当前白板中没有可定位的 ${id} 卡片，请核对白板链接和卡号。`);
   }
 
   function availableModuleIds(nodes, limit = Math.min(8, 64 - nodes.length)) {
@@ -7372,9 +7354,7 @@
   }
 
   function openCanvasBranch(id) {
-    if (gesture || connectionDrag || deletionPreparing || !finishEditingFirst()) return;
-    if (mindmap?.active) mindmap.setActive(false);
-    research?.showCanvas(id);
+    workspace.openCanvas(id);
   }
 
   function cardEditorFields() {
@@ -8400,7 +8380,7 @@
     },
     onShowCard: () => {
       const id = selectedModuleId();
-      mindmap.setActive(false);
+      if (!workspace.locate(id)) return;
       const element = boardElements().find((entry) => entry.dataset.elementId === id);
       if (!element) return;
       const fold = element.querySelector(".module-fold[aria-expanded='false']");
@@ -8455,11 +8435,8 @@
     }
   }
   appendPublishedGuide();
-  locateLinkedCard();
-  window.addEventListener("hashchange", locateLinkedCard);
-  research?.init({
+  research.init({
     title: memory.activeBoardInfo.title,
-    defaultActive: false,
     getItems: () => hierarchyItems(boardForOrganization()).filter((item) => !deletedIds.has(item.id)),
     getAttachments: (id) => replies.get(id)?.saved?.payload?.attachments || [],
     getStructure: () => organization.current?.projectStructure || null,
@@ -8467,17 +8444,12 @@
       const item = (organization.current?.items || organization.rawCards || []).find((entry) => entry.id === id);
       return item?.localContent ? item.summary : replies.get(id)?.saved?.answer || item?.summary || "";
     },
-    canNavigate: () => !gesture && !connectionDrag && !deletionPreparing && !projectCardDrawer.open && finishEditingFirst(),
+    onEnter: workspace.enter,
+    onLocate: workspace.locate,
+    onPanel: workspace.panel,
+    onFocus: workspace.focus,
     canEditCard: id => Boolean(editableCard(id)),
     onEditCard: editResearchCard,
-    getCanvasCard: selectedModuleId,
-    onShowCard: id => {
-      const draft = question.value;
-      if (locateCard(id, true)) {
-        question.value = draft;
-        renderInspector();
-      }
-    },
     canEditFlow: (id) => Boolean((organization.current?.items || organization.rawCards || []).some(item => item.id === id)),
     onSaveFlow: (id, steps, previous) => {
       if (activeRun || questionRuns.size || deletionPreparing || !memory.storageIsCurrent()) {
@@ -8497,8 +8469,19 @@
       else delete item.flowSteps;
       return "流程未能保存。";
     },
-    onChange: (active, id) => {
-      if (active) return;
+    onAsk: (id) => {
+      if (workspace.locate(id)) askOpen.click();
+    },
+  });
+  workspace.init({
+    defaultPresentation: mindmap?.active ? "mindmap" : "cards",
+    hasStructure: () => Boolean(organization.current?.projectStructure),
+    canNavigate: () => !gesture && !connectionDrag && !deletionPreparing && !projectCardDrawer.open && finishEditingFirst(),
+    canEditCard: id => Boolean(editableCard(id)),
+    editCard: editResearchCard,
+    getCanvasCard: selectedModuleId,
+    showCanvas: (presentation, id, settings) => {
+      mindmap?.setActive(presentation === "mindmap", settings);
       if (refreshCanvasAfterEdit) {
         refreshCanvasAfterEdit = false;
         const draft = question.value;
@@ -8507,17 +8490,13 @@
       }
       applyCanvasBranch(id);
     },
-    onAsk: (id) => {
+    focusCanvas: id => {
       const draft = question.value;
-      research.setActive(false);
       if (!locateCard(id, true)) return;
       question.value = draft;
-      askOpen.click();
+      renderInspector();
     },
   });
-  const nativePresentation = pageParams.get("presentation");
-  if (["cards", "mindmap"].includes(nativePresentation)) mindmap?.setActive(nativePresentation === "mindmap");
-  if (nativePresentation === "cards") applyCanvasBranch(pageParams.get("root"));
   if (rebuiltProject) $("organization-status").textContent = rebuiltProject;
   if (projectBoardMessage) $("organization-status").textContent = projectBoardMessage;
   if (recoveredReset) status(`已恢复重置前的 ${saved.notes.length} 条批注和白板排布。`);
