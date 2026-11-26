@@ -20,7 +20,7 @@
 })(typeof window === "object" ? window : null, () => {
   "use strict";
   const PRESENTATIONS = Object.freeze(["cards", "mindmap", "research"]);
-  const PANELS = Object.freeze(["structure", "board", "flow", "graph", "comparison", "evidence"]);
+  const PANELS = Object.freeze(["structure", "board", "flow", "graph", "comparison", "evidence", "atlas"]);
   const ROUTE_KEYS = ["presentation", "root", "panel", "focusCard", "canvasScope"];
   const VIRTUAL = "board";
   const ID = /^[A-Za-z0-9][\w.:-]{0,127}$/u;

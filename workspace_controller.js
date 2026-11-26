@@ -28,7 +28,7 @@
   function renderNavigation(nodes) {
     const bar = $("project-surface-nav");
     const root = structureRoot(nodes);
-    bar.hidden = !root;
+    bar.hidden = !root || state.panel === "atlas";
     if (bar.hidden) return;
     const structureButton = $("project-surface-structure");
     const showingStructure = state.presentation === "research" && state.panel === "structure";
@@ -52,6 +52,7 @@
     $("research-workspace").hidden = !reading;
     document.body.classList.toggle("research-view", reading);
     $("board-workspace").dataset.researchActive = String(reading);
+    $("board-workspace").dataset.atlasActive = String(reading && state.panel === "atlas");
     if (!adapters.readingOnly) for (const mode of ["cards", "mindmap", "research"]) {
       $("presentation-" + mode).setAttribute("aria-pressed", String(state.presentation === mode));
     }
@@ -61,7 +62,8 @@
     if (!adapters.readingOnly) return next;
     const nodes = reader.items();
     const root = next.readingRoot || next.canvasBranch || structureRoot(nodes);
-    const panel = next.presentation === "research" && next.readingRoot && next.panel !== "graph" ? next.panel : "structure";
+    const panel = next.panel === "atlas" || (next.presentation === "research" && next.readingRoot && next.panel !== "graph")
+      ? next.panel : "structure";
     const target = root && navigation.transition(next, {
       type: "enterReading", root, panel, card: next.card,
     }, { nodes });
@@ -106,6 +108,7 @@
   }
   function locate(id) {
     if (adapters.readingOnly) {
+      if (state.panel === "atlas") return reader.locateAtlas(id);
       const nodes = reader.items();
       const card = nodes.find(item => item.id === id);
       if (!card) return false;
@@ -186,7 +189,10 @@
       if (card) next = navigation.transition(next, { type: "focusCard", card }, { nodes });
     }
     const params = new URLSearchParams(location.search);
-    if (adapters.readingOnly && !params.has("panel")) next = { ...next, panel: "structure" };
+    if (adapters.readingOnly && !params.has("panel")) {
+      const legacy = ["cards", "mindmap"].includes(params.get("presentation"));
+      next = { ...next, panel: adapters.atlasHome && !legacy ? "atlas" : "structure" };
+    }
     const requested = (params.get("trail") || "").split(".");
     const known = new Set(nodes.map(node => node.id));
     const path = requested.includes(next.readingRoot) && new Set(requested).size === requested.length &&

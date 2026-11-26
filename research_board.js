@@ -920,6 +920,51 @@
     renderRecord(parent, card, lead);
     renderEvidence(parent, card, children(card.id, nodes).filter(item => item.codePreview));
   }
+
+  function atlasData(nodes = items()) {
+    return window.BoardAtlas.build(nodes, [options.getStructure?.(), ...(options.getModuleDiagrams?.() || [])],
+      options.getAtlasReferences?.() || [], options.getKnowledgeLinks?.() || []);
+  }
+
+  function atlasDocuments(graph, nodes) {
+    const byId = new Map(nodes.map(card => [card.id, card]));
+    const strings = value => typeof value === "string" || typeof value === "number" ? [String(value)] :
+      value && typeof value === "object" ? Object.values(value).flatMap(strings) : [];
+    return [...graph.cards.values()].map(card => {
+      const path = [];
+      const seen = new Set([card.id]);
+      for (let parent = byId.get(card.parentId); parent && !seen.has(parent.id); parent = byId.get(parent.parentId)) {
+        path.unshift(title(parent)); seen.add(parent.id);
+      }
+      const sources = [...(card.sources || []), ...(card.repositoryFiles || []), ...attachments(card).map(file => file.name)];
+      const parts = [...new Set([card.summary, fullText(card), ...strings(card.taskDetails),
+        ...strings(capability(card)), ...strings(experiment(card)), card.codePreview?.text, ...sources].filter(Boolean))];
+      return { id: card.id, title: title(card), parts, path: path.slice(-3).join(" › "), sources, text: parts.join("\n") };
+    });
+  }
+
+  function renderAtlas(mounted, nodes) {
+    if (!mounted.atlas) {
+      mounted.atlas = window.BoardAtlas.mount(container, {
+        title: options.title,
+        rank: options.rankCards,
+        onStructure: () => options.onPanel?.("structure", mounted.root),
+        onSelect: id => {
+          mounted.card = handoffCard = id;
+          options.onFocus?.(id, mounted.root);
+        },
+        onRecommend: id => options.onOpinion?.(id, "atlas", mounted.root),
+        onAsk: options.onAsk,
+        onEdit: options.onEditCard,
+        canEdit: options.canEditCard,
+        renderCard: (parent, card) => cardReading(parent, card, items()),
+      });
+    }
+    const graph = atlasData(nodes);
+    mounted.card = handoffCard = mounted.atlas.update(graph, atlasDocuments(graph, nodes), mounted.card, rootId);
+    placeProjectTools(mounted.atlas.tools);
+    signature = contentSignature(nodes);
+  }
   function structureCardActions(parent, card, scope) {
     if (!card || card.id === "board") return;
     const row = add(parent, "div", "research-structure-actions");
@@ -1883,6 +1928,19 @@
     mounted.observer?.disconnect();
     mounted.effects?.abort();
     const nodes = items();
+    if (view === "atlas" && options.readingOnly && nodes.length) {
+      if (!mounted.atlas) {
+        if (detailDock) mounted.pane?.remove();
+        mounted.pane = mounted.graphFrame = mounted.fitPane = null;
+        container.classList.remove("research-compact");
+        mounted.el.classList.remove("research-module-window");
+        container.replaceChildren();
+      }
+      renderAtlas(mounted, nodes);
+      return;
+    }
+    mounted.atlas?.destroy();
+    mounted.atlas = null;
     let node = nodes.find(item => item.id === rootId);
     let removed = false;
     if (!node) {
@@ -1969,9 +2027,10 @@
       autoOpened.add(node.id);
       if (view === "board" && preferStructure) view = "structure";
     }
-    const labels = { structure: "模块关系图", board: mode ? boardLabels[mode.kind] : feature ? "功能概览" : comparisons.length ? "实验板" : "主题概览",
+    const labels = { atlas: "知识图谱", structure: "模块关系图", board: mode ? boardLabels[mode.kind] : feature ? "功能概览" : comparisons.length ? "实验板" : "主题概览",
       flow: "流程与分组", graph: "关系导图", comparison: "对比结果", evidence: "证据图片" };
     const available = views.filter(id => id === "board" || (id === "structure" && structure) ||
+      (id === "atlas" && options.readingOnly && mounted.first) ||
       (id === "graph" && !options.readingOnly && (!mode || direct.length)) ||
       (id === "flow" && (direct.length || node.flowSteps?.length)) ||
       (id === "comparison" && comparisons.length) || (id === "evidence" && hasPictures));
@@ -2066,7 +2125,7 @@
     }
   }
   const projection = () => ({ readingRoot: rootId, panel: view, card: handoffCard });
-  const contentSignature = nodes => JSON.stringify([nodes, options.getStructure?.(), options.getModuleDiagrams?.()]);
+  const contentSignature = nodes => JSON.stringify([nodes, options.getStructure?.(), options.getModuleDiagrams?.(), options.getKnowledgeLinks?.()]);
   function activate(id) {
     const entry = entries.get(id);
     if (!entry?.el.isConnected) return;
@@ -2131,7 +2190,12 @@
     const roots = path.includes(selected) ? path.filter(id => byId.has(id)) : [selected];
     const ordered = roots.map(moduleEntry);
     for (const el of [...workspace.children]) {
-      if (!ordered.some(entry => entry.el === el)) el.remove();
+      if (!ordered.some(entry => entry.el === el)) {
+        const entry = entries.get(el.dataset.moduleRoot);
+        entry?.atlas?.destroy();
+        if (entry?.atlas) { entry.atlas = null; entry.signature = null; }
+        el.remove();
+      }
     }
     ordered.forEach((entry, index) => {
       if (workspace.children[index] !== entry.el) workspace.insertBefore(entry.el, workspace.children[index] || null);
@@ -2170,6 +2234,7 @@
     closeMenu(false);
     placeProjectTools();
     for (const entry of entries.values()) {
+      entry.atlas?.destroy();
       if (entry.camera && entry.el.isConnected) diagramViews.set(entry.root, entry.camera.read());
       entry.observer?.disconnect();
       entry.effects?.abort();
@@ -2201,7 +2266,10 @@
     if (card.top < view.top || card.bottom > view.bottom) frame.scrollTop += (card.top + card.bottom - view.top - view.bottom) / 2;
     if (focus) button.focus({ preventScroll: true });
   }
-  window.BoardResearch = { init, show, hide, refresh, items, focusHeading, revealDiagramCard, structureRoot, activate,
+  window.BoardResearch = { init, show, hide, refresh, items, focusHeading, revealDiagramCard, structureRoot, activate, atlasData,
+    locateAtlas: id => currentEntry?.atlas?.locate(id) || false,
+    previewAtlas: (cards, links) => currentEntry?.atlas?.preview(cards, links),
+    notifyAtlas: message => currentEntry?.atlas?.notify(message),
     cardAt: id => entries.get(id)?.card, showCard: id => currentEntry?.showCard?.(id), openPath,
     get active() { return active; } };
 })();

@@ -175,5 +175,28 @@
     }
     return diagrams;
   }
-  return { VERSION, roles, sizes, kinds, limits, validate, clean, resolve, cardIds, moduleDiagrams };
+  function knowledgeLinks(value, live, strict = false) {
+    if (!Array.isArray(value) || value.length > 4000) {
+      if (strict) fail("知识连线列表无效。");
+      return [];
+    }
+    const seen = new Set();
+    const links = [];
+    for (const edge of value) {
+      const { from, to, label, basis } = edge || {};
+      const validId = id => typeof id === "string" && /^[EA]\d+$/u.test(id);
+      const validText = (text, limit) => typeof text === "string" && text.trim() && Array.from(text.trim()).length <= limit;
+      if (!validId(from) || !validId(to) || from === to || !validText(label, 28) || !validText(basis, 220)) {
+        if (strict) fail("知识连线的卡号、类型或依据无效。");
+        continue;
+      }
+      if (live && (!live.has(from) || !live.has(to))) continue;
+      const key = JSON.stringify([from, to, label.trim()]);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      links.push({ from, to, label: label.trim(), basis: basis.trim() });
+    }
+    return links;
+  }
+  return { VERSION, roles, sizes, kinds, limits, validate, clean, resolve, cardIds, moduleDiagrams, knowledgeLinks };
 });

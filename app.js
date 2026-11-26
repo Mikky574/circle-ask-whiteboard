@@ -298,7 +298,7 @@
     if (!readingOnly) return project.boardUrl;
     const url = new URL(project.boardUrl);
     url.searchParams.set("presentation", "research");
-    url.searchParams.set("panel", "structure");
+    url.searchParams.set("panel", "atlas");
     return url.href;
   }
 
@@ -5903,6 +5903,7 @@
       // An AI reorganization rebuilds the plan from cards; the author's structure record is not its to rewrite.
       if (previous.current?.projectStructure) candidate.projectStructure = previous.current.projectStructure;
       if (previous.current?.moduleDiagrams) candidate.moduleDiagrams = previous.current.moduleDiagrams;
+      if (previous.current?.knowledgeLinks) candidate.knowledgeLinks = previous.current.knowledgeLinks;
       if (drafts.size) {
         const draftItems = hierarchyItems(allNodes).filter((item) => drafts.has(item.id));
         candidate.items.push(...draftItems);
@@ -7484,19 +7485,20 @@
   let cardOpinion = null;
 
   function clearOpinionPreview() {
+    if (cardOpinion?.atlas) research.previewAtlas();
     if (cardOpinion) cardOpinion.proposal = null;
     opinionPreview.replaceChildren();
     opinionPreview.hidden = opinionApply.hidden = true;
   }
 
   function updateOpinionMode() {
-    const automatic = cardOpinion.automatic;
+    const { automatic, atlas } = cardOpinion;
     const extending = opinionScope.value === "children";
-    $("structure-opinion-heading").textContent = automatic ? "AI 推荐下级" : "提意见让 AI 改";
+    $("structure-opinion-heading").textContent = atlas ? "AI 沿图补资料" : automatic ? "AI 推荐下级" : "提意见让 AI 改";
     $("structure-opinion-label").textContent = automatic ? "补充方向（可选）" : "你希望改成什么样？";
     opinionFieldset.hidden = automatic;
     opinionText.required = !automatic;
-    opinionGenerate.textContent = automatic ? "生成下级建议" : extending ? "生成下级卡预览" : "生成修改预览";
+    opinionGenerate.textContent = atlas ? "生成卡片与连线建议" : automatic ? "生成下级建议" : extending ? "生成下级卡预览" : "生成修改预览";
     opinionApply.textContent = automatic ? "应用勾选的建议" : extending ? "加入勾选的下级卡" : "应用勾选的修改";
     opinionText.placeholder = automatic ? "留空即可推荐，也可以补充你最想了解的问题。"
       : extending ? "例如，按现有资料补出两张卡，分别说明使用步骤和验收方法。"
@@ -7504,9 +7506,11 @@
   }
 
   function openCardOpinion(id, mode = "card", scope) {
-    const card = editableCard(id);
+    const atlas = mode === "atlas";
+    const card = editableCard(id) || (atlas && research.items().find(item => item.id === id && item.id !== "board"));
     if (!card || opinionDrawer.open || projectCardDrawer.open || !finishEditingFirst()) return;
-    cardOpinion = { id, scope, automatic: mode === "recommend", run: null, proposal: null };
+    cardOpinion = { id, scope, atlas, automatic: atlas || mode === "recommend", run: null, proposal: null };
+    opinionDrawer.classList.toggle("is-atlas-opinion", atlas);
     opinionForm.reset();
     if (!cardOpinion.automatic) opinionScope.value = mode;
     updateOpinionMode();
@@ -7536,7 +7540,7 @@
     }
   }
 
-  function showOpinionPreview(result, originals, revision, additions = [], limited = false) {
+  function showOpinionPreview(result, originals, revision, additions = [], limited = false, links = []) {
     if (!Array.isArray(result?.items) || result.items.length > originals.size) throw new Error("AI 没有返回有效的修改方案。");
     const seen = new Set();
     const changes = new Map();
@@ -7558,12 +7562,13 @@
     clearOpinionPreview();
     const automatic = cardOpinion.automatic;
     const range = limited ? "已优先检查靠近当前卡的下级，可到更深的卡片继续推荐。" : "";
-    if (!changes.size && !additions.length) {
-      opinionStatus.textContent = automatic ? `现有资料未支持改写或新增下级卡。${range}`
+    if (!changes.size && !additions.length && !links.length) {
+      opinionStatus.textContent = cardOpinion.atlas ? "这一轮未发现有依据的补卡或连线建议。"
+        : automatic ? `现有资料未支持改写或新增下级卡。${range}`
         : "这条意见没有产生卡片改动。可以补充希望修改的内容。";
       return;
     }
-    cardOpinion.proposal = { changes, additions, revision };
+    cardOpinion.proposal = { changes, additions, revision, links };
     for (const [id, fields] of changes) {
       const original = originals.get(id);
       const row = opinionChoice(id, automatic ? `改写 · ${original.title}` : original.title);
@@ -7576,8 +7581,19 @@
       }
     }
     appendNewOpinionCards(additions);
+    if (links.length) {
+      const cards = new Map(research.items().map(card => [card.id, card.title]));
+      links.forEach((link, index) => {
+        const row = opinionChoice("link:" + index, `连线 · ${cards.get(link.from)} → ${cards.get(link.to)}`);
+        appendText(row, "p", "", link.label);
+        appendText(row, "p", "research-muted", link.basis);
+      });
+    }
+    updateAtlasPreview();
     opinionPreview.hidden = opinionApply.hidden = false;
-    opinionStatus.textContent = automatic
+    opinionStatus.textContent = cardOpinion.atlas
+      ? `建议新增 ${additions.length} 张卡、建立 ${links.length} 条连线、改写 ${changes.size} 张下级卡。`
+      : automatic
       ? `建议改写 ${changes.size} 张下级卡，新增 ${additions.length} 张直属下级。勾选要保存的建议。${range}`
       : `建议修改 ${changes.size} 张卡片。勾选要保存的改动。`;
   }
@@ -7593,10 +7609,36 @@
     opinionStatus.textContent = `建议新增 ${additions.length} 张下级卡。确认后会打开当前卡片的模块图。`;
   }
 
+  function updateAtlasPreview() {
+    if (!cardOpinion?.atlas || !cardOpinion.proposal) return;
+    const { additions, links } = cardOpinion.proposal;
+    const picked = new Set([...opinionPreview.querySelectorAll("input:checked")].map(input => input.value));
+    research.previewAtlas(additions.filter(card => picked.has(card.id)), links.filter((_, index) => picked.has("link:" + index)));
+  }
+
+  function knowledgeGraphSnapshot(id, live) {
+    const graph = research.atlasData();
+    const near = [...window.BoardAtlas.hops(graph.adjacency, id, 2, 19).keys()].slice(1);
+    const card = graph.cards.get(id);
+    const terms = [card.title, ...(card.experiment?.question ? [card.experiment.question] : [])].join(" ");
+    const matches = rankBoardCards(live.map(item => ({ ...item, text: item.summary })), terms);
+    const candidates = [...new Set([...near, ...matches.map(item => item.id)])].filter(key => key !== id).slice(0, 24);
+    const members = new Set([id, ...candidates]);
+    return {
+      cards: candidates.map(key => {
+        const candidate = graph.cards.get(key);
+        return { id: key, title: excerpt(candidate.title, 160), summary: excerpt(candidate.summary || "", 260) };
+      }),
+      links: graph.links.filter(link => members.has(link.from) && members.has(link.to)).slice(0, 64)
+        .map(({ from, to, label }) => ({ from, to, label: excerpt(label, 120) })),
+    };
+  }
+
   function opinionRequest(id, mode, instruction) {
-    const automatic = mode === "recommend";
+    const atlas = mode === "atlas";
+    const automatic = atlas || mode === "recommend";
     const boardNodes = boardForOrganization();
-    const live = (organization.current?.items || hierarchyItems(boardNodes))
+    const live = (atlas ? hierarchyItems(boardNodes) : organization.current?.items || hierarchyItems(boardNodes))
       .filter(item => item.category !== "archive" && !deletedIds.has(item.id));
     let expansion;
     if (mode === "children" || automatic) {
@@ -7618,10 +7660,11 @@
     }
     const byId = new Map(live.map(item => [item.id, item]));
     const ids = mode === "card" ? [id] : [...subtreeIds(live, id)];
-    const included = ids.map(key => byId.get(key)).filter(item => item && !item.nativeFace && (!automatic || item.id === id || !item.codePreview));
+    const included = ids.map(key => byId.get(key)).filter(item => item && (atlas && item.id === id || !item.nativeFace) &&
+      (!automatic || item.id === id || !item.codePreview));
     if (included[0]?.id !== id || (!automatic && included.length > 64)) throw new Error("一次最多预览 64 张卡片。请缩小修改范围。");
     const scoped = new Map(included.slice(0, 64).map(item => [item.id, item]));
-    const nodeTextLimit = Math.min(2800, Math.floor(18000 / scoped.size));
+    const nodeTextLimit = Math.min(2800, Math.floor((atlas ? 7200 : 18000) / scoped.size));
     const nodes = [...scoped.values()].map(item => {
       let parent = item.id === id ? null : item.parentId;
       const visited = new Set([item.id]);
@@ -7636,11 +7679,23 @@
     });
     if (automatic) {
       scoped.delete(id);
+      const knowledgeGraph = atlas ? knowledgeGraphSnapshot(id, live) : null;
       return {
         expected: "branch",
-        payload: { scope: "organizeBranch", branchIntent: "recommend", branchRootId: id, board: { nodes }, ...expansion },
-        preview: (value, revision) => showOpinionPreview(value, scoped, revision,
-          expansionAdditions(value.children, id, live, boardNodes, expansion.project.expansion.strategy), included.length > 64),
+        payload: { scope: "organizeBranch", branchIntent: "recommend", branchRootId: id, board: { nodes }, ...expansion,
+          ...(atlas ? { knowledgeGraph } : {}) },
+        preview: (value, revision) => {
+          const allowed = new Set([id, ...(knowledgeGraph?.cards || []).map(card => card.id)]);
+          if (atlas && (!Array.isArray(value.links) || value.links.length > 6 ||
+            value.links.some(link => !allowed.has(link?.from) || !allowed.has(link?.to)))) {
+            throw new Error("AI 建议的连线超出候选卡片。");
+          }
+          const links = atlas ? window.ProjectStructure.knowledgeLinks(value.links, allowed, true) : [];
+          if (links.some(link => link.from !== id && link.to !== id)) throw new Error("AI 建议的连线超出当前卡片。");
+          const known = new Set((knowledgeGraph?.links || []).map(link => JSON.stringify([link.from, link.to, link.label])));
+          showOpinionPreview(value, scoped, revision, expansionAdditions(value.children, id, live, boardNodes, expansion.project.expansion.strategy),
+            included.length > 64, links.filter(link => !known.has(JSON.stringify([link.from, link.to, link.label]))));
+        },
       };
     }
     return {
@@ -7658,27 +7713,28 @@
       if (event.target.name === "opinion-scope") updateOpinionMode();
       opinionStatus.textContent = "";
     }
+    if (event.target.matches('input[type="checkbox"]')) updateAtlasPreview();
   });
   $("structure-opinion-close").addEventListener("click", () => opinionDrawer.close());
   $("structure-opinion-stop").addEventListener("click", () => void stopRun(cardOpinion?.run));
   opinionDrawer.addEventListener("cancel", event => { if (cardOpinion?.run) event.preventDefault(); });
   opinionDrawer.addEventListener("close", () => {
-    if (!opinionDrawer.open) { cardOpinion = null; clearOpinionPreview(); }
+    if (!opinionDrawer.open) { clearOpinionPreview(); cardOpinion = null; }
   });
   opinionForm.addEventListener("submit", async event => {
     event.preventDefault();
     if (!cardOpinion || cardOpinion.run) return;
     clearOpinionPreview();
     const instruction = opinionText.value.trim();
-    const { id, automatic } = cardOpinion;
-    const card = editableCard(id);
+    const { id, automatic, atlas } = cardOpinion;
+    const card = editableCard(id) || (atlas && research.items().find(item => item.id === id));
     if ((!automatic && !instruction) || !card) return;
     if (activeRun || questionRuns.size || storageStale || !memory.storageIsCurrent() || !relayAvailable) {
       opinionStatus.textContent = "当前无法连接 AI 或白板正在更新。请检查连接后重试。";
       return;
     }
     let task;
-    try { task = opinionRequest(id, automatic ? "recommend" : opinionScope.value, instruction); }
+    try { task = opinionRequest(id, atlas ? "atlas" : automatic ? "recommend" : opinionScope.value, instruction); }
     catch (error) {
       opinionStatus.textContent = error.message;
       return;
@@ -7736,7 +7792,7 @@
     const picked = new Set([...opinionPreview.querySelectorAll("input:checked")].map(input => input.value));
     if (!picked.size) { opinionStatus.textContent = "请选择要应用的卡片。"; return; }
     const before = organization;
-    const { id, automatic, scope } = cardOpinion;
+    const { id, automatic, atlas, scope } = cardOpinion;
     const current = before.current || {
       title: $("canvas-title").textContent, summary: "",
       layout: organizationEngine.settings({ flow: "vertical", density: before.rawCompact ? "compact" : "normal" }),
@@ -7758,7 +7814,15 @@
       return next;
     });
     const additions = (proposal.additions || []).filter(item => picked.has(item.id)).map(item => ({ ...item, opinionChild: true }));
-    organization = { ...before, current: { ...current, items: [...items, ...additions] },
+    const links = (proposal.links || []).filter((_, index) => picked.has("link:" + index));
+    const existingLinks = current.knowledgeLinks || [];
+    if (existingLinks.length + links.length > 4000) {
+      opinionStatus.textContent = "当前白板的知识连线已接近上限，可取消勾选部分连线后保存。";
+      return;
+    }
+    const knowledgeLinks = window.ProjectStructure.knowledgeLinks([...existingLinks, ...links]);
+    organization = { ...before, current: { ...current, items: [...items, ...additions],
+      ...(knowledgeLinks.length ? { knowledgeLinks } : {}) },
       previous: before.current, quickUndo: null, undoAvailable: true };
     if (!saveOrganization()) {
       organization = before;
@@ -7767,8 +7831,14 @@
     }
     refreshCanvasAfterEdit = true;
     deletionUndo = null;
+    if (atlas) research.previewAtlas();
     opinionDrawer.close();
     renderInspector();
+    if (atlas) {
+      workspace.refresh();
+      research.notifyAtlas(`已新增 ${additions.length} 张卡、建立 ${links.length} 条连线、改写 ${changed} 张卡。`);
+      return;
+    }
     if (automatic) {
       const first = additions[0]?.id || items.find(item => item.parentId === id && picked.has(item.id))?.id;
       workspace.openStructure(id, scope, first);
@@ -9007,6 +9077,9 @@
     getAttachments: (id) => replies.get(id)?.saved?.payload?.attachments || [],
     getStructure: () => organization.current?.projectStructure || null,
     getModuleDiagrams: () => organization.current?.moduleDiagrams || [],
+    getKnowledgeLinks: () => organization.current?.knowledgeLinks || [],
+    getAtlasReferences: () => boardForOrganization(),
+    rankCards: rankBoardCards,
     getStoredDiagram,
     onConfigureDiagram: configureDiagram,
     canStructure,
@@ -9063,6 +9136,7 @@
   });
   workspace.init({
     readingOnly,
+    atlasHome: readingOnly && projectWorkspace,
     defaultPresentation: organization.current?.projectStructure || organization.current?.moduleDiagrams?.length
       ? "research" : mindmap?.active ? "mindmap" : "cards",
     canStructure,

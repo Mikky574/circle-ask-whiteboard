@@ -944,6 +944,31 @@ class BranchOrganizationAcceptanceTests(unittest.TestCase):
         empty = {"items": [], "children": []}
         self.assertEqual(server.structured_candidate(json.dumps(empty), context), ("branch", {"branch": empty}))
 
+    def test_knowledge_graph_proposals_are_limited_to_the_selected_card(self):
+        request = self.recommendation_request()
+        graph = {"cards": [{"id": "E10", "title": "现场证据", "summary": "记录预期提示。"},
+                           {"id": "E11", "title": "已有对照", "summary": "核对差异。"}],
+                 "links": [{"from": "E02", "to": "E11", "label": "已有关系"}]}
+        request["knowledgeGraph"] = graph
+        body = json.dumps(request).encode()
+        wanted = {"from": "E10", "to": "E02", "label": "验证", "basis": "现场记录了预期提示。"}
+        result = {"items": [], "children": [], "links": [wanted]}
+        with isolated_server() as (port, host), patch.object(server, "run_api", return_value=json.dumps(result)) as api:
+            status, _, raw = post(port, "/api/codex", body, good_headers(host, body))
+        self.assertEqual(status, 200)
+        events = [json.loads(line) for line in raw.splitlines()]
+        self.assertEqual(events[2]["branch"], result)
+        self.assertEqual(events[-1]["changedFiles"], [])
+        schema = api.call_args.args[4]["properties"]["links"]["items"]["properties"]
+        self.assertEqual(schema["to"]["enum"], ["E02", "E10", "E11"])
+        context = server.parse_request(body)[2]
+        for edge in ({**wanted, "from": "E99"}, {**wanted, "to": "E11"}, {**wanted, "basis": ""}):
+            with self.assertRaises(ValueError):
+                server.structured_candidate(json.dumps({**result, "links": [edge]}), context)
+        duplicate = {**graph["links"][0], "basis": "原有引用。"}
+        self.assertEqual(server.structured_candidate(json.dumps({**result, "links": [duplicate, wanted, wanted]}), context),
+                         ("branch", {"branch": result}))
+
 
 class StructuredZCodeAcceptanceTests(unittest.TestCase):
     def exchange(self, fields, *answers):
@@ -1028,6 +1053,8 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
         recommendation_fields = {key: recommendation[key] for key in
                                  ("scope", "branchIntent", "branchRootId", "board", "anchor", "project", "question")}
         new_child = {"title": "验收入口", "summary": "核对提示和复测条件。"}
+        graph = {"cards": [{"id": "E18", "title": "独立验证", "summary": "提供了运行证据。"}], "links": []}
+        graph_link = {"from": "E02", "to": "E18", "label": "验收证据", "basis": "独立验证记录了运行现象。"}
         filing = {
             "orphans": [{"id": "E04", "title": "Unfiled", "summary": "Detached"}],
             "parents": [{"id": "E01", "parentId": None, "title": "Root", "summary": "Overview"}],
@@ -1043,6 +1070,9 @@ class StructuredZCodeAcceptanceTests(unittest.TestCase):
              branch, invalid_branch),
             ("recommend", recommendation_fields, "branch", {"items": [], "children": [new_child]},
              {"items": [{"id": "E02", "title": None, "summary": "越界修改"}], "children": [new_child]}),
+            ("knowledgeGraph", {**recommendation_fields, "knowledgeGraph": graph}, "branch",
+             {"items": [], "children": [new_child], "links": [graph_link]},
+             {"items": [], "children": [], "links": [{**graph_link, "to": "E99"}]}),
             ("regenerate", {key: node_fields[key] for key in ("scope", "board", "branchRootId")} | {"branchIntent": "regenerate"},
              "branch", unchanged_branch, branch),
             ("organize", {"scope": "organize", "board": board_snapshot()}, "map",

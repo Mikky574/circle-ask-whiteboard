@@ -96,6 +96,13 @@ async function relay(req, res) {
         ] },
       } };
     }
+    else if (payload.knowledgeGraph) {
+      event = { type: "branch", branch: { items: [], children: [
+        { title: "记录验收反馈", summary: "写下复核失败时的可见反馈。" },
+      ], links: [
+        { from: "E43", to: "E41", label: "验收对照", basis: "样例里两张卡描述同一批验收输入。" },
+      ] }, requestId: payload.requestId, baseRevision: payload.baseRevision };
+    }
     else if (payload.branchIntent === "recommend") {
       const items = payload.question === "测试重写父卡"
         ? [{ id: payload.branchRootId, title: "越界父卡", summary: null }]
@@ -935,7 +942,7 @@ async function structureWorkspaceEditing() {
         baseline: "base", primary: "main", caveat: "只用于本批样本。",
       },
     } },
-  ].map(item => ({ ...item, summary: item.title + "。" }));
+  ].map(item => ({ ...item, summary: item.title + "。" + (item.id === "E43" ? "低功耗验收信号蓝孔雀。" : "") }));
   const positions = { E04: { x: 80, y: 90, width: 300 } };
   const links = [{ from: "start", to: "continue", label: "继续", evidence: "E42" },
     { from: "continue", to: "output", label: "提交结果" }];
@@ -970,6 +977,18 @@ async function structureWorkspaceEditing() {
       }));
       await page.goto(`${origin}/?board=project-workbench`);
       await page.getByRole("link", { name: `打开项目：${project.name}` }).click();
+      const atlas = page.locator(".atlas-shell");
+      await atlas.waitFor();
+      assert.equal(new URL(page.url()).searchParams.get("panel"), "atlas");
+      const atlasSearch = atlas.getByRole("searchbox", { name: "搜索项目" });
+      await atlasSearch.fill("低功耗验收信号蓝孔雀");
+      const matches = atlas.locator(".atlas-results");
+      await matches.getByRole("button", { name: /第五级验收.*低功耗验收信号蓝孔雀/ }).click();
+      await atlas.locator('.atlas-node[data-card-id="E43"][aria-pressed="true"]').waitFor();
+      await atlas.locator(".atlas-card-text").getByText(/低功耗验收信号蓝孔雀/).waitFor();
+      await atlasSearch.fill("绝对误差");
+      await matches.getByRole("button", { name: /同区另一张卡.*绝对误差/ }).waitFor();
+      await page.goto(`${projectUrl}&view=reading&presentation=research&root=E04&panel=structure`);
       const compareTab = page.getByRole("tab", { name: "对比结果" });
       await compareTab.waitFor();
       assert.equal(new URL(page.url()).searchParams.get("view"), "reading");
@@ -1324,6 +1343,33 @@ async function structureWorkspaceEditing() {
       await page.locator("#card-search-input").fill("来自意见的标题");
       await page.locator("#card-search-results").getByRole("button", { name: /^E41 · 来自意见的标题/ }).click();
       await inspector.getByRole("heading", { name: "来自意见的标题", exact: true }).waitFor();
+      await page.goto(`${projectUrl}&view=reading&presentation=research&root=E04&panel=atlas&focusCard=E43`);
+      await atlas.locator('.atlas-node[data-card-id="E43"][aria-pressed="true"]').waitFor();
+      const beforeAtlas = (await state()).organization.current;
+      await atlas.getByRole("button", { name: "AI 沿图补资料" }).click();
+      await preview.getByText("验收对照", { exact: true }).waitFor();
+      const graphRequest = recommendations.at(-1);
+      assert.equal(graphRequest.question, "");
+      assert.equal(graphRequest.branchRootId, "E43");
+      assert.ok(graphRequest.knowledgeGraph.cards.some(card => card.id === "E41"));
+      assert.deepEqual((await state()).organization.current, beforeAtlas);
+      assert.equal(await atlas.locator(".atlas-edges path.is-draft").count(), 2);
+      await preview.getByRole("checkbox", { name: /记录验收反馈/ }).uncheck();
+      assert.equal(await atlas.locator(".atlas-edges path.is-draft").count(), 1);
+      await preview.getByRole("checkbox", { name: /记录验收反馈/ }).check();
+      await opinion.getByRole("button", { name: "应用勾选的建议" }).click();
+      await opinion.waitFor({ state: "hidden" });
+      const afterAtlas = (await state()).organization.current;
+      const atlasChild = afterAtlas.items.find(item => item.title === "记录验收反馈");
+      assert.equal(atlasChild.parentId, "E43");
+      assert.deepEqual(afterAtlas.items.filter(item => item.id !== atlasChild.id), beforeAtlas.items);
+      const savedLink = { from: "E43", to: "E41", label: "验收对照", basis: "样例里两张卡描述同一批验收输入。" };
+      assert.deepEqual((await state()).organization.current.knowledgeLinks, [savedLink]);
+      await flush();
+      await page.reload();
+      await atlas.locator(".atlas-relations").getByRole("button", { name: /验收对照.*来自意见的标题/ }).waitFor();
+      await atlas.locator(`.atlas-node[data-card-id="${atlasChild.id}"]`).waitFor();
+      assert.equal(await atlas.locator(".atlas-edges path.is-draft").count(), 0);
       if (width > 760) {
         const newBoard = `board-${"d".repeat(32)}`;
         records.set(newBoard, { id: newBoard, title: "空白阅读验收", revision: 1,
@@ -1361,7 +1407,7 @@ async function structureWorkspaceEditing() {
     } finally { await isolated.close(); }
   }
   page = previous;
-  pass("Project reading supports scoped diagrams, evidence, card edits, manual opinions and automatic child recommendations on desktop and touch");
+  pass("Project atlas opens from the project list, searches deep details, and previews and saves scoped model links on desktop and touch");
 }
 
 try {

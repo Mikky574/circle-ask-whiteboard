@@ -162,6 +162,7 @@
     // Optional and read-only for the engine: cards are referenced by id, never copied.
     const projectStructure = window.ProjectStructure?.clean(value.projectStructure);
     const moduleDiagrams = window.ProjectStructure?.moduleDiagrams(value.moduleDiagrams);
+    const knowledgeLinks = window.ProjectStructure?.knowledgeLinks(value.knowledgeLinks);
     return {
       title: text(value.title, 120) || "白板整理",
       summary: text(value.summary, 1600),
@@ -173,6 +174,7 @@
       ...(projectGuide ? { projectGuide } : {}),
       ...(projectStructure ? { projectStructure } : {}),
       ...(moduleDiagrams?.length ? { moduleDiagrams } : {}),
+      ...(knowledgeLinks?.length ? { knowledgeLinks } : {}),
       ...(branchLayouts.length ? { branchLayouts } : {}),
     };
   }

@@ -194,12 +194,13 @@
       result.projectGuide = { rootId: id(guide.rootId, "项目根节点"), x: guide.x, y: guide.y };
     }
     if (owns(value, "branchLayouts")) result.branchLayouts = ids(value.branchLayouts, "分支排布");
-    if (owns(value, "projectStructure") || owns(value, "moduleDiagrams")) {
+    if (owns(value, "projectStructure") || owns(value, "moduleDiagrams") || owns(value, "knowledgeLinks")) {
       const schema = typeof module === "object" && module.exports
         ? require("./project_structure.js") : window.ProjectStructure;
       if (!schema) fail("缺少项目结构校验器。");
       if (owns(value, "projectStructure")) result.projectStructure = schema.validate(value.projectStructure);
       if (owns(value, "moduleDiagrams")) result.moduleDiagrams = schema.moduleDiagrams(value.moduleDiagrams, true);
+      if (owns(value, "knowledgeLinks")) result.knowledgeLinks = schema.knowledgeLinks(value.knowledgeLinks, null, true);
     }
     return result;
   }
@@ -376,6 +377,7 @@
     // exported file never points at cards it does not contain; the count is reported.
     let structureDropped = 0;
     const plan = organization.current;
+    if (plan?.knowledgeLinks) plan.knowledgeLinks = plan.knowledgeLinks.filter(link => present.has(link.from) && present.has(link.to));
     if (plan?.projectStructure || plan?.moduleDiagrams?.length) {
       const schema = typeof module === "object" && module.exports
         ? require("./project_structure.js") : window.ProjectStructure;
